@@ -200,6 +200,43 @@ void DoubleFreeBug::printBugToTerminal() const
     SVFUtil::errs() << "\n";
 }
 
+cJSON * UseAfterFreeBug::getBugDescription() const
+{
+    cJSON *bugDescription = cJSON_CreateObject();
+
+    cJSON *pathInfo = cJSON_CreateArray();
+    auto lastBranchEventIt = bugEventStack.end() - 1;
+    for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
+    {
+        cJSON *newBranch = cJSON_CreateObject();
+        cJSON *branchLoc = cJSON_Parse((*eventIt).getEventLoc().c_str());
+        if(branchLoc == nullptr) branchLoc = cJSON_CreateObject();
+        cJSON *branchCondition = cJSON_CreateString((*eventIt).getEventDescription().c_str());
+
+        cJSON_AddItemToObject(newBranch, "BranchLoc", branchLoc);
+        cJSON_AddItemToObject(newBranch, "BranchCond", branchCondition);
+
+        cJSON_AddItemToArray(pathInfo, newBranch);
+    }
+    cJSON_AddItemToObject(bugDescription, "UseAfterFreePath", pathInfo);
+
+    return bugDescription;
+}
+
+void UseAfterFreeBug::printBugToTerminal() const
+{
+    SVFUtil::errs() << SVFUtil::bugMsg2("\t Use After Free :") <<  " memory allocation at : ("
+                    << GenericBug::getLoc() << ")\n";
+
+    SVFUtil::errs() << "\t\t use after free path: \n";
+    auto lastBranchEventIt = bugEventStack.end() - 1;
+    for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
+    {
+        SVFUtil::errs() << "\t\t  --> (" << (*eventIt).getEventLoc() << "|" << (*eventIt).getEventDescription() << ") \n";
+    }
+    SVFUtil::errs() << "\n";
+}
+
 cJSON * FileNeverCloseBug::getBugDescription() const
 {
     cJSON *bugDescription = cJSON_CreateObject();

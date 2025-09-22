@@ -816,6 +816,8 @@ const Option<bool> Options::FileCheck(
     "fileck", "File Open/Close Detection",false);
 const Option<bool> Options::DFreeCheck(
     "dfree", "Double Free Detection",false);
+const Option<bool> Options::UAFCheck(
+    "uaf", "Use Afrer Free Detection",false);
 const Option<bool> Options::RaceCheck(
     "race", "Data race Detection",false);
 const Option<bool> Options::GepUnknownIdx(

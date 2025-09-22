@@ -257,6 +257,8 @@ public:
     static const Option<bool> FileCheck;
     /// double free checker, Default: false
     static const Option<bool> DFreeCheck;
+    /// use after free checker, Default: false
+    static const Option<bool> UAFCheck;
     /// data race checker, Default: false
     static const Option<bool> RaceCheck;
     /// if the access index of gepstmt is unknown, skip it, Default: false
