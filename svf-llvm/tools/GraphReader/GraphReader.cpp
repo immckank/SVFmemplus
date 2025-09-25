@@ -13,9 +13,101 @@ using namespace SVF;
 using namespace SVFUtil;
 
 /*!
- * 遍历从 iNode 到 targetNode 的所有路径，并打印路径上的所有条件分支边。
+ * \brief 遍历从 startNode 到 targetNode 的所有路径，并打印路径上的所有条件分支边。
+ *
+ * 用栈模拟深搜过程 寻找所有路径 报出路径上的条件分支边和所有调用且未返回的函数调用边
+ *
+ * \param icfg 指向ICFG的指针。
+ * \param startNode 路径搜索的起始ICFG节点。
+ * \param targetNode 路径搜索的目标ICFG节点。
  */
-void pathConditionReader(ICFG* icfg, const ICFGNode* iNode, const ICFGNode* targetNode)
+void pathCondFuncReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* targetNode) 
+{
+    // 调用栈，用于跟踪函数调用和返回，确保路径的有效性
+    using CallStack = std::vector<const RetICFGNode*>;
+    // 模拟栈进行深度优先搜索
+    // {当前节点, 到达此节点的路径上的分支边, 路径上已访问的节点集合, 调用栈}
+    std::vector<std::tuple<const ICFGNode*, std::vector<const IntraCFGEdge*>, Set<const ICFGNode*>, CallStack>> worklist;
+    worklist.emplace_back(startNode, std::vector<const IntraCFGEdge*>{}, Set<const ICFGNode*>{startNode}, CallStack{});
+    SVF::SVFUtil::outs() << "Starting traversal from Node " << startNode->getId() << " to " << targetNode->getId() << "\n";
+
+    while (!worklist.empty())
+    {
+        auto [currentNode, currentPathEdges, pathVisited, callStack] = worklist.back();
+        worklist.pop_back();
+
+        if (currentNode == targetNode) {
+            SVF::SVFUtil::outs() << "  Found a path to target node " << targetNode->getId() << ".\n";
+            SVF::SVFUtil::outs() << "  Conditional branches on this path:\n";
+            if (currentPathEdges.empty()) {
+                SVF::SVFUtil::outs() << "    - No conditional branches on this path.\n";
+            } else {
+                for (const auto* branchEdge : currentPathEdges) {
+                    SVF::SVFUtil::outs() << "    - Branch from " << branchEdge->getSrcNode()->getId()
+                                         << " to " << branchEdge->getDstNode()->getId()
+                                         << " (Condition: " << branchEdge->getCondition()->toString()
+                                         << ", Value: " << branchEdge->getSuccessorCondValue() << ")\n";
+                }
+            }
+            SVF::SVFUtil::outs() << "  Unreturned function calls on this path:\n";
+            if (callStack.empty()) {
+                SVF::SVFUtil::outs() << "    - No unreturned function calls.\n";
+            } else {
+                for (const auto* retNode : callStack) {
+                    SVF::SVFUtil::outs() << "    - Call at Node " << retNode->getCallICFGNode()->getId() << " (" << retNode->getCallICFGNode()->getFun()->getName() << ")\n";
+                }
+            }
+            continue; 
+        }
+
+        if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(currentNode); callNode && SVFUtil::isProgExitCall(callNode)) {
+            SVF::SVFUtil::outs() << "  Path terminated at program exit call: Node " << callNode->getId() << "\n";
+            continue;
+        }
+
+        for (ICFGEdge* edge : currentNode->getOutEdges())
+        {
+            ICFGNode* succNode = edge->getDstNode();
+            if (pathVisited.count(succNode)) {
+                continue;
+            }
+
+            auto newPathEdges = currentPathEdges;
+            auto newPathVisited = pathVisited;
+            auto newCallStack = callStack;
+            newPathVisited.insert(succNode);
+
+            if (const CallCFGEdge* callEdge = SVFUtil::dyn_cast<CallCFGEdge>(edge)) {
+                const CallICFGNode* callSiteNode = callEdge->getCallSite();
+                newCallStack.push_back(callSiteNode->getRetICFGNode());
+            }
+            else if (SVFUtil::isa<RetCFGEdge>(edge)) {
+                const RetICFGNode* retSiteNode = SVFUtil::cast<RetICFGNode>(succNode);
+                if (newCallStack.empty() || newCallStack.back() != retSiteNode) {
+                    continue;
+                }
+                newCallStack.pop_back();
+            }
+            else if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
+                if (intraEdge->getCondition()) {
+                    newPathEdges.push_back(intraEdge);
+                }
+            }
+            worklist.emplace_back(succNode, newPathEdges, newPathVisited, newCallStack);
+        }
+    }
+}
+
+/*!
+ * \brief 遍历从 startNode 到 targetNode 的所有路径，并打印路径上的所有条件分支边。
+ *
+ * 用栈模拟深搜过程 寻找所有路径 报出路径上的条件分支边
+ *
+ * \param icfg 指向ICFG的指针。
+ * \param startNode 路径搜索的起始ICFG节点。
+ * \param targetNode 路径搜索的目标ICFG节点。
+ */
+void pathConditionReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* targetNode)
 {
     // 调用栈
     // 假设函数 A 和 B 都调用了函数 F。从 A 进入 F，然后从 F 返回到 B。但是这在实际程序中是不可能发生的。
@@ -24,21 +116,13 @@ void pathConditionReader(ICFG* icfg, const ICFGNode* iNode, const ICFGNode* targ
     // {当前节点, 到达此节点的路径上的分支边, 路径上已访问的节点集合, 调用栈}
     // 避免陷入循环
     std::vector<std::tuple<const ICFGNode*, std::vector<const IntraCFGEdge*>, Set<const ICFGNode*>, CallStack>> worklist;
-
-    worklist.emplace_back(iNode, std::vector<const IntraCFGEdge*>{}, Set<const ICFGNode*>{iNode}, CallStack{});
-
-    SVF::SVFUtil::outs() << "Starting traversal from Node " << iNode->getId() << " to " << targetNode->getId() << "\n";
+    worklist.emplace_back(startNode, std::vector<const IntraCFGEdge*>{}, Set<const ICFGNode*>{startNode}, CallStack{});
+    SVF::SVFUtil::outs() << "Starting traversal from Node " << startNode->getId() << " to " << targetNode->getId() << "\n";
 
     while (!worklist.empty())
     {
         auto [currentNode, currentPathEdges, pathVisited, callStack] = worklist.back();
         worklist.pop_back();
-
-        // // Debug 输出当前节点
-        // SVF::SVFUtil::outs() << "  Visiting Node " << currentNode->getId() << "\n";
-        // // Debug 输出当前worklist长度
-        // SVF::SVFUtil::outs() << "  Current worklist size: " << worklist.size() << "\n";
-
         // 深搜终点找到目标节点
         if (currentNode == targetNode) {
             SVF::SVFUtil::outs() << "  Found a path to target node " << targetNode->getId() << ". Conditional branches on this path:\n";
@@ -131,6 +215,16 @@ const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& loca
     return nullptr;
 }
 
+
+/*
+整合两个方法 
+实现读取string& startlocation和string& targetlocation
+返回路径上的条件分支边
+
+
+*/
+
+
 /*!
     // GraphReader: A tool to read and analyze SVF graphs.
  */
@@ -168,7 +262,7 @@ int main(int argc, char ** argv) {
 
     if (targetNode) {
         SVF::SVFUtil::outs() << "Traversing ICFG from node ID: " << targetNode->getId() << "\n";
-        pathConditionReader(icfg, startNode, targetNode);
+        pathCondFuncReader(icfg, startNode, targetNode);
     }
 
     // // 访问 CallGraph
