@@ -9,6 +9,7 @@ add_subdirectory(AE)
 add_subdirectory(GraphReader)
 
 set(ALL_TOOLS
+    graph-reader
     ae
     cfl
     dvf
@@ -17,7 +18,6 @@ set(ALL_TOOLS
     saber
     svf-ex
     wpa
-    graph-reader
 )
 
 foreach(_tool IN LISTS ALL_TOOLS)
