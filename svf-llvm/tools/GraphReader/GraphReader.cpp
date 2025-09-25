@@ -219,11 +219,17 @@ const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& loca
 /*
 整合两个方法 
 实现读取string& startlocation和string& targetlocation
-返回路径上的条件分支边
-
-
+返回路径上的条件分支边及相关函数调用边
 */
-
+void pathCondFuncExtractor(ICFG* icfg, const std::string& startLocation, const std::string& targetLocation) {
+    const ICFGNode* startNode = findICFGNodeByLocation(icfg, startLocation);
+    const ICFGNode* targetNode = findICFGNodeByLocation(icfg, targetLocation);
+    if (!startNode || !targetNode) {
+        SVF::SVFUtil::outs() << "Invalid start or target location.\n";
+        return;
+    }
+    pathCondFuncReader(icfg, startNode, targetNode);
+}
 
 /*!
     // GraphReader: A tool to read and analyze SVF graphs.
@@ -254,21 +260,7 @@ int main(int argc, char ** argv) {
     SVF::SVFUtil::outs() << "Step 2: Accessing ICFG and CallGraph.\n";
     SVF::SVFUtil::outs() << "  - Total ICFG Nodes: " << icfg->getTotalNodeNum() << "\n";
 
-    ICFGNode* startNode = const_cast<ICFGNode*>(
-        findICFGNodeByLocation(icfg, "restart.c:76"));
-
-    ICFGNode* targetNode = const_cast<ICFGNode*>(
-        findICFGNodeByLocation(icfg, "restart.c:121"));
-
-    if (targetNode) {
-        SVF::SVFUtil::outs() << "Traversing ICFG from node ID: " << targetNode->getId() << "\n";
-        pathCondFuncReader(icfg, startNode, targetNode);
-    }
-
-    // // 访问 CallGraph
-    // const CallGraph* callgraph = pag->getCallGraph();
-    // outs() << "  - Total CallGraph Nodes: " << callgraph->getTotalNodeNum() << "\n";
-    // outs() << "----------------------------------------------------------------\n";
+    pathCondFuncExtractor(icfg, "restart.c:76", "restart.c:121");
 
     LLVMModuleSet::releaseLLVMModuleSet();
     return 0;
