@@ -15,7 +15,7 @@ using namespace SVFUtil;
 /*!
  * 遍历从 iNode 到 targetNode 的所有路径，并打印路径上的所有条件分支边。
  */
-void traverseOnICFG(ICFG* icfg, const ICFGNode* iNode, const ICFGNode* targetNode)
+void pathConditionReader(ICFG* icfg, const ICFGNode* iNode, const ICFGNode* targetNode)
 {
     // 调用栈
     // 假设函数 A 和 B 都调用了函数 F。从 A 进入 F，然后从 F 返回到 B。但是这在实际程序中是不可能发生的。
@@ -55,64 +55,45 @@ void traverseOnICFG(ICFG* icfg, const ICFGNode* iNode, const ICFGNode* targetNod
             // 找到一条路径后继续寻找其他路径 or 直接结束？
             continue; 
         }
-
         // 终止节点直接返回
         if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(currentNode); callNode && SVFUtil::isProgExitCall(callNode)) {
             SVF::SVFUtil::outs() << "  Path terminated at program exit call: Node " << callNode->getId() << "\n";
             continue;
         }
-
         // 遍历当前节点的所有出边（包括调用边）
         for (ICFGEdge* edge : currentNode->getOutEdges())
         {
             ICFGNode* succNode = edge->getDstNode();
-
-            // 如果后继节点已经在当前路径上访问过，则跳过，以避免无限循环。
+            // 避免循环。
             if (pathVisited.count(succNode)) {
                 continue;
             }
-
-            // 复制当前路径信息
             auto newPathEdges = currentPathEdges;
             auto newPathVisited = pathVisited;
             auto newCallStack = callStack;
             newPathVisited.insert(succNode);
-
-            // 根据边的类型处理上下文
             if (const CallCFGEdge* callEdge = SVFUtil::dyn_cast<CallCFGEdge>(edge)) {
-                // 进入函数调用，将返回点压入调用栈
+                // 函数调用前压入返回点
                 const CallICFGNode* callSiteNode = callEdge->getCallSite();
                 newCallStack.push_back(callSiteNode->getRetICFGNode());
             }
             else if (SVFUtil::isa<RetCFGEdge>(edge)) {
-                // 准备函数返回
+                // 函数返回
                 const RetICFGNode* retSiteNode = SVFUtil::cast<RetICFGNode>(succNode);
                 if (newCallStack.empty() || newCallStack.back() != retSiteNode) {
-                    // 调用栈为空或返回点不匹配，此为不可行路径
                     continue;
                 }
-                // 匹配成功，弹出栈顶
                 newCallStack.pop_back();
             }
             else if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
-                // 检查是否是函数内条件分支边
                 if (intraEdge->getCondition()) {
                     newPathEdges.push_back(intraEdge);
                 }
             }
-
-            // 将后继节点加入工作列表
             worklist.emplace_back(succNode, newPathEdges, newPathVisited, newCallStack);
         }
     }
 }
-
-
-void pathConditionReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* targetNode) {
-
-}
-
-
 
 /*!
  * \brief 根据源代码位置字符串查找ICFGNode。
@@ -187,7 +168,7 @@ int main(int argc, char ** argv) {
 
     if (targetNode) {
         SVF::SVFUtil::outs() << "Traversing ICFG from node ID: " << targetNode->getId() << "\n";
-        traverseOnICFG(icfg, startNode, targetNode);
+        pathConditionReader(icfg, startNode, targetNode);
     }
 
     // // 访问 CallGraph
