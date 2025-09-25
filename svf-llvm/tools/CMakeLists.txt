@@ -6,6 +6,7 @@ add_subdirectory(MTA)
 add_subdirectory(CFL)
 add_subdirectory(LLVM2SVF)
 add_subdirectory(AE)
+add_subdirectory(GraphReader)
 
 set(ALL_TOOLS
     ae
@@ -16,6 +17,7 @@ set(ALL_TOOLS
     saber
     svf-ex
     wpa
+    graph-reader
 )
 
 foreach(_tool IN LISTS ALL_TOOLS)
