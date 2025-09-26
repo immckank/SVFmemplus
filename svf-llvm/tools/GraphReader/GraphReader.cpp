@@ -7,10 +7,86 @@
 #include "Graphs/CallGraph.h"
 #include "Graphs/ICFG.h"
 #include "Util/CDGBuilder.h"
+#include <llvm/IR/DebugInfo.h>
+#include <llvm/Support/JSON.h>
 
 using namespace llvm;
 using namespace SVF;
 using namespace SVFUtil;
+
+/*!
+ * \brief 根据源代码位置字符串查找ICFGNode。
+ *
+ * 遍历ICFG中的所有节点，匹配文件名和行号。
+ *
+ * \param icfg 指向ICFG的指针。
+ * \param location 形如 "filename:line" 的字符串。
+ * \return 如果找到，则为匹配的ICFGNode指针，否则为nullptr。
+ */
+// Tool Function
+const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& location) {
+    size_t colon_pos = location.find(':');
+    if (colon_pos == std::string::npos) {
+        //SVF::SVFUtil::outs() << "Invalid location format. Expected 'filename:line'.\n";
+        return nullptr;
+    }
+    std::string target_filename = location.substr(0, colon_pos);
+    std::string target_line_str = location.substr(colon_pos + 1);
+    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
+        const ICFGNode* node = it->second;
+        if (node) {
+            std::string sourceLoc = node->getSourceLoc();
+            std::string file_pattern = "\"" + target_filename + "\"";
+            std::string line_pattern = "\"ln\": " + target_line_str;
+
+            if (sourceLoc.find(file_pattern) != std::string::npos &&
+                sourceLoc.find(line_pattern) != std::string::npos) {
+                // OUT: 打印结果
+                //SVF::SVFUtil::outs() << "Found matching ICFGNode (ID: " << node->getId() << ") at location: " << sourceLoc << "\n";
+                return node;
+            }
+        }
+    }
+    //SVF::SVFUtil::outs() << "Could not find ICFGNode for location: " << location << "\n";
+    return nullptr;
+}
+
+/*!
+ * \brief 获取一个 LLVM 函数的起始和结束行号。
+ *
+ * 1. 通过函数的 DISubprogram 获取起始行号。
+ * 2. 遍历函数内的所有指令，查找最大的行号作为结束行号。
+ *
+ * \param llvmFun 指向 llvm::Function 的指针。
+ * \return 一个包含起始和结束行号的 std::pair<unsigned, unsigned>。如果找不到调试信息，则返回 {0, 0}。
+ */
+// Tool Function
+std::pair<unsigned, unsigned> getFunctionLineRange(const llvm::Function* llvmFun) {
+    if (!llvmFun) {
+        return {0, 0};
+    }
+
+    // 获取函数的调试信息子程序
+    llvm::DISubprogram* disub = llvmFun->getSubprogram();
+    if (!disub) {
+        // 如果没有调试信息，无法确定行号
+        return {0, 0};
+    }
+
+    unsigned startLine = disub->getLine();
+    unsigned endLine = startLine;
+
+    // 遍历函数中的所有指令以找到最大行号
+    for (const auto& bb : *llvmFun) {
+        for (const auto& inst : bb) {
+            const llvm::DebugLoc& loc = inst.getDebugLoc();
+            if (loc && loc.getLine() > endLine) {
+                endLine = loc.getLine();
+            }
+        }
+    }
+    return {startLine, endLine};
+}
 
 /*!
  * \brief 遍历从 startNode 到 targetNode 的所有路径，并打印路径上的所有条件分支边。
@@ -21,6 +97,7 @@ using namespace SVFUtil;
  * \param startNode 路径搜索的起始ICFG节点。
  * \param targetNode 路径搜索的目标ICFG节点。
  */
+// TODO: 设计输出格式
 void pathCondFuncReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* targetNode) 
 {
     // 调用栈，用于跟踪函数调用和返回，确保路径的有效性
@@ -107,6 +184,7 @@ void pathCondFuncReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* t
  * \param startNode 路径搜索的起始ICFG节点。
  * \param targetNode 路径搜索的目标ICFG节点。
  */
+// TODO: 设计输出格式
 void pathConditionReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* targetNode)
 {
     // 调用栈
@@ -179,48 +257,11 @@ void pathConditionReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* 
     }
 }
 
-/*!
- * \brief 根据源代码位置字符串查找ICFGNode。
- *
- * 遍历ICFG中的所有节点，匹配文件名和行号。
- *
- * \param icfg 指向ICFG的指针。
- * \param location 形如 "filename:line" 的字符串。
- * \return 如果找到，则为匹配的ICFGNode指针，否则为nullptr。
- */
-const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& location) {
-    size_t colon_pos = location.find(':');
-    if (colon_pos == std::string::npos) {
-        SVF::SVFUtil::outs() << "Invalid location format. Expected 'filename:line'.\n";
-        return nullptr;
-    }
-    std::string target_filename = location.substr(0, colon_pos);
-    std::string target_line_str = location.substr(colon_pos + 1);
-    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
-        const ICFGNode* node = it->second;
-        if (node) {
-            std::string sourceLoc = node->getSourceLoc();
-            std::string file_pattern = "\"" + target_filename + "\"";
-            std::string line_pattern = "\"ln\": " + target_line_str;
-
-            if (sourceLoc.find(file_pattern) != std::string::npos &&
-                sourceLoc.find(line_pattern) != std::string::npos) {
-                // OUT: 打印结果
-                SVF::SVFUtil::outs() << "Found matching ICFGNode (ID: " << node->getId() << ") at location: " << sourceLoc << "\n";
-                return node;
-            }
-        }
-    }
-    SVF::SVFUtil::outs() << "Could not find ICFGNode for location: " << location << "\n";
-    return nullptr;
-}
-
-
 /*
-整合两个方法 
 实现读取string& startlocation和string& targetlocation
 返回路径上的条件分支边及相关函数调用边
 */
+// TODO: 设计输出格式
 void pathCondFuncExtractor(ICFG* icfg, const std::string& startLocation, const std::string& targetLocation) {
     const ICFGNode* startNode = findICFGNodeByLocation(icfg, startLocation);
     const ICFGNode* targetNode = findICFGNodeByLocation(icfg, targetLocation);
@@ -237,34 +278,41 @@ void pathCondFuncExtractor(ICFG* icfg, const std::string& startLocation, const s
  * 1. 使用 findICFGNodeByLocation 找到与源代码位置匹配的 ICFGNode。
  * 2. 从 ICFGNode 获取其所属的 SVFFunction。
  * 3. 从 SVFFunction 获取底层的 llvm::Function。
- * 4. 打印 llvm::Function 的内容。
  *
  * \param icfg 指向ICFG的指针。
  * \param location 形如 "filename:line" 的字符串。
  */
 void printFunctionBodyByLocation(ICFG* icfg, const std::string& location) {
-    SVF::SVFUtil::outs() << "Searching for function body at location: " << location << "\n";
+    llvm::json::Object result;
+
     const ICFGNode* node = findICFGNodeByLocation(icfg, location);
     if (!node) {
-        // findICFGNodeByLocation 已经打印了错误信息，这里可以直接返回。
+        result["error"] = true;
+        result["message"] = "Could not find ICFGNode for the given location.";
+        llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
         return;
     }
 
     const FunObjVar* svfFun = node->getFun();
     if (!svfFun) {
-        SVF::SVFUtil::outs() << "Error: ICFGNode " << node->getId() << " is not associated with a function.\n";
+        result["error"] = true;
+        result["message"] = "The ICFGNode at the given location is not inside a function.";
+        llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
         return;
     }
 
-    // 获取 LLVMModuleSet 单例
     LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
-    // 使用 getLLVMValue 方法将 SVF 的 FunObjVar 转换为 LLVM 的 Value
     const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(svfFun);
-    // 将 llvm::Value* 安全地转换为 llvm::Function*
     const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(llvmVal);
-    SVF::SVFUtil::outs() << "==================== Function Body for " << svfFun->getName() << " ====================\n";
-    llvmFun->print(llvm::outs());
-    SVF::SVFUtil::outs() << "\n================================================================================\n";
+
+    std::pair<unsigned, unsigned> lineRange = getFunctionLineRange(llvmFun);
+
+    result["function_name"] = svfFun->getName();
+    result["start_line"] = lineRange.first;
+    result["end_line"] = lineRange.second;
+    result["error"] = false;
+
+    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
 }
 
 /*!
@@ -279,39 +327,50 @@ void printFunctionBodyByLocation(ICFG* icfg, const std::string& location) {
  * \param icfg 指向ICFG的指针。
  * \param location 形如 "filename:line" 的字符串，表示函数调用的位置。
  */
-void printCalleeFunctionBodyByLocation(ICFG* icfg, const std::string& location) {
-    SVF::SVFUtil::outs() << "Searching for callee function body at call site location: " << location << "\n";
+void printCalleeFunctionBodyByLocation(ICFG* icfg, const std::string& location)
+{
+    llvm::json::Object result;
+    llvm::json::Array calleeFunctions;
+
     const ICFGNode* node = findICFGNodeByLocation(icfg, location);
     if (!node) {
+        result["error"] = true;
+        result["message"] = "Could not find ICFGNode for the given location.";
+        llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
         return;
     }
 
     const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(node);
     if (!callNode) {
-        SVF::SVFUtil::outs() << "Error: Node " << node->getId() << " at location " << location << " is not a function call site.\n";
+        result["error"] = true;
+        result["message"] = "Node at the given location is not a function call site.";
+        llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
         return;
     }
 
     LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
-    int calleeCount = 0;
 
     for (ICFGEdge* edge : callNode->getOutEdges()) {
         if (SVFUtil::isa<CallCFGEdge>(edge)) {
             const ICFGNode* calleeEntryNode = edge->getDstNode();
             const FunObjVar* svfFun = calleeEntryNode->getFun();
             if (svfFun) {
-                calleeCount++;
                 const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(svfFun);
                 const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(llvmVal);
-                SVF::SVFUtil::outs() << "==================== Callee Function Body for " << svfFun->getName() << " ====================\n";
-                llvmFun->print(llvm::outs());
-                SVF::SVFUtil::outs() << "\n================================================================================\n";
+
+                std::pair<unsigned, unsigned> lineRange = getFunctionLineRange(llvmFun);
+                calleeFunctions.push_back(llvm::json::Object{
+                    {"function_name", svfFun->getName()},
+                    {"start_line", lineRange.first},
+                    {"end_line", lineRange.second}
+                });
             }
         }
     }
-    if (calleeCount == 0) {
-        SVF::SVFUtil::outs() << "No callees found for the call site at Node " << callNode->getId() << ".\n";
-    }
+
+    result["callee_functions"] = std::move(calleeFunctions);
+    result["error"] = false;
+    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
 }
 
 /*!
@@ -327,29 +386,51 @@ void printCalleeFunctionBodyByLocation(ICFG* icfg, const std::string& location) 
  * \param functionName 要查找的函数名。
  */
 void printFunctionCallSites(ICFG* icfg, const std::string& functionName) {
-    SVF::SVFUtil::outs() << "Searching for all call sites of function: '" << functionName << "'\n";
-    int callSiteCount = 0;
+    llvm::json::Object result;
+    llvm::json::Array callSites;
+
     // 使用集合来避免因多条调用边指向同一函数而重复打印同一调用点
     Set<const ICFGNode*> reportedCallSites;
 
     for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
         const ICFGNode* node = it->second;
         if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(node)) {
+            // 如果已经报告过这个调用点，则跳过
+            if (reportedCallSites.count(callNode)) {
+                continue;
+            }
             for (ICFGEdge* edge : callNode->getOutEdges()) {
                 if (SVFUtil::isa<CallCFGEdge>(edge)) {
                     const ICFGNode* calleeEntryNode = edge->getDstNode();
                     const FunObjVar* svfFun = calleeEntryNode->getFun();
-                    if (svfFun && svfFun->getName() == functionName && reportedCallSites.find(callNode) == reportedCallSites.end()) {
-                        SVF::SVFUtil::outs() << "  - Found call at: " << callNode->getSourceLoc() << " (Node ID: " << callNode->getId() << ")\n";
+                    if (svfFun && svfFun->getName() == functionName) {
+                        llvm::json::Object site;
+                        std::string locString = callNode->getSourceLoc();
+                        std::string formattedLoc = locString; // 默认值
+                        // 解析JSON字符串以提取文件名和行号
+                        llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(locString);
+                        if (parsed) {
+                            if (auto* obj = parsed->getAsObject()) {
+                                auto filename = obj->getString("fl");
+                                auto line = obj->getInteger("ln");
+                                if (filename && line) {
+                                    formattedLoc = (*filename + ":" + std::to_string(*line)).str();
+                                }
+                            }
+                        }
+                        site["location"] = formattedLoc;
+                        callSites.push_back(std::move(site));
                         reportedCallSites.insert(callNode);
-                        callSiteCount++;
+                        break; // 找到匹配后，处理下一个CallNode
                     }
                 }
             }
         }
     }
-    SVF::SVFUtil::outs() << "Found " << callSiteCount << " call site(s) for function '" << functionName << "'.\n";
-    SVF::SVFUtil::outs() << "================================================================================\n";
+
+    result["call_sites"] = std::move(callSites);
+    result["error"] = false;
+    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
 }
 
 
@@ -426,10 +507,10 @@ int main(int argc, char** argv) {
     // pathCondFuncExtractor(icfg, "restart.c:76", "restart.c:121");
 
     // 示例2：根据代码行号查找并打印其所在函数的函数体
-    // printFunctionBodyByLocation(icfg, "stats_prefix.c:118");
+    printFunctionBodyByLocation(icfg, "stats_prefix.c:118");
 
     // 示例3：根据代码行号查找函数调用，并打印被调用函数的函数体
-    // printCalleeFunctionBodyByLocation(icfg, "stats_prefix.c:118");
+    printCalleeFunctionBodyByLocation(icfg, "stats_prefix.c:118");
 
     // 示例4：根据函数名查找其所有被调用的位置
     printFunctionCallSites(icfg, "stats_prefix_record_get");
