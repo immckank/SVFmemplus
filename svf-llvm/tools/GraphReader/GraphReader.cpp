@@ -232,6 +232,129 @@ void pathCondFuncExtractor(ICFG* icfg, const std::string& startLocation, const s
 }
 
 /*!
+ * \brief 根据源代码位置查找并打印其所在函数的函数体 (LLVM IR)。
+ *
+ * 1. 使用 findICFGNodeByLocation 找到与源代码位置匹配的 ICFGNode。
+ * 2. 从 ICFGNode 获取其所属的 SVFFunction。
+ * 3. 从 SVFFunction 获取底层的 llvm::Function。
+ * 4. 打印 llvm::Function 的内容。
+ *
+ * \param icfg 指向ICFG的指针。
+ * \param location 形如 "filename:line" 的字符串。
+ */
+void printFunctionBodyByLocation(ICFG* icfg, const std::string& location) {
+    SVF::SVFUtil::outs() << "Searching for function body at location: " << location << "\n";
+    const ICFGNode* node = findICFGNodeByLocation(icfg, location);
+    if (!node) {
+        // findICFGNodeByLocation 已经打印了错误信息，这里可以直接返回。
+        return;
+    }
+
+    const FunObjVar* svfFun = node->getFun();
+    if (!svfFun) {
+        SVF::SVFUtil::outs() << "Error: ICFGNode " << node->getId() << " is not associated with a function.\n";
+        return;
+    }
+
+    // 获取 LLVMModuleSet 单例
+    LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
+    // 使用 getLLVMValue 方法将 SVF 的 FunObjVar 转换为 LLVM 的 Value
+    const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(svfFun);
+    // 将 llvm::Value* 安全地转换为 llvm::Function*
+    const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(llvmVal);
+    SVF::SVFUtil::outs() << "==================== Function Body for " << svfFun->getName() << " ====================\n";
+    llvmFun->print(llvm::outs());
+    SVF::SVFUtil::outs() << "\n================================================================================\n";
+}
+
+/*!
+ * \brief 根据源代码位置查找函数调用，并打印被调用函数的函数体 (LLVM IR)。
+ *
+ * 1. 使用 findICFGNodeByLocation 找到与源代码位置匹配的 ICFGNode。
+ * 2. 检查该节点是否为 CallICFGNode，即一个函数调用点。
+ * 3. 遍历该调用点的所有出边，寻找 CallCFGEdge。
+ * 4. 对于每个 CallCFGEdge，其目标节点是一个被调用函数的入口 (EntryICFGNode)。
+ * 5. 从入口节点获取函数信息，并打印其 LLVM IR 函数体。
+ *
+ * \param icfg 指向ICFG的指针。
+ * \param location 形如 "filename:line" 的字符串，表示函数调用的位置。
+ */
+void printCalleeFunctionBodyByLocation(ICFG* icfg, const std::string& location) {
+    SVF::SVFUtil::outs() << "Searching for callee function body at call site location: " << location << "\n";
+    const ICFGNode* node = findICFGNodeByLocation(icfg, location);
+    if (!node) {
+        return;
+    }
+
+    const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(node);
+    if (!callNode) {
+        SVF::SVFUtil::outs() << "Error: Node " << node->getId() << " at location " << location << " is not a function call site.\n";
+        return;
+    }
+
+    LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
+    int calleeCount = 0;
+
+    for (ICFGEdge* edge : callNode->getOutEdges()) {
+        if (SVFUtil::isa<CallCFGEdge>(edge)) {
+            const ICFGNode* calleeEntryNode = edge->getDstNode();
+            const FunObjVar* svfFun = calleeEntryNode->getFun();
+            if (svfFun) {
+                calleeCount++;
+                const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(svfFun);
+                const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(llvmVal);
+                SVF::SVFUtil::outs() << "==================== Callee Function Body for " << svfFun->getName() << " ====================\n";
+                llvmFun->print(llvm::outs());
+                SVF::SVFUtil::outs() << "\n================================================================================\n";
+            }
+        }
+    }
+    if (calleeCount == 0) {
+        SVF::SVFUtil::outs() << "No callees found for the call site at Node " << callNode->getId() << ".\n";
+    }
+}
+
+/*!
+ * \brief 根据函数名查找并打印其所有被调用的位置。
+ *
+ * 1. 遍历ICFG中的所有节点。
+ * 2. 筛选出 CallICFGNode 类型的节点，即函数调用点。
+ * 3. 对于每个调用点，遍历其出边，找到代表函数调用的 CallCFGEdge。
+ * 4. 获取被调用函数的入口节点，并从中得到函数名。
+ * 5. 如果函数名与目标函数名匹配，则打印该调用点的源代码位置。
+ *
+ * \param icfg 指向ICFG的指针。
+ * \param functionName 要查找的函数名。
+ */
+void printFunctionCallSites(ICFG* icfg, const std::string& functionName) {
+    SVF::SVFUtil::outs() << "Searching for all call sites of function: '" << functionName << "'\n";
+    int callSiteCount = 0;
+    // 使用集合来避免因多条调用边指向同一函数而重复打印同一调用点
+    Set<const ICFGNode*> reportedCallSites;
+
+    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
+        const ICFGNode* node = it->second;
+        if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(node)) {
+            for (ICFGEdge* edge : callNode->getOutEdges()) {
+                if (SVFUtil::isa<CallCFGEdge>(edge)) {
+                    const ICFGNode* calleeEntryNode = edge->getDstNode();
+                    const FunObjVar* svfFun = calleeEntryNode->getFun();
+                    if (svfFun && svfFun->getName() == functionName && reportedCallSites.find(callNode) == reportedCallSites.end()) {
+                        SVF::SVFUtil::outs() << "  - Found call at: " << callNode->getSourceLoc() << " (Node ID: " << callNode->getId() << ")\n";
+                        reportedCallSites.insert(callNode);
+                        callSiteCount++;
+                    }
+                }
+            }
+        }
+    }
+    SVF::SVFUtil::outs() << "Found " << callSiteCount << " call site(s) for function '" << functionName << "'.\n";
+    SVF::SVFUtil::outs() << "================================================================================\n";
+}
+
+
+
+/*!
     // GraphReader: A tool to read and analyze SVF graphs.
  */
 int main(int argc, char ** argv) {
@@ -260,7 +383,17 @@ int main(int argc, char ** argv) {
     SVF::SVFUtil::outs() << "Step 2: Accessing ICFG and CallGraph.\n";
     SVF::SVFUtil::outs() << "  - Total ICFG Nodes: " << icfg->getTotalNodeNum() << "\n";
 
-    pathCondFuncExtractor(icfg, "restart.c:76", "restart.c:121");
+    // 示例1：查找两条路径之间的条件
+    // pathCondFuncExtractor(icfg, "restart.c:76", "restart.c:121");
+
+    // 示例2：根据代码行号查找并打印其所在函数的函数体
+    // printFunctionBodyByLocation(icfg, "stats_prefix.c:118");
+
+    // 示例3：根据代码行号查找函数调用，并打印被调用函数的函数体
+    // printCalleeFunctionBodyByLocation(icfg, "stats_prefix.c:118");
+
+    // 示例4：根据函数名查找其所有被调用的位置
+    printFunctionCallSites(icfg, "stats_prefix_record_get");
 
     LLVMModuleSet::releaseLLVMModuleSet();
     return 0;
