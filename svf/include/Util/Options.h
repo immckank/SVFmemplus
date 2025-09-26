@@ -269,6 +269,13 @@ public:
 
     // float precision for symbolic abstraction
     static const Option<u32_t> AEPrecision;
+
+    // GraphReader
+    static const Option<std::string> FindCallSites;
+    static const Option<std::string> FindCalleeBody;
+    static const Option<std::string> FindFuncBody;
+    static const Option<std::string> PathCondStart;
+    static const Option<std::string> PathCondEnd;
 };
 }  // namespace SVF
 

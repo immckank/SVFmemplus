@@ -834,4 +834,35 @@ const Option<u32_t> Options::AEPrecision(
     0
 );
 
+// GraphReader.cpp
+const Option<std::string> Options::FindCallSites(
+    "find-call-sites",
+    "Find all call sites of a function",
+    ""
+);
+
+const Option<std::string> Options::FindCalleeBody(
+    "find-callee-body",
+    "Print callee's body at a call site",
+    ""
+);
+
+const Option<std::string> Options::FindFuncBody(
+    "find-function-body",
+    "Print the body of the function at a location",
+    ""
+);
+
+const Option<std::string> Options::PathCondStart(
+    "path-cond-start",
+    "Start location for path condition analysis",
+    ""
+);
+
+const Option<std::string> Options::PathCondEnd(
+    "path-cond-end",
+    "End location for path condition analysis",
+    ""
+);
+
 } // namespace SVF.

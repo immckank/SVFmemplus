@@ -88,6 +88,39 @@ std::pair<unsigned, unsigned> getFunctionLineRange(const llvm::Function* llvmFun
     return {startLine, endLine};
 }
 
+// 一个辅助函数，用于从主字符串中提取特定键的值
+// Tool Function
+std::string extract_value(const std::string& source, const std::string& key) {
+    // 查找键，例如查找 "\"fl\": \""
+    std::string search_key = "\"" + key + "\": ";
+    size_t start_pos = source.find(search_key);
+
+    if (start_pos == std::string::npos) {
+        throw std::runtime_error("Key '" + key + "' not found.");
+    }
+
+    // 值的起始位置在 key 之后
+    start_pos += search_key.length();
+
+    // 如果值是字符串，它被双引号包围
+    if (source[start_pos] == '"') {
+        start_pos++; // 跳过起始引号
+        size_t end_pos = source.find('"', start_pos);
+        if (end_pos == std::string::npos) {
+            throw std::runtime_error("Malformed string: closing quote not found for key '" + key + "'.");
+        }
+        return source.substr(start_pos, end_pos - start_pos);
+    } 
+    // 如果值是数字，它后面跟着逗号或花括号
+    else {
+        size_t end_pos = source.find_first_of(",}", start_pos);
+        if (end_pos == std::string::npos) {
+             throw std::runtime_error("Malformed string: terminator not found for key '" + key + "'.");
+        }
+        return source.substr(start_pos, end_pos - start_pos);
+    }
+}
+
 /*!
  * \brief 遍历从 startNode 到 targetNode 的所有路径，并打印路径上的所有条件分支边。
  *
@@ -407,16 +440,12 @@ void printFunctionCallSites(ICFG* icfg, const std::string& functionName) {
                         llvm::json::Object site;
                         std::string locString = callNode->getSourceLoc();
                         std::string formattedLoc = locString; // 默认值
-                        // 解析JSON字符串以提取文件名和行号
-                        llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(locString);
-                        if (parsed) {
-                            if (auto* obj = parsed->getAsObject()) {
-                                auto filename = obj->getString("fl");
-                                auto line = obj->getInteger("ln");
-                                if (filename && line) {
-                                    formattedLoc = (*filename + ":" + std::to_string(*line)).str();
-                                }
-                            }
+                        try {
+                            std::string file = extract_value(locString, "fl");
+                            std::string line = extract_value(locString, "ln");
+                            formattedLoc = file + ":" + line;
+                        } catch (const std::runtime_error& e) {
+                            // 如果提取失败，保持默认值
                         }
                         site["location"] = formattedLoc;
                         callSites.push_back(std::move(site));
@@ -434,86 +463,68 @@ void printFunctionCallSites(ICFG* icfg, const std::string& functionName) {
 }
 
 
-//! Command-line options for GraphReader
-namespace {
-    cl::opt<std::string> FindCallSites("find-call-sites", cl::desc("Find all call sites of a function"), cl::value_desc("function_name"));
-    cl::opt<std::string> FindCalleeBody("find-callee-body", cl::desc("Print callee's body at a call site"), cl::value_desc("file:line"));
-    cl::opt<std::string> FindFuncBody("find-function-body", cl::desc("Print the body of the function at a location"), cl::value_desc("file:line"));
-    cl::opt<std::string> PathCondStart("path-cond-start", cl::desc("Start location for path condition analysis"), cl::value_desc("file:line"));
-    cl::opt<std::string> PathCondEnd("path-cond-end", cl::desc("End location for path condition analysis"), cl::value_desc("file:line"));
-}
-
 /*!
  * GraphReader: A tool to read and analyze SVF graphs.
  * It uses SVF's command-line option system for analysis selection.
  */
-// int main(int argc, char ** argv) {
-//     // 解析命令行参数，这会填充上面定义的 cl::opt 变量
-//     // 并将非选项参数（即 bitcode 文件）收集到 moduleNameVec 中
-//     std::vector<std::string> moduleNameVec = 
-//         OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
-
-//     SVF::SVFUtil::outs() << pasMsg("GraphReader Tool Started\n");
-//     SVF::SVFUtil::outs() << "================================================================\n";
-
-//     LLVMModuleSet::buildSVFModule(moduleNameVec);
-
-//     SVFIRBuilder builder;
-//     SVFIR* pag = builder.build();
-//     SVF::SVFUtil::outs() << "Step 1: SVFIR (PAG) built.\n";
-//     SVF::SVFUtil::outs() << "  - Total PAG Nodes: " << pag->getPAGNodeNum() << "\n";
-//     SVF::SVFUtil::outs() << "  - Total PAG Edges: " << pag->getPAGEdgeNum() << "\n";
-//     SVF::SVFUtil::outs() << "----------------------------------------------------------------\n";
-
-//     // 访问 ICFG
-//     ICFG* icfg = pag->getICFG();
-//     SVF::SVFUtil::outs() << "Step 2: Accessing ICFG and CallGraph.\n";
-//     SVF::SVFUtil::outs() << "  - Total ICFG Nodes: " << icfg->getTotalNodeNum() << "\n";
-//     SVF::SVFUtil::outs() << "----------------------------------------------------------------\n";
-
-//     // 根据用户指定的命令行选项执行相应的分析
-//     if (!FindCallSites.empty()) {
-//         printFunctionCallSites(icfg, FindCallSites);
-//     }
-//     else if (!FindCalleeBody.empty()) {
-//         printCalleeFunctionBodyByLocation(icfg, FindCalleeBody);
-//     }
-//     else if (!FindFuncBody.empty()) {
-//         printFunctionBodyByLocation(icfg, FindFuncBody);
-//     }
-//     else if (!PathCondStart.empty() && !PathCondEnd.empty()) {
-//         pathCondFuncExtractor(icfg, PathCondStart, PathCondEnd);
-//     }
-//     else {
-//         SVF::SVFUtil::outs() << "No analysis option specified. Use --help to see available options.\n";
-//         SVF::SVFUtil::outs() << "Defaulting to an example: finding call sites for 'stats_prefix_record_get'\n";
-//         printFunctionCallSites(icfg, "stats_prefix_record_get");
-//     }
-//     return 0;
-// }
-
-// DeBug main
-int main(int argc, char** argv) {
-    // 解析命令行参数
-    std::vector<std::string> moduleNameVec =
+int main(int argc, char ** argv) {
+    // 解析命令行参数，这会填充上面定义的 cl::opt 变量
+    // 并将非选项参数（即 bitcode 文件）收集到 moduleNameVec 中
+    std::vector<std::string> moduleNameVec = 
         OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
-    
+
+    // SVF::SVFUtil::outs() << pasMsg("GraphReader Tool Started\n");
+    // SVF::SVFUtil::outs() << "================================================================\n";
+
     LLVMModuleSet::buildSVFModule(moduleNameVec);
+
     SVFIRBuilder builder;
     SVFIR* pag = builder.build();
+    // SVF::SVFUtil::outs() << "SVFIR (PAG) built.\n";
+
     ICFG* icfg = pag->getICFG();
-
-    // 示例1：查找两条路径之间的条件
-    // pathCondFuncExtractor(icfg, "restart.c:76", "restart.c:121");
-
-    // 示例2：根据代码行号查找并打印其所在函数的函数体
-    printFunctionBodyByLocation(icfg, "stats_prefix.c:118");
-
-    // 示例3：根据代码行号查找函数调用，并打印被调用函数的函数体
-    printCalleeFunctionBodyByLocation(icfg, "stats_prefix.c:118");
-
-    // 示例4：根据函数名查找其所有被调用的位置
-    printFunctionCallSites(icfg, "stats_prefix_record_get");
-
+    if (!Options::FindCallSites().empty()) {
+        printFunctionCallSites(icfg, Options::FindCallSites());
+    }
+    else if (!Options::FindCalleeBody().empty()) {
+        printCalleeFunctionBodyByLocation(icfg, Options::FindCalleeBody());
+    }
+    else if (!Options::FindFuncBody().empty()) {
+        printFunctionBodyByLocation(icfg, Options::FindFuncBody());
+    }
+    else if (!Options::PathCondStart().empty() && !Options::PathCondEnd().empty()) {
+        pathCondFuncExtractor(icfg, Options::PathCondStart(), Options::PathCondEnd());
+    }
+    else {
+        SVF::SVFUtil::outs() << "No analysis option specified. Use --help to see available options.\n";
+        SVF::SVFUtil::outs() << "Defaulting to an example: finding call sites for 'stats_prefix_record_get'\n";
+        printFunctionCallSites(icfg, "stats_prefix_record_get");
+    }
     return 0;
 }
+
+// DeBug main
+// int main(int argc, char** argv) {
+//     // 解析命令行参数
+//     std::vector<std::string> moduleNameVec =
+//         OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
+    
+//     LLVMModuleSet::buildSVFModule(moduleNameVec);
+//     SVFIRBuilder builder;
+//     SVFIR* pag = builder.build();
+//     ICFG* icfg = pag->getICFG();
+
+//     // 示例1：查找两条路径之间的条件
+//     // pathCondFuncExtractor(icfg, "restart.c:76", "restart.c:121");
+
+//     // 示例2：根据代码行号查找并打印其所在函数的函数体
+//     printFunctionBodyByLocation(icfg, "stats_prefix.c:118");
+
+//     // 示例3：根据代码行号查找函数调用，并打印被调用函数的函数体
+//     printCalleeFunctionBodyByLocation(icfg, "stats_prefix.c:118");
+
+//     // 示例4：根据函数名查找其所有被调用的位置
+//     printFunctionCallSites(icfg, "stats_prefix_record_get");
+
+//     return 0;
+// }
