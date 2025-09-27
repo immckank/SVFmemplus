@@ -60,19 +60,25 @@ const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& loca
  * \param llvmFun 指向 llvm::Function 的指针。
  * \return 一个包含起始和结束行号的 std::pair<unsigned, unsigned>。如果找不到调试信息，则返回 {0, 0}。
  */
-// Tool Function
-std::pair<unsigned, unsigned> getFunctionLineRange(const llvm::Function* llvmFun) {
+struct FunctionSourceInfo {
+    std::string filename;
+    unsigned startLine;
+    unsigned endLine;
+};
+
+FunctionSourceInfo getFunctionSourceInfo(const llvm::Function* llvmFun) {
     if (!llvmFun) {
-        return {0, 0};
+        return {"", 0, 0};
     }
 
     // 获取函数的调试信息子程序
     llvm::DISubprogram* disub = llvmFun->getSubprogram();
     if (!disub) {
         // 如果没有调试信息，无法确定行号
-        return {0, 0};
+        return {"", 0, 0};
     }
 
+    std::string filename = disub->getFilename().str();
     unsigned startLine = disub->getLine();
     unsigned endLine = startLine;
 
@@ -85,7 +91,7 @@ std::pair<unsigned, unsigned> getFunctionLineRange(const llvm::Function* llvmFun
             }
         }
     }
-    return {startLine, endLine};
+    return {filename, startLine, endLine};
 }
 
 // 一个辅助函数，用于从主字符串中提取特定键的值
@@ -338,11 +344,12 @@ void printFunctionBodyByLocation(ICFG* icfg, const std::string& location) {
     const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(svfFun);
     const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(llvmVal);
 
-    std::pair<unsigned, unsigned> lineRange = getFunctionLineRange(llvmFun);
+    FunctionSourceInfo sourceInfo = getFunctionSourceInfo(llvmFun);
 
     result["function_name"] = svfFun->getName();
-    result["start_line"] = lineRange.first;
-    result["end_line"] = lineRange.second;
+    result["filename"] = sourceInfo.filename;
+    result["start_line"] = sourceInfo.startLine;
+    result["end_line"] = sourceInfo.endLine;
     result["error"] = false;
 
     llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
@@ -391,11 +398,12 @@ void printCalleeFunctionBodyByLocation(ICFG* icfg, const std::string& location)
                 const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(svfFun);
                 const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(llvmVal);
 
-                std::pair<unsigned, unsigned> lineRange = getFunctionLineRange(llvmFun);
+                FunctionSourceInfo sourceInfo = getFunctionSourceInfo(llvmFun);
                 calleeFunctions.push_back(llvm::json::Object{
                     {"function_name", svfFun->getName()},
-                    {"start_line", lineRange.first},
-                    {"end_line", lineRange.second}
+                    {"filename", sourceInfo.filename},
+                    {"start_line", sourceInfo.startLine},
+                    {"end_line", sourceInfo.endLine}
                 });
             }
         }
