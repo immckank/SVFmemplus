@@ -60,6 +60,7 @@ const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& loca
  * \param llvmFun 指向 llvm::Function 的指针。
  * \return 一个包含起始和结束行号的 std::pair<unsigned, unsigned>。如果找不到调试信息，则返回 {0, 0}。
  */
+// Tool Function
 struct FunctionSourceInfo {
     std::string filename;
     unsigned startLine;
@@ -133,51 +134,66 @@ std::string extract_value(const std::string& source, const std::string& key) {
  * 用栈模拟深搜过程 寻找所有路径 报出路径上的条件分支边和所有调用且未返回的函数调用边
  *
  * \param icfg 指向ICFG的指针。
- * \param startNode 路径搜索的起始ICFG节点。
- * \param targetNode 路径搜索的目标ICFG节点。
+ * \param startLocation 路径搜索的起始位置。
+ * \param targetLocation 路径搜索的目标位置。
  */
-// TODO: 设计输出格式
-void pathCondFuncReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* targetNode) 
+void pathCondFuncReader(ICFG* icfg, const std::string& startLocation, const std::string& targetLocation) 
 {
+    llvm::json::Object result;
+    llvm::json::Array pathsArray;
+
+    const ICFGNode* startNode = findICFGNodeByLocation(icfg, startLocation);
+    const ICFGNode* targetNode = findICFGNodeByLocation(icfg, targetLocation);
+    if (!startNode || !targetNode) {
+        result["error"] = true;
+        result["message"] = "Invalid start or target location.";
+        llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+        return;
+    }
     // 调用栈，用于跟踪函数调用和返回，确保路径的有效性
     using CallStack = std::vector<const RetICFGNode*>;
     // 模拟栈进行深度优先搜索
     // {当前节点, 到达此节点的路径上的分支边, 路径上已访问的节点集合, 调用栈}
-    std::vector<std::tuple<const ICFGNode*, std::vector<const IntraCFGEdge*>, Set<const ICFGNode*>, CallStack>> worklist;
-    worklist.emplace_back(startNode, std::vector<const IntraCFGEdge*>{}, Set<const ICFGNode*>{startNode}, CallStack{});
-    SVF::SVFUtil::outs() << "Starting traversal from Node " << startNode->getId() << " to " << targetNode->getId() << "\n";
+    std::vector<std::tuple<const ICFGNode*, llvm::json::Array, Set<const ICFGNode*>, CallStack>> worklist;
+    worklist.emplace_back(startNode, llvm::json::Array{}, Set<const ICFGNode*>{startNode}, CallStack{});
+    
+    int pathIdCounter = 0;
 
     while (!worklist.empty())
     {
-        auto [currentNode, currentPathEdges, pathVisited, callStack] = worklist.back();
+        auto [currentNode, currentPathEvents, pathVisited, callStack] = worklist.back();
         worklist.pop_back();
 
         if (currentNode == targetNode) {
-            SVF::SVFUtil::outs() << "  Found a path to target node " << targetNode->getId() << ".\n";
-            SVF::SVFUtil::outs() << "  Conditional branches on this path:\n";
-            if (currentPathEdges.empty()) {
-                SVF::SVFUtil::outs() << "    - No conditional branches on this path.\n";
-            } else {
-                for (const auto* branchEdge : currentPathEdges) {
-                    SVF::SVFUtil::outs() << "    - Branch from " << branchEdge->getSrcNode()->getId()
-                                         << " to " << branchEdge->getDstNode()->getId()
-                                         << " (Condition: " << branchEdge->getCondition()->toString()
-                                         << ", Value: " << branchEdge->getSuccessorCondValue() << ")\n";
-                }
+            pathIdCounter++;
+            llvm::json::Object pathObject;
+            pathObject["path_id"] = pathIdCounter;
+
+            llvm::json::Array finalPathEvents = currentPathEvents;
+            // 添加未返回的函数调用到事件列表
+            for (const auto* retNode : callStack) {
+                const CallICFGNode* callSiteNode = retNode->getCallICFGNode();
+                std::string locString = callSiteNode->getSourceLoc();
+                std::string formattedLoc = locString;
+                try {
+                    std::string file = extract_value(locString, "fl");
+                    std::string line = extract_value(locString, "ln");
+                    formattedLoc = file + ":" + line;
+                } catch (const std::runtime_error&) {}
+
+                finalPathEvents.push_back(llvm::json::Object{
+                    {"type", "unreturned-call"},
+                    {"location", formattedLoc},
+                    {"function", callSiteNode->getFun()->getName()}
+                });
             }
-            SVF::SVFUtil::outs() << "  Unreturned function calls on this path:\n";
-            if (callStack.empty()) {
-                SVF::SVFUtil::outs() << "    - No unreturned function calls.\n";
-            } else {
-                for (const auto* retNode : callStack) {
-                    SVF::SVFUtil::outs() << "    - Call at Node " << retNode->getCallICFGNode()->getId() << " (" << retNode->getCallICFGNode()->getFun()->getName() << ")\n";
-                }
-            }
+
+            pathObject["events"] = std::move(finalPathEvents);
+            pathsArray.push_back(std::move(pathObject));
             continue; 
         }
 
         if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(currentNode); callNode && SVFUtil::isProgExitCall(callNode)) {
-            SVF::SVFUtil::outs() << "  Path terminated at program exit call: Node " << callNode->getId() << "\n";
             continue;
         }
 
@@ -188,7 +204,7 @@ void pathCondFuncReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* t
                 continue;
             }
 
-            auto newPathEdges = currentPathEdges;
+            auto newPathEvents = currentPathEvents;
             auto newPathVisited = pathVisited;
             auto newCallStack = callStack;
             newPathVisited.insert(succNode);
@@ -206,12 +222,28 @@ void pathCondFuncReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* t
             }
             else if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
                 if (intraEdge->getCondition()) {
-                    newPathEdges.push_back(intraEdge);
+                    std::string locString = intraEdge->getSrcNode()->getSourceLoc();
+                    std::string formattedLoc = locString;
+                    try {
+                        std::string file = extract_value(locString, "fl");
+                        std::string line = extract_value(locString, "ln");
+                        formattedLoc = file + ":" + line;
+                    } catch (const std::runtime_error&) {}
+
+                    newPathEvents.push_back(llvm::json::Object{
+                        {"type", "branch"},
+                        {"location", formattedLoc},
+                        {"condition_value", intraEdge->getSuccessorCondValue() == 1 ? "true" : "false"}
+                    });
                 }
             }
-            worklist.emplace_back(succNode, newPathEdges, newPathVisited, newCallStack);
+            worklist.emplace_back(succNode, std::move(newPathEvents), std::move(newPathVisited), std::move(newCallStack));
         }
     }
+
+    result["paths"] = std::move(pathsArray);
+    result["error"] = false;
+    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
 }
 
 /*!
@@ -224,8 +256,14 @@ void pathCondFuncReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* t
  * \param targetNode 路径搜索的目标ICFG节点。
  */
 // TODO: 设计输出格式
-void pathConditionReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* targetNode)
+void pathCondReader(ICFG* icfg, const std::string& startLocation, const std::string& targetLocation)
 {
+    const ICFGNode* startNode = findICFGNodeByLocation(icfg, startLocation);
+    const ICFGNode* targetNode = findICFGNodeByLocation(icfg, targetLocation);
+    if (!startNode || !targetNode) {
+        SVF::SVFUtil::outs() << "Invalid start or target location.\n";
+        return;
+    }
     // 调用栈
     // 假设函数 A 和 B 都调用了函数 F。从 A 进入 F，然后从 F 返回到 B。但是这在实际程序中是不可能发生的。
     using CallStack = std::vector<const RetICFGNode*>;
@@ -296,20 +334,6 @@ void pathConditionReader(ICFG* icfg, const ICFGNode* startNode, const ICFGNode* 
     }
 }
 
-/*
-实现读取string& startlocation和string& targetlocation
-返回路径上的条件分支边及相关函数调用边
-*/
-// TODO: 设计输出格式
-void pathCondFuncExtractor(ICFG* icfg, const std::string& startLocation, const std::string& targetLocation) {
-    const ICFGNode* startNode = findICFGNodeByLocation(icfg, startLocation);
-    const ICFGNode* targetNode = findICFGNodeByLocation(icfg, targetLocation);
-    if (!startNode || !targetNode) {
-        SVF::SVFUtil::outs() << "Invalid start or target location.\n";
-        return;
-    }
-    pathCondFuncReader(icfg, startNode, targetNode);
-}
 
 /*!
  * \brief 根据源代码位置查找并打印其所在函数的函数体 (LLVM IR)。
@@ -500,8 +524,8 @@ int main(int argc, char ** argv) {
     else if (!Options::FindFuncBody().empty()) {
         printFunctionBodyByLocation(icfg, Options::FindFuncBody());
     }
-    else if (!Options::PathCondStart().empty() && !Options::PathCondEnd().empty()) {
-        pathCondFuncExtractor(icfg, Options::PathCondStart(), Options::PathCondEnd());
+    else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
+        pathCondFuncReader(icfg, Options::PathCondFuncStart(), Options::PathCondFuncEnd());
     }
     else {
         SVF::SVFUtil::outs() << "No analysis option specified. Use --help to see available options.\n";
@@ -511,7 +535,7 @@ int main(int argc, char ** argv) {
     return 0;
 }
 
-// DeBug main
+// // DeBug main
 // int main(int argc, char** argv) {
 //     // 解析命令行参数
 //     std::vector<std::string> moduleNameVec =
@@ -523,16 +547,16 @@ int main(int argc, char ** argv) {
 //     ICFG* icfg = pag->getICFG();
 
 //     // 示例1：查找两条路径之间的条件
-//     // pathCondFuncExtractor(icfg, "restart.c:76", "restart.c:121");
+//     pathCondFuncReader(icfg, "restart.c:76", "restart.c:121");
 
 //     // 示例2：根据代码行号查找并打印其所在函数的函数体
-//     printFunctionBodyByLocation(icfg, "stats_prefix.c:118");
+//     // printFunctionBodyByLocation(icfg, "stats_prefix.c:118");
 
 //     // 示例3：根据代码行号查找函数调用，并打印被调用函数的函数体
-//     printCalleeFunctionBodyByLocation(icfg, "stats_prefix.c:118");
+//     // printCalleeFunctionBodyByLocation(icfg, "stats_prefix.c:118");
 
 //     // 示例4：根据函数名查找其所有被调用的位置
-//     printFunctionCallSites(icfg, "stats_prefix_record_get");
+//     // printFunctionCallSites(icfg, "stats_prefix_record_get");
 
 //     return 0;
 // }

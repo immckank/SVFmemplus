@@ -276,6 +276,8 @@ public:
     static const Option<std::string> FindFuncBody;
     static const Option<std::string> PathCondStart;
     static const Option<std::string> PathCondEnd;
+    static const Option<std::string> PathCondFuncStart;
+    static const Option<std::string> PathCondFuncEnd;
 };
 }  // namespace SVF
 

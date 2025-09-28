@@ -865,4 +865,17 @@ const Option<std::string> Options::PathCondEnd(
     ""
 );
 
+const Option<std::string> Options::PathCondFuncStart(
+    "path-cond-func-start",
+    "Start location for path condition and function call analysis",
+    ""
+);
+
+const Option<std::string> Options::PathCondFuncEnd(
+    "path-cond-func-end",
+    "End location for path condition and function call analysis",
+    ""
+);
+
+
 } // namespace SVF.
