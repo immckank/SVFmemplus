@@ -45,7 +45,8 @@ const std::map<GenericBug::BugType, std::string> GenericBug::BugType2Str =
     {GenericBug::FILEPARTIALCLOSE, "File Partial Close"},
     {GenericBug::DOUBLEFREE, "Double Free"},
     {GenericBug::FULLNULLPTRDEREFERENCE, "Full Null Ptr Dereference"},
-    {GenericBug::PARTIALNULLPTRDEREFERENCE, "Partial Null Ptr Dereference"}
+    {GenericBug::PARTIALNULLPTRDEREFERENCE, "Partial Null Ptr Dereference"},
+    {GenericBug::USEAFTERFREE, "Use After Free"}
 };
 
 const std::string GenericBug::getLoc() const
@@ -218,7 +219,7 @@ cJSON * UseAfterFreeBug::getBugDescription() const
 
         cJSON_AddItemToArray(pathInfo, newBranch);
     }
-    cJSON_AddItemToObject(bugDescription, "UseAfterFreePath", pathInfo);
+    cJSON_AddItemToObject(bugDescription, "DoubleFreePath", pathInfo);
 
     return bugDescription;
 }
@@ -232,7 +233,9 @@ void UseAfterFreeBug::printBugToTerminal() const
     auto lastBranchEventIt = bugEventStack.end() - 1;
     for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
     {
-        SVFUtil::errs() << "\t\t  --> (" << (*eventIt).getEventLoc() << "|" << (*eventIt).getEventDescription() << ") \n";
+        u32_t eventType = (*eventIt).getEventType();
+        if(eventType == SVFBugEvent::Free) SVFUtil::errs() << "\n\t\t  Free at : ("<< (*eventIt).getEventLoc() << ")  \n";
+        else if(eventType == SVFBugEvent::Use) SVFUtil::errs() << "\t\t  Use at : ("<< (*eventIt).getEventLoc() << ")  \n";
     }
     SVFUtil::errs() << "\n";
 }
@@ -354,6 +357,14 @@ const std::string SVFBugEvent::getEventDescription() const
         break;
     }
     case SVFBugEvent::SourceInst:
+    {
+        return "None";
+    }
+    case SVFBugEvent::Free:
+    {
+        return "None";
+    }
+    case SVFBugEvent::Use:
     {
         return "None";
     }

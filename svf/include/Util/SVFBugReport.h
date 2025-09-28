@@ -57,7 +57,9 @@ public:
         Caller = 0x2,
         CallSite = 0x3,
         Loop = 0x4,
-        SourceInst = 0x5
+        SourceInst = 0x5,
+        Free = 0x6,
+        Use = 0x7
     };
 
 protected:
@@ -366,7 +368,7 @@ public:
         }
         case GenericBug::USEAFTERFREE:
         {
-            newBug = new FilePartialCloseBug(eventStack);
+            newBug = new UseAfterFreeBug(eventStack);
             bugSet.insert(newBug);
             break;
         }

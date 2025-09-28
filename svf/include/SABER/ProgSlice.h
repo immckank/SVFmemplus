@@ -46,6 +46,9 @@
 namespace SVF
 {
 
+#pragma once
+class UseAfterFreeChecker;
+
 class ProgSlice
 {
 
@@ -210,6 +213,8 @@ public:
     //@}
 
 protected:
+    friend class UseAfterFreeChecker;
+
     inline const SVFG* getSVFG() const
     {
         return svfg;

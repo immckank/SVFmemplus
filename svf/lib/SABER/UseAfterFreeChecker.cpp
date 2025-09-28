@@ -4,17 +4,18 @@
 #include "SVFIR/SVFIR.h"
 // #include "MSSA/SVFG.h"
 #include "Util/SVFUtil.h"
+#include "SABER/ProgSlice.h"
 
 using namespace SVF;
 using namespace SVFUtil;
 
 /*!
- * Initialize sources
+ * Initialize sinks
  */
-void UseAfterFreeChecker::initSrcs()
+void UseAfterFreeChecker::initSnks()
 {
-
     SVFIR* pag = getPAG();
+
     for(SVFIR::CSToArgsListMap::iterator it = pag->getCallSiteArgsMap().begin(),
             eit = pag->getCallSiteArgsMap().end(); it != eit; ++it)
     {
@@ -33,21 +34,11 @@ void UseAfterFreeChecker::initSrcs()
                 const SVFGNode* src = getSVFG()->getActualParmVFGNode(pagNode, it->first);
                 if(src == nullptr)
                     continue;
-                addToSources(src);
-                addSrcToCSID(src, it->first);
-
+                addToSinks(src);
+                addToFreeNodes(src);
             }
         }
     }
-
-}
-
-/*!
- * Initialize sinks
- */
-void UseAfterFreeChecker::initSnks()
-{
-    SVFIR* pag = getPAG();
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
@@ -57,31 +48,87 @@ void UseAfterFreeChecker::initSnks()
 
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Load))
         {   
-            addToSinks(svfg->getStmtVFGNode(ld));
+            if(getSVFG()->hasStmtVFGNode(ld)){
+                addToSinks(getSVFG()->getStmtVFGNode(ld));
+                addToUseNodes(getSVFG()->getStmtVFGNode(ld));
+            }
         }
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Store))
         {
-            addToSinks(getSVFG()->getStmtVFGNode(ld));
+            if(getSVFG()->hasStmtVFGNode(ld)){
+                addToSinks(getSVFG()->getStmtVFGNode(ld));
+                addToUseNodes(getSVFG()->getStmtVFGNode(ld));
+            }
         }
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Call))
         {
-            addToSinks(getSVFG()->getStmtVFGNode(ld));
+            if(getSVFG()->hasStmtVFGNode(ld)){
+                addToSinks(getSVFG()->getStmtVFGNode(ld));
+                addToUseNodes(getSVFG()->getStmtVFGNode(ld));
+            }
         }
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Gep))
         {
-            addToSinks(getSVFG()->getStmtVFGNode(ld));
+            if(getSVFG()->hasStmtVFGNode(ld)){
+                addToSinks(getSVFG()->getStmtVFGNode(ld));
+                addToUseNodes(getSVFG()->getStmtVFGNode(ld));
+            }
         }
             
     }
 }
 
+bool icfgReachable(const ICFGNode* start, const ICFGNode* target) {
+    std::unordered_set<const ICFGNode*> visited;
+    std::stack<const ICFGNode*> worklist;
+    worklist.push(start);
+
+    while (!worklist.empty()) {
+        const ICFGNode* cur = worklist.top();
+        worklist.pop();
+
+        if (cur == target)
+            return true;
+
+        if (!visited.insert(cur).second)
+            continue; // already visited
+
+        for (auto edge : cur->getOutEdges()) {
+            ICFGNode* succ = edge->getDstNode();
+            worklist.push(succ);
+        }
+    }
+    return false;
+}
+
+bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice){
+    bool flag = true;
+    for(SVFGNodeSetIter fit = freeNodesBegin(), efit = freeNodesEnd(); fit!=efit; ++fit)
+    {
+        for(SVFGNodeSetIter uit = useNodesBegin(), euit = useNodesEnd(); uit!=euit; ++uit)
+        {
+            ProgSlice::Condition guard = slice->condAnd(slice->getVFCond(*fit),slice->getVFCond(*uit));
+            if(!slice->isEquivalentBranchCond(guard, slice->getFalseCond()))
+            {
+                const ICFGNode* ficfg = (*fit)->getICFGNode();
+                const ICFGNode* uicfg = (*uit)->getICFGNode();
+                if(!icfgReachable(ficfg, uicfg)) continue;
+
+                eventStack.push_back(SVFBugEvent(SVFBugEvent::Free, (*fit)->getICFGNode()));
+                eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, (*uit)->getICFGNode()));
+                flag = false;
+            }
+        }
+    }
+
+    return flag;
+}
+
 void UseAfterFreeChecker::reportBug(ProgSlice* slice)
 {
 
-    if(isSomePathReachable())
+    if(!isSatisfiableForFreeAndUsePairs(slice))
     {
-        GenericBug::EventStack eventStack;
-        slice->evalFinalCond2Event(eventStack);
         eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource())));
         report.addSaberBug(GenericBug::USEAFTERFREE, eventStack);
     }
