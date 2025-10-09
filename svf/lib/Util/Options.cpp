@@ -853,6 +853,12 @@ const Option<std::string> Options::FindFuncBody(
     ""
 );
 
+const Option<std::string> Options::FindBodyByName(
+    "find-body-by-name",
+    "Find and print function body by name",
+    ""
+);
+
 const Option<std::string> Options::PathCondStart(
     "path-cond-start",
     "Start location for path condition analysis",

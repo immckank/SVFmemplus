@@ -129,7 +129,7 @@ std::string extract_value(const std::string& source, const std::string& key) {
 }
 
 /*!
- * \brief 遍历从 startNode 到 targetNode 的所有路径，并打印路径上的所有条件分支边。
+ * \brief 遍历从 startNode 到 targetNode 的所有路径，并输出路径上的所有条件分支边及调用未返回的函数。
  *
  * 用栈模拟深搜过程 寻找所有路径 报出路径上的条件分支边和所有调用且未返回的函数调用边
  *
@@ -439,6 +439,56 @@ void printCalleeFunctionBodyByLocation(ICFG* icfg, const std::string& location)
 }
 
 /*!
+ * \brief 根据函数名查找并打印函数的函数体。
+ *
+ * 1. 从 ICFG 获取 SVFIR (PAG)。
+ * 2. 使用 SVFIR::getFun() 方法通过函数名查找对应的 FunObjVar (SVF的函数表示)。
+ * 3. 如果未找到函数，则报告错误。
+ * 4. 获取 LLVMModuleSet 单例，用于在 SVF IR 和 LLVM IR 之间进行转换。
+ * 5. 使用 LLVMModuleSet::getLLVMValue() 将 FunObjVar 转换为 llvm::Value。
+ * 6. 将 llvm::Value 动态转换为 llvm::Function。
+ * 7. 调用辅助函数 getFunctionSourceInfo() 从 llvm::Function 中提取源文件信息（文件名、起始和结束行号）。
+ * 8. 将获取到的信息格式化为 JSON 对象并打印到标准输出。
+ *
+ * \param icfg 指向ICFG的指针。
+ * \param functionName 要查找的函数名。
+ */
+void printFunctionBodyByName(ICFG* icfg, const std::string& functionName) {
+    llvm::json::Object result;
+
+    SVFIR* pag = SVFIR::getPAG();
+    const FunObjVar* svfFun = pag->getFunObjVar(functionName);
+
+    if (!svfFun) {
+        result["error"] = true;
+        result["message"] = "Function '" + functionName + "' not found.";
+        llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+        return;
+    }
+
+    LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
+    const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(svfFun);
+    const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(llvmVal);
+
+    if (!llvmFun) {
+        result["error"] = true;
+        result["message"] = "Could not retrieve LLVM function for '" + functionName + "'.";
+        llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+        return;
+    }
+
+    FunctionSourceInfo sourceInfo = getFunctionSourceInfo(llvmFun);
+
+    result["function_name"] = svfFun->getName();
+    result["filename"] = sourceInfo.filename;
+    result["start_line"] = sourceInfo.startLine;
+    result["end_line"] = sourceInfo.endLine;
+    result["error"] = false;
+
+    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+}
+
+/*!
  * \brief 根据函数名查找并打印其所有被调用的位置。
  *
  * 1. 遍历ICFG中的所有节点。
@@ -523,6 +573,9 @@ int main(int argc, char ** argv) {
     }
     else if (!Options::FindFuncBody().empty()) {
         printFunctionBodyByLocation(icfg, Options::FindFuncBody());
+    }
+    else if (!Options::FindBodyByName().empty()) {
+        printFunctionBodyByName(icfg, Options::FindBodyByName());
     }
     else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
         pathCondFuncReader(icfg, Options::PathCondFuncStart(), Options::PathCondFuncEnd());
