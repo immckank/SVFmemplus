@@ -555,14 +555,10 @@ int main(int argc, char ** argv) {
     std::vector<std::string> moduleNameVec = 
         OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
 
-    // SVF::SVFUtil::outs() << pasMsg("GraphReader Tool Started\n");
-    // SVF::SVFUtil::outs() << "================================================================\n";
-
     LLVMModuleSet::buildSVFModule(moduleNameVec);
 
     SVFIRBuilder builder;
     SVFIR* pag = builder.build();
-    // SVF::SVFUtil::outs() << "SVFIR (PAG) built.\n";
 
     ICFG* icfg = pag->getICFG();
     if (!Options::FindCallSites().empty()) {
