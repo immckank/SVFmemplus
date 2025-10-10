@@ -229,13 +229,20 @@ void UseAfterFreeBug::printBugToTerminal() const
     SVFUtil::errs() << SVFUtil::bugMsg2("\t Use After Free :") <<  " memory allocation at : ("
                     << GenericBug::getLoc() << ")\n";
 
-    SVFUtil::errs() << "\t\t use after free path: \n";
     auto lastBranchEventIt = bugEventStack.end() - 1;
     for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
     {
         u32_t eventType = (*eventIt).getEventType();
-        if(eventType == SVFBugEvent::Free) SVFUtil::errs() << "\n\t\t  Free at : ("<< (*eventIt).getEventLoc() << ")  \n";
-        else if(eventType == SVFBugEvent::Use) SVFUtil::errs() << "\t\t  Use at : ("<< (*eventIt).getEventLoc() << ")  \n";
+
+        if(eventType == SVFBugEvent::Free){
+            SVFUtil::errs() << "\n\t  Free at : ("<< (*eventIt).getEventLoc() << ")  \n";
+            SVFUtil::errs() << "\t  free path: \n";
+        }
+        else if(eventType == SVFBugEvent::Use){
+            SVFUtil::errs() << "\t  Use at : ("<< (*eventIt).getEventLoc() << ")  \n";
+            SVFUtil::errs() << "\t  use path: \n";
+        }
+        else SVFUtil::errs() << "\t\t  --> (" << (*eventIt).getEventLoc() << "|" << (*eventIt).getEventDescription() << ") \n";
     }
     SVFUtil::errs() << "\n";
 }

@@ -115,7 +115,11 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice){
                 if(!icfgReachable(ficfg, uicfg)) continue;
 
                 eventStack.push_back(SVFBugEvent(SVFBugEvent::Free, (*fit)->getICFGNode()));
+                slice->setFinalCond(slice->getVFCond(*fit));
+                slice->evalFinalCond2Event(eventStack);
                 eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, (*uit)->getICFGNode()));
+                slice->setFinalCond(slice->getVFCond(*uit));
+                slice->evalFinalCond2Event(eventStack);
                 flag = false;
             }
         }
