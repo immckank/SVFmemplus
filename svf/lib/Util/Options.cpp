@@ -883,5 +883,11 @@ const Option<std::string> Options::PathCondFuncEnd(
     ""
 );
 
+const Option<std::string> Options::Analysis(
+    "analysis",
+    "Specify the type of analysis to run (e.g., svfg-check)",
+    ""
+);
+
 
 } // namespace SVF.

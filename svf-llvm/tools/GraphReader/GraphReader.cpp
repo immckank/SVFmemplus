@@ -7,6 +7,7 @@
 #include "Graphs/CallGraph.h"
 #include "Graphs/ICFG.h"
 #include "Util/CDGBuilder.h"
+// #include "GraphReader/SVFGChecker.h"
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/Support/JSON.h>
 
@@ -561,6 +562,12 @@ int main(int argc, char ** argv) {
     SVFIR* pag = builder.build();
 
     ICFG* icfg = pag->getICFG();
+    // if (Options::Analysis() == "svfg-check") {
+    //     SVF::SVFUtil::outs() << "Running SVFG Checker...\n";
+    //     SVFGChecker checker(pag);
+    //     checker.analyze();
+    //     SVF::SVFUtil::outs() << "SVFG Checker finished.\n";
+    // }
     if (!Options::FindCallSites().empty()) {
         printFunctionCallSites(icfg, Options::FindCallSites());
     }
@@ -576,6 +583,7 @@ int main(int argc, char ** argv) {
     else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
         pathCondFuncReader(icfg, Options::PathCondFuncStart(), Options::PathCondFuncEnd());
     }
+    // 如果没有指定任何分析，则执行默认操作
     else {
         SVF::SVFUtil::outs() << "No analysis option specified. Use --help to see available options.\n";
         SVF::SVFUtil::outs() << "Defaulting to an example: finding call sites for 'stats_prefix_record_get'\n";
