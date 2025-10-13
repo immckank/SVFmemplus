@@ -871,6 +871,18 @@ const Option<std::string> Options::PathCondEnd(
     ""
 );
 
+// const Option<int> Options::StartOp(
+//     "start-op",
+//     "Operand index for the start location (-1 for defined value)",
+//     -1
+// );
+
+// const Option<int> Options::EndOp(
+//     "end-op",
+//     "Operand index for the end location (-1 for defined value)",
+//     -1
+// );
+
 const Option<std::string> Options::PathCondFuncStart(
     "path-cond-func-start",
     "Start location for path condition and function call analysis",

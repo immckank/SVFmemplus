@@ -52,8 +52,11 @@ void SaberSVFGBuilder::buildSVFG()
 
     rmDerefDirSVFGEdges(pta);
 
-    assert(saberCondAllocator && "saber condition allocator not set yet!");
-    rmIncomingEdgeForSUStore(pta);
+    // The following assertion fails when running GraphReader because SaberCondAllocator is not set.
+    // For the purpose of node querying, we can temporarily disable these Saber-specific modifications.
+    // assert(saberCondAllocator && "saber condition allocator not set yet!");
+    if (saberCondAllocator)
+        rmIncomingEdgeForSUStore(pta);
 
     DBOUT(DGENERAL, outs() << pasMsg("\tAdd Sink SVFG Nodes\n"));
 

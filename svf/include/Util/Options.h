@@ -277,6 +277,8 @@ public:
     static const Option<std::string> FindBodyByName;
     static const Option<std::string> PathCondStart;
     static const Option<std::string> PathCondEnd;
+    // static const Option<int> StartOp;
+    // static const Option<int> EndOp;
     static const Option<std::string> PathCondFuncStart;
     static const Option<std::string> PathCondFuncEnd;
 };

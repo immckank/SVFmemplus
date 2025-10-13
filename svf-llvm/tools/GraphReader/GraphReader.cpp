@@ -1,13 +1,16 @@
 #include "SVF-LLVM/LLVMUtil.h"
 #include "SVF-LLVM/SVFIRBuilder.h"
+#include "SVFIR/SVFValue.h"
 #include "Util/Options.h"
 #include "WPA/Andersen.h"
 #include "MSSA/MemSSA.h"
+#include "SABER/SaberSVFGBuilder.h"
 #include "Graphs/SVFG.h"
 #include "Graphs/CallGraph.h"
 #include "Graphs/ICFG.h"
 #include "Util/CDGBuilder.h"
 #include <llvm/IR/DebugInfo.h>
+#include "PathCondQuery.h"
 #include <llvm/Support/JSON.h>
 
 using namespace llvm;
@@ -544,72 +547,251 @@ void printFunctionCallSites(ICFG* icfg, const std::string& functionName) {
     llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
 }
 
-
 /*!
- * GraphReader: A tool to read and analyze SVF graphs.
- * It uses SVF's command-line option system for analysis selection.
+ * \brief 根据源代码位置和可选的操作数索引查找SVFGNode。
+ *
+ * 这是一个更可靠的映射方法，解决了ICFGNode到SVFGNode一对多的问题。
+ * 1. 从 location 找到 ICFGNode，然后获取对应的 llvm::Instruction。
+ * 2. 收集指令的定义值（LHS）和所有操作数（RHS）。
+ * 3. 将它们都转换为 SVFGNode，并存储在一个列表中。
+ * 4. 用户可以通过 operandIndex 选择想要的节点：
+ *    - -1 (默认): 返回定义值 (LHS) 对应的节点。
+ *    - 0, 1, 2...: 返回第 n 个操作数 (RHS) 对应的节点。
+ *
+ * \param svfg 指向SVFG的指针。
+ * \param icfg 指向ICFG的指针。
+ * \param location 形如 "filename:line" 的字符串。
+ * \param operandIndex 操作数索引。
+ * \return 如果找到，则为匹配的SVFGNode指针，否则为nullptr。
  */
-int main(int argc, char ** argv) {
-    // 解析命令行参数，这会填充上面定义的 cl::opt 变量
-    // 并将非选项参数（即 bitcode 文件）收集到 moduleNameVec 中
-    std::vector<std::string> moduleNameVec = 
-        OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
+const SVFGNode* findSVFGNodeByLocation(SVFG* svfg, ICFG* icfg, const std::string& location, int operandIndex = -1) {
+    std::string opIndexStr = (operandIndex == -1) ? "LHS (defined value)" : std::to_string(operandIndex);
+    SVF::SVFUtil::outs() << "Debug: Searching for SVFGNode at location '" << location << "' with operand index " << opIndexStr << "...\n";
+    const ICFGNode* icfgNode = findICFGNodeByLocation(icfg, location);
+    if (!icfgNode) {
+        SVF::SVFUtil::errs() << "Error: Cannot find ICFGNode for location: " << location << "\n";
+        return nullptr;
+    }
 
-    // SVF::SVFUtil::outs() << pasMsg("GraphReader Tool Started\n");
-    // SVF::SVFUtil::outs() << "================================================================\n";
+    SVF::SVFUtil::outs() << "Debug: Found ICFGNode with ID: " << icfgNode->getId() << "\n";
 
-    LLVMModuleSet::buildSVFModule(moduleNameVec);
+    // Get the LLVM instruction directly from the ICFGNode.
+    // This is more robust than relying on SVFStmts, as some instructions (like 'free')
+    // have an ICFGNode but no SVFStmt. We handle different ICFGNode types.
+    const llvm::Instruction* inst = nullptr;
+    if (auto intraNode = SVFUtil::dyn_cast<IntraICFGNode>(icfgNode)) {
+        const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(intraNode);
+        inst = SVFUtil::dyn_cast<llvm::Instruction>(llvmVal);
+    } else if (auto callNode = SVFUtil::dyn_cast<CallICFGNode>(icfgNode)) {
+        const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
+        inst = SVFUtil::dyn_cast<llvm::Instruction>(llvmVal);
+    } else if (auto retNode = SVFUtil::dyn_cast<RetICFGNode>(icfgNode)) {
+        const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(retNode);
+        inst = SVFUtil::dyn_cast<llvm::Instruction>(llvmVal);
+    }
+    SVF::SVFUtil::errs() << "retrieveD LLVM instruction from ICFGNode at " << location << ".\n";
+    if (!inst) {
+        SVF::SVFUtil::errs() << "Error: Could not retrieve LLVM instruction from ICFGNode at " << location << ".\n";
+        if (icfgNode->getSVFStmts().empty()) {
+             SVF::SVFUtil::outs() << "Debug: This ICFGNode also has no associated SVF statements.\n";
+        }
+        return nullptr;
+    }
 
-    SVFIRBuilder builder;
-    SVFIR* pag = builder.build();
-    // SVF::SVFUtil::outs() << "SVFIR (PAG) built.\n";
+    LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
 
-    ICFG* icfg = pag->getICFG();
-    if (!Options::FindCallSites().empty()) {
-        printFunctionCallSites(icfg, Options::FindCallSites());
+    // Case 1: User wants the LHS (defined value) of the instruction
+    if (operandIndex == -1) {
+        // Instructions like 'store' have no defined value, but their type is not void.
+        // We only consider instructions that actually define a value that can have a pointer.
+        if (!inst->getType()->isVoidTy() && llvmModuleSet->hasValueNode(inst)) {
+            NodeID varId = llvmModuleSet->getValueNode(inst);
+            SVF::SVFUtil::outs() << "Debug: Found LHS SVF Node ID: " << varId << "\n";
+            return svfg->getSVFGNode(varId);
+        } else {
+            SVF::SVFUtil::errs() << "Warning: Instruction at " << location << " does not define a value (e.g., store, free) or has no pointer type. Try specifying an operand index like --start-op 0.\n";
+            return nullptr;
+        }
     }
-    else if (!Options::FindCalleeBody().empty()) {
-        printCalleeFunctionBodyByLocation(icfg, Options::FindCalleeBody());
+
+    // Case 2: User wants an RHS operand
+    if (operandIndex >= 0 && static_cast<unsigned>(operandIndex) < inst->getNumOperands()) {
+        const llvm::Value* operand = inst->getOperand(operandIndex);
+        if (llvmModuleSet->hasValueNode(operand)) {
+            NodeID varId = llvmModuleSet->getValueNode(operand);
+            SVF::SVFUtil::outs() << "Debug: Found RHS operand " << operandIndex << " SVF Node ID: " << varId << "\n";
+            return svfg->getSVFGNode(varId);
+        } else {
+            SVF::SVFUtil::errs() << "Error: Operand " << operandIndex << " at " << location << " does not have a corresponding SVF value node.\n";
+            return nullptr;
+        }
     }
-    else if (!Options::FindFuncBody().empty()) {
-        printFunctionBodyByLocation(icfg, Options::FindFuncBody());
-    }
-    else if (!Options::FindBodyByName().empty()) {
-        printFunctionBodyByName(icfg, Options::FindBodyByName());
-    }
-    else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
-        pathCondFuncReader(icfg, Options::PathCondFuncStart(), Options::PathCondFuncEnd());
-    }
-    else {
-        SVF::SVFUtil::outs() << "No analysis option specified. Use --help to see available options.\n";
-        SVF::SVFUtil::outs() << "Defaulting to an example: finding call sites for 'stats_prefix_record_get'\n";
-        printFunctionCallSites(icfg, "stats_prefix_record_get");
-    }
-    return 0;
+
+    // Handle invalid index
+    SVF::SVFUtil::errs() << "Error: Invalid operand index " << opIndexStr << " for instruction at " << location
+                         << ". It has " << inst->getNumOperands() << " operands (0 to " << inst->getNumOperands() - 1 << ").\n";
+    return nullptr;
 }
 
-// // DeBug main
-// int main(int argc, char** argv) {
-//     // 解析命令行参数
-//     std::vector<std::string> moduleNameVec =
-//         OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
+
+// /*!
+//  * \brief 在SVFG上分析从startLocation到targetLocation的路径控制条件。
+//  *
+//  * 该函数利用了Saber的源-汇分析框架(SrcSnkDDA)来执行此操作。
+//  * 1. 查找与源代码位置对应的ICFGNode，然后找到它们在SVFG中的对应节点。
+//  * 2. 使用自定义的PathCondQuery分析器（继承自SrcSnkDDA）。
+//  * 3. 将startNode设为源(source)，targetNode设为汇(sink)。
+//  * 4. 执行前向值流切片，然后是后向相关性切片。
+//  * 5. 求解路径条件并以JSON格式输出。
+//  *
+//  * \param svfg 指向SVFG的指针。
+//  * \param icfg 指向ICFG的指针。
+//  * \param startLocation 路径分析的起始位置。
+//  * \param targetLocation 路径分析的目标位置。
+//  */
+// void svfgPathCondReader(SVFG* svfg, ICFG* icfg, const std::string& startLocation, const std::string& targetLocation) {
+//     llvm::json::Object result;
     
+//     // 使用新的、更可靠的查找函数
+//     // Options::StartOp() 和 Options::EndOp() 是新添加的命令行选项
+//     const SVFGNode* startSVFGNode = findSVFGNodeByLocation(svfg, icfg, startLocation, Options::StartOp());
+//     const SVFGNode* targetSVFGNode = findSVFGNodeByLocation(svfg, icfg, targetLocation, Options::EndOp());
+
+//     if (!startSVFGNode || !targetSVFGNode) {
+//         result["error"] = true;
+//         result["message"] = "Invalid start or target SVFGNode. Please check locations and operand indices.";
+//         llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+//         return;
+//     }
+
+//     SVF::SVFUtil::outs() << "Starting analysis from SVFGNode " << startSVFGNode->getId() << " to " << targetSVFGNode->getId() << "\n";
+
+//     PathCondQuery query(startSVFGNode, targetSVFGNode);
+//     query.analyzeQuery();
+//     llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(query.getResult())) << "\n";
+// }
+
+// /*!
+//  * GraphReader: A tool to read and analyze SVF graphs.
+//  * It uses SVF's command-line option system for analysis selection.
+//  */
+// int main(int argc, char ** argv) {
+//     // 解析命令行参数，这会填充上面定义的 cl::opt 变量
+//     // 并将非选项参数（即 bitcode 文件）收集到 moduleNameVec 中
+//     std::vector<std::string> moduleNameVec = 
+//         OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
+
+//     // SVF::SVFUtil::outs() << pasMsg("GraphReader Tool Started\n");
+//     // SVF::SVFUtil::outs() << "================================================================\n";
+
 //     LLVMModuleSet::buildSVFModule(moduleNameVec);
+
 //     SVFIRBuilder builder;
 //     SVFIR* pag = builder.build();
+//     // SVF::SVFUtil::outs() << "SVFIR (PAG) built.\n";
+
+//     // 构建SVFG以供新函数使用
+//     AndersenWaveDiff* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
+//     SaberSVFGBuilder memSSA;
+//     SVFG* svfg = memSSA.buildFullSVFG(ander);
+//     // 分配控制流图的分支条件
+//     SaberCondAllocator condAllocator;
+//     condAllocator.allocate();
+
+
 //     ICFG* icfg = pag->getICFG();
-
-//     // 示例1：查找两条路径之间的条件
-//     pathCondFuncReader(icfg, "restart.c:76", "restart.c:121");
-
-//     // 示例2：根据代码行号查找并打印其所在函数的函数体
-//     // printFunctionBodyByLocation(icfg, "stats_prefix.c:118");
-
-//     // 示例3：根据代码行号查找函数调用，并打印被调用函数的函数体
-//     // printCalleeFunctionBodyByLocation(icfg, "stats_prefix.c:118");
-
-//     // 示例4：根据函数名查找其所有被调用的位置
-//     // printFunctionCallSites(icfg, "stats_prefix_record_get");
-
+//     if (!Options::FindCallSites().empty()) {
+//         printFunctionCallSites(icfg, Options::FindCallSites());
+//     }
+//     else if (!Options::FindCalleeBody().empty()) {
+//         printCalleeFunctionBodyByLocation(icfg, Options::FindCalleeBody());
+//     }
+//     else if (!Options::FindFuncBody().empty()) {
+//         printFunctionBodyByLocation(icfg, Options::FindFuncBody());
+//     }
+//     else if (!Options::FindBodyByName().empty()) {
+//         printFunctionBodyByName(icfg, Options::FindBodyByName());
+//     }
+//     else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
+//         pathCondFuncReader(icfg, Options::PathCondFuncStart(), Options::PathCondFuncEnd());
+//     }
+//     // 将 --path-cond-start/end 与新的 --start-op/end-op 选项关联起来
+//     else if (!Options::PathCondStart().empty() && !Options::PathCondEnd().empty()) {
+//         svfgPathCondReader(svfg, icfg, Options::PathCondStart(), Options::PathCondEnd());
+//     }
+//     else {
+//         SVF::SVFUtil::outs() << "No analysis option specified. Use --help to see available options.\n";
+//         SVF::SVFUtil::outs() << "Defaulting to an example: finding call sites for 'stats_prefix_record_get'\n";
+//         printFunctionCallSites(icfg, "stats_prefix_record_get");
+//     }
 //     return 0;
 // }
+
+// // DeBug main
+int main(int argc, char** argv) {
+    // 解析命令行参数
+    std::vector<std::string> moduleNameVec =
+        OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
+
+    SVF::SVFUtil::outs() << "Debug: Building SVF Module...\n";
+    LLVMModuleSet::buildSVFModule(moduleNameVec);
+
+    SVF::SVFUtil::outs() << "Debug: Building SVFIR (PAG)...\n";
+    SVFIRBuilder builder;
+    SVFIR* pag = builder.build();
+    if (!pag) {
+        SVF::SVFUtil::errs() << "Error: Failed to build SVFIR (PAG).\n";
+        return 1;
+    }
+    SVF::SVFUtil::outs() << "Debug: SVFIR (PAG) built successfully.\n";
+
+    ICFG* icfg = pag->getICFG();
+
+    SVF::SVFUtil::outs() << "Debug: Building SVFG...\n";
+    AndersenWaveDiff* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
+    SaberSVFGBuilder memSSA;
+    SVFG* svfg = memSSA.buildFullSVFG(ander);
+    if (!svfg) {
+        SVF::SVFUtil::errs() << "Error: Failed to build SVFG.\n";
+        return 1;
+    }
+    SVF::SVFUtil::outs() << "Debug: SVFG built successfully.\n";
+
+    const SVFGNode* node1 = findSVFGNodeByLocation(svfg, icfg, "items.c:1625", 0);
+    const SVFGNode* node2 = findSVFGNodeByLocation(svfg, icfg, "slabs.c:162", -1);
+    const SVFGNode* node3 = findSVFGNodeByLocation(svfg, icfg, "items.c:1630", 0);
+    
+    if (node1) {
+        SVF::SVFUtil::outs() << "Successfully found SVFGNode. ID: " << node1->getId() << "\n";
+    } else {
+        SVF::SVFUtil::errs() << "Error: findSVFGNodeByLocation returned a null pointer. Cannot get node ID.\n";
+    }
+
+        
+    if (node2) {
+        SVF::SVFUtil::outs() << "Successfully found SVFGNode. ID: " << node2->getId() << "\n";
+    } else {
+        SVF::SVFUtil::errs() << "Error: findSVFGNodeByLocation returned a null pointer. Cannot get node ID.\n";
+    }
+
+    if (node3) {
+        SVF::SVFUtil::outs() << "Successfully found SVFGNode. ID: " << node3->getId() << "\n";
+    } else {
+        SVF::SVFUtil::errs() << "Error: findSVFGNodeByLocation returned a null pointer. Cannot get node ID.\n";
+    }
+
+
+    // 示例1：查找两条路径之间的条件
+    //pathCondFuncReader(icfg, "restart.c:76", "restart.c:121");
+
+    // 示例2：根据代码行号查找并打印其所在函数的函数体
+    // printFunctionBodyByLocation(icfg, "stats_prefix.c:118");
+
+    // 示例3：根据代码行号查找函数调用，并打印被调用函数的函数体
+    // printCalleeFunctionBodyByLocation(icfg, "stats_prefix.c:118");
+
+    // 示例4：根据函数名查找其所有被调用的位置
+    // printFunctionCallSites(icfg, "stats_prefix_record_get");
+
+    return 0;
+}
