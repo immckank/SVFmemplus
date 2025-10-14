@@ -859,6 +859,12 @@ const Option<std::string> Options::FindBodyByName(
     ""
 );
 
+const Option<std::string> Options::FindVarByLocation(
+    "find-var-by-location",
+    "Find and print SVFVar by source location",
+    ""
+);
+
 const Option<std::string> Options::PathCondStart(
     "path-cond-start",
     "Start location for path condition analysis",
