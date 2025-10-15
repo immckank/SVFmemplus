@@ -1,16 +1,23 @@
 #include "GraphReaderUtil.h"
 #include "SVF-LLVM/LLVMUtil.h"
+#include <llvm/Support/FormatVariadic.h>
 #include <llvm/IR/DebugInfo.h>
 
 namespace SVF {
 namespace GraphReaderUtil {
 
 llvm::json::Object parseSourceLocation(const std::string& sourceLocString) {
-    if (sourceLocString.empty() || sourceLocString.front() != '{') {
+    if (sourceLocString.empty()) {
+        return llvm::json::Object();
+    }    
+    size_t start = sourceLocString.find('{');
+    size_t end = sourceLocString.rfind('}');
+    if (start == std::string::npos || end == std::string::npos) {
         return llvm::json::Object();
     }
 
-    llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(sourceLocString);
+    std::string parsedLocString = sourceLocString.substr(start, end - start + 1);
+    llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(parsedLocString);
     if (!parsed) {
         // In case of parsing error, return an empty object.
         // We can ignore the error for this utility's purpose.
@@ -85,6 +92,30 @@ FunctionSourceInfo getFunctionSourceInfo(const llvm::Function* llvmFun) {
     // The end line from DISubprogram (if available and different) might be more accurate
     // as it can account for the closing brace, but iterating instructions is a robust fallback.
     return {filename, startLine, endLine};
+}
+
+void sendJsonError(const std::string& message) {
+    llvm::json::Object result;
+    result["error"] = true;
+    result["message"] = message;
+    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+}
+
+llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun) {
+    llvm::json::Object funInfoJson;
+
+    if (!llvmFun) {
+        funInfoJson["function_name"] = "unknown";
+        return funInfoJson;
+    }
+
+    FunctionSourceInfo sourceInfo = getFunctionSourceInfo(llvmFun);
+    funInfoJson["function_name"] = llvmFun->getName().str();
+    funInfoJson["filename"] = sourceInfo.filename;
+    funInfoJson["start_line"] = sourceInfo.startLine;
+    funInfoJson["end_line"] = sourceInfo.endLine;
+
+    return funInfoJson;
 }
 
 } // namespace GraphReaderUtil

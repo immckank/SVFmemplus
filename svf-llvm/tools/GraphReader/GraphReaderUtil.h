@@ -37,6 +37,20 @@ namespace GraphReaderUtil {
      */
     llvm::json::Object parseSourceLocation(const std::string& sourceLocString);
 
+    /*!
+     * \brief Creates and prints a standardized JSON error response.
+     * \param message The error message to include in the JSON output.
+     */
+    void sendJsonError(const std::string& message);
+
+    /*!
+     * \brief Creates a JSON object containing a function's source information.
+     * \param llvmFun Pointer to the LLVM function.
+     * \return A llvm::json::Object with function_name, filename, start_line, and end_line.
+     */
+    llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun);
+
+
 } // namespace GraphReaderUtil
 } // namespace SVF
 
