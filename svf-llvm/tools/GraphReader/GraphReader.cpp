@@ -10,127 +10,13 @@
 #include "Graphs/ICFG.h"
 #include "Util/CDGBuilder.h"
 // #include "GraphReader/SVFGChecker.h"
+#include "GraphReaderUtil.h"
 #include <llvm/IR/DebugInfo.h>
-#include "PathCondQuery.h"
 #include <llvm/Support/JSON.h>
 
 using namespace llvm;
 using namespace SVF;
 using namespace SVFUtil;
-
-/*!
- * \brief 根据源代码位置字符串查找ICFGNode。
- *
- * 遍历ICFG中的所有节点，匹配文件名和行号。
- *
- * \param icfg 指向ICFG的指针。
- * \param location 形如 "filename:line" 的字符串。
- * \return 如果找到，则为匹配的ICFGNode指针，否则为nullptr。
- */
-// Tool Function
-const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& location) {
-    size_t colon_pos = location.find(':');
-    if (colon_pos == std::string::npos) {
-        //SVF::SVFUtil::outs() << "Invalid location format. Expected 'filename:line'.\n";
-        return nullptr;
-    }
-    std::string target_filename = location.substr(0, colon_pos);
-    std::string target_line_str = location.substr(colon_pos + 1);
-    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
-        const ICFGNode* node = it->second;
-        if (node) {
-            std::string sourceLoc = node->getSourceLoc();
-            std::string file_pattern = "\"" + target_filename + "\"";
-            std::string line_pattern = "\"ln\": " + target_line_str;
-
-            if (sourceLoc.find(file_pattern) != std::string::npos &&
-                sourceLoc.find(line_pattern) != std::string::npos) {
-                // OUT: 打印结果
-                //SVF::SVFUtil::outs() << "Found matching ICFGNode (ID: " << node->getId() << ") at location: " << sourceLoc << "\n";
-                return node;
-            }
-        }
-    }
-    //SVF::SVFUtil::outs() << "Could not find ICFGNode for location: " << location << "\n";
-    return nullptr;
-}
-
-/*!
- * \brief 获取一个 LLVM 函数的起始和结束行号。
- *
- * 1. 通过函数的 DISubprogram 获取起始行号。
- * 2. 遍历函数内的所有指令，查找最大的行号作为结束行号。
- *
- * \param llvmFun 指向 llvm::Function 的指针。
- * \return 一个包含起始和结束行号的 std::pair<unsigned, unsigned>。如果找不到调试信息，则返回 {0, 0}。
- */
-// Tool Function
-struct FunctionSourceInfo {
-    std::string filename;
-    unsigned startLine;
-    unsigned endLine;
-};
-
-FunctionSourceInfo getFunctionSourceInfo(const llvm::Function* llvmFun) {
-    if (!llvmFun) {
-        return {"", 0, 0};
-    }
-
-    // 获取函数的调试信息子程序
-    llvm::DISubprogram* disub = llvmFun->getSubprogram();
-    if (!disub) {
-        // 如果没有调试信息，无法确定行号
-        return {"", 0, 0};
-    }
-
-    std::string filename = disub->getFilename().str();
-    unsigned startLine = disub->getLine();
-    unsigned endLine = startLine;
-
-    // 遍历函数中的所有指令以找到最大行号
-    for (const auto& bb : *llvmFun) {
-        for (const auto& inst : bb) {
-            const llvm::DebugLoc& loc = inst.getDebugLoc();
-            if (loc && loc.getLine() > endLine) {
-                endLine = loc.getLine();
-            }
-        }
-    }
-    return {filename, startLine, endLine};
-}
-
-// 一个辅助函数，用于从主字符串中提取特定键的值
-// Tool Function
-std::string extract_value(const std::string& source, const std::string& key) {
-    // 查找键，例如查找 "\"fl\": \""
-    std::string search_key = "\"" + key + "\": ";
-    size_t start_pos = source.find(search_key);
-
-    if (start_pos == std::string::npos) {
-        throw std::runtime_error("Key '" + key + "' not found.");
-    }
-
-    // 值的起始位置在 key 之后
-    start_pos += search_key.length();
-
-    // 如果值是字符串，它被双引号包围
-    if (source[start_pos] == '"') {
-        start_pos++; // 跳过起始引号
-        size_t end_pos = source.find('"', start_pos);
-        if (end_pos == std::string::npos) {
-            throw std::runtime_error("Malformed string: closing quote not found for key '" + key + "'.");
-        }
-        return source.substr(start_pos, end_pos - start_pos);
-    } 
-    // 如果值是数字，它后面跟着逗号或花括号
-    else {
-        size_t end_pos = source.find_first_of(",}", start_pos);
-        if (end_pos == std::string::npos) {
-             throw std::runtime_error("Malformed string: terminator not found for key '" + key + "'.");
-        }
-        return source.substr(start_pos, end_pos - start_pos);
-    }
-}
 
 /*!
  * \brief 遍历从 startNode 到 targetNode 的所有路径，并输出路径上的所有条件分支边及调用未返回的函数。
@@ -146,8 +32,8 @@ void pathCondFuncReader(ICFG* icfg, const std::string& startLocation, const std:
     llvm::json::Object result;
     llvm::json::Array pathsArray;
 
-    const ICFGNode* startNode = findICFGNodeByLocation(icfg, startLocation);
-    const ICFGNode* targetNode = findICFGNodeByLocation(icfg, targetLocation);
+    const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
+    const ICFGNode* targetNode = GraphReaderUtil::findICFGNodeByLocation(icfg, targetLocation);
     if (!startNode || !targetNode) {
         result["error"] = true;
         result["message"] = "Invalid start or target location.";
@@ -178,12 +64,14 @@ void pathCondFuncReader(ICFG* icfg, const std::string& startLocation, const std:
             for (const auto* retNode : callStack) {
                 const CallICFGNode* callSiteNode = retNode->getCallICFGNode();
                 std::string locString = callSiteNode->getSourceLoc();
-                std::string formattedLoc = locString;
-                try {
-                    std::string file = extract_value(locString, "fl");
-                    std::string line = extract_value(locString, "ln");
-                    formattedLoc = file + ":" + line;
-                } catch (const std::runtime_error&) {}
+                std::string formattedLoc = "unknown";
+                
+                llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
+                if (auto file = locInfo.getString("fl")) {
+                    if (auto line = locInfo.getInteger("ln")) {
+                        formattedLoc = file->str() + ":" + std::to_string(*line);
+                    }
+                }
 
                 finalPathEvents.push_back(llvm::json::Object{
                     {"type", "unreturned-call"},
@@ -227,13 +115,14 @@ void pathCondFuncReader(ICFG* icfg, const std::string& startLocation, const std:
             else if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
                 if (intraEdge->getCondition()) {
                     std::string locString = intraEdge->getSrcNode()->getSourceLoc();
-                    std::string formattedLoc = locString;
-                    try {
-                        std::string file = extract_value(locString, "fl");
-                        std::string line = extract_value(locString, "ln");
-                        formattedLoc = file + ":" + line;
-                    } catch (const std::runtime_error&) {}
-
+                    std::string formattedLoc = "unknown";
+                    
+                    llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
+                    if (auto file = locInfo.getString("fl")) {
+                        if (auto line = locInfo.getInteger("ln")) {
+                            formattedLoc = file->str() + ":" + std::to_string(*line);
+                        }
+                    }
                     newPathEvents.push_back(llvm::json::Object{
                         {"type", "branch"},
                         {"location", formattedLoc},
@@ -262,8 +151,8 @@ void pathCondFuncReader(ICFG* icfg, const std::string& startLocation, const std:
 // TODO: 设计输出格式
 void pathCondReader(ICFG* icfg, const std::string& startLocation, const std::string& targetLocation)
 {
-    const ICFGNode* startNode = findICFGNodeByLocation(icfg, startLocation);
-    const ICFGNode* targetNode = findICFGNodeByLocation(icfg, targetLocation);
+    const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
+    const ICFGNode* targetNode = GraphReaderUtil::findICFGNodeByLocation(icfg, targetLocation);
     if (!startNode || !targetNode) {
         SVF::SVFUtil::outs() << "Invalid start or target location.\n";
         return;
@@ -352,7 +241,7 @@ void pathCondReader(ICFG* icfg, const std::string& startLocation, const std::str
 void printFunctionBodyByLocation(ICFG* icfg, const std::string& location) {
     llvm::json::Object result;
 
-    const ICFGNode* node = findICFGNodeByLocation(icfg, location);
+    const ICFGNode* node = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
     if (!node) {
         result["error"] = true;
         result["message"] = "Could not find ICFGNode for the given location.";
@@ -372,7 +261,7 @@ void printFunctionBodyByLocation(ICFG* icfg, const std::string& location) {
     const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(svfFun);
     const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(llvmVal);
 
-    FunctionSourceInfo sourceInfo = getFunctionSourceInfo(llvmFun);
+    FunctionSourceInfo sourceInfo = GraphReaderUtil::getFunctionSourceInfo(llvmFun);
 
     result["function_name"] = svfFun->getName();
     result["filename"] = sourceInfo.filename;
@@ -400,7 +289,7 @@ void printCalleeFunctionBodyByLocation(ICFG* icfg, const std::string& location)
     llvm::json::Object result;
     llvm::json::Array calleeFunctions;
 
-    const ICFGNode* node = findICFGNodeByLocation(icfg, location);
+    const ICFGNode* node = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
     if (!node) {
         result["error"] = true;
         result["message"] = "Could not find ICFGNode for the given location.";
@@ -426,7 +315,7 @@ void printCalleeFunctionBodyByLocation(ICFG* icfg, const std::string& location)
                 const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(svfFun);
                 const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(llvmVal);
 
-                FunctionSourceInfo sourceInfo = getFunctionSourceInfo(llvmFun);
+                FunctionSourceInfo sourceInfo = GraphReaderUtil::getFunctionSourceInfo(llvmFun);
                 calleeFunctions.push_back(llvm::json::Object{
                     {"function_name", svfFun->getName()},
                     {"filename", sourceInfo.filename},
@@ -481,7 +370,7 @@ void printFunctionBodyByName(ICFG* icfg, const std::string& functionName) {
         return;
     }
 
-    FunctionSourceInfo sourceInfo = getFunctionSourceInfo(llvmFun);
+    FunctionSourceInfo sourceInfo = GraphReaderUtil::getFunctionSourceInfo(llvmFun);
 
     result["function_name"] = svfFun->getName();
     result["filename"] = sourceInfo.filename;
@@ -525,13 +414,13 @@ void printFunctionCallSites(ICFG* icfg, const std::string& functionName) {
                     if (svfFun && svfFun->getName() == functionName) {
                         llvm::json::Object site;
                         std::string locString = callNode->getSourceLoc();
-                        std::string formattedLoc = locString; // 默认值
-                        try {
-                            std::string file = extract_value(locString, "fl");
-                            std::string line = extract_value(locString, "ln");
-                            formattedLoc = file + ":" + line;
-                        } catch (const std::runtime_error& e) {
-                            // 如果提取失败，保持默认值
+                        std::string formattedLoc = "unknown";
+
+                        llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
+                        if (auto file = locInfo.getString("fl")) {
+                            if (auto line = locInfo.getInteger("ln")) {
+                                formattedLoc = file->str() + ":" + std::to_string(*line);
+                            }
                         }
                         site["location"] = formattedLoc;
                         callSites.push_back(std::move(site));
@@ -568,7 +457,7 @@ void printFunctionCallSites(ICFG* icfg, const std::string& functionName) {
 const SVFGNode* findSVFGNodeByLocation(SVFG* svfg, ICFG* icfg, const std::string& location, int operandIndex = -1) {
     std::string opIndexStr = (operandIndex == -1) ? "LHS (defined value)" : std::to_string(operandIndex);
     SVF::SVFUtil::outs() << "Debug: Searching for SVFGNode at location '" << location << "' with operand index " << opIndexStr << "...\n";
-    const ICFGNode* icfgNode = findICFGNodeByLocation(icfg, location);
+    const ICFGNode* icfgNode = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
     if (!icfgNode) {
         SVF::SVFUtil::errs() << "Error: Cannot find ICFGNode for location: " << location << "\n";
         return nullptr;
@@ -640,44 +529,26 @@ std::vector<const SVFVar*> findVarByLocation(SVFIR* pag, const std::string& loca
         const PAGNode* pagNode = it->second;
         if (SVFUtil::isa<ValVar>(pagNode)) {
             std::string locString = pagNode->getSourceLoc();
-            if (locString.empty()) {
-                continue;
-            } else {
-                try {
-                    std::string file = extract_value(locString, "fl");
-                    std::string line = extract_value(locString, "ln");
-                    if (file.empty() || line.empty()) {
-                        continue;
-                    } else {
-                        locString = file + ":" + line;
-                        if (locString == location) {
-                            results.push_back(pagNode);
-                            SVF::SVFUtil::outs() << "ValVar at" << pagNode->getSourceLoc() << "\n";
-                        }
+            llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
+            if (auto file = locInfo.getString("fl")) {
+                if (auto line = locInfo.getInteger("ln")) {
+                    std::string formattedLoc = file->str() + ":" + std::to_string(*line);
+                    if (formattedLoc == location) {
+                        results.push_back(pagNode);
+                        SVF::SVFUtil::outs() << "Found ValVar at " << pagNode->getSourceLoc() << "\n";
                     }
-                } catch (const std::runtime_error&) {
-                    continue;
                 }
             }
         } else if (SVFUtil::isa<ObjVar>(pagNode)) {
             std::string locString = pagNode->getSourceLoc();
-            if (locString.empty()) {
-                continue;
-            } else {
-                try {
-                    std::string file = extract_value(locString, "fl");
-                    std::string line = extract_value(locString, "ln");
-                    if (file.empty() || line.empty()) {
-                        continue;
-                    } else {
-                        locString = file + ":" + line;
-                        if (locString == location) {
-                            results.push_back(pagNode);
-                            SVF::SVFUtil::outs() << "ValVar at" << pagNode->getSourceLoc() << "\n";
-                        }
+            llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
+            if (auto file = locInfo.getString("fl")) {
+                if (auto line = locInfo.getInteger("ln")) {
+                    std::string formattedLoc = file->str() + ":" + std::to_string(*line);
+                    if (formattedLoc == location) {
+                        results.push_back(pagNode);
+                        SVF::SVFUtil::outs() << "Found ObjVar at " << pagNode->getSourceLoc() << "\n";
                     }
-                } catch (const std::runtime_error&) {
-                    continue;
                 }
             }
         } else {
