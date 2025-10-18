@@ -2,11 +2,16 @@
 #define GRAPH_READER_UTIL_H
 
 #include "Graphs/ICFG.h"
+#include "SVFIR/SVFIR.h"
+#include "SVFIR/SVFVariables.h"
+#include "SVFIR/SVFValue.h"
 #include <llvm/IR/Function.h>
 #include <llvm/Support/JSON.h>
 #include <string>
 
 namespace SVF {
+
+class SVFIR; // Forward declaration
 
 /// @struct FunctionSourceInfo
 /// @brief Encapsulates source code information extracted from LLVM debug info.
@@ -25,6 +30,16 @@ namespace GraphReaderUtil {
      * \return A const pointer to the matched ICFGNode, or nullptr if not found.
      */
     const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& location);
+
+    /*!
+     * \brief Finds the source code variable name for a given SVFVar by inspecting debug info.
+     * \param var The SVFVar to inspect.
+     * \return The source code name as a string, or an empty string if not found.
+     */
+    std::string getSourceVariableName(const SVFVar* var);
+
+
+    std::vector<const SVFVar*> findVarByLocation(const SVFIR* pag, const std::string& location);
 
     /*!
      * \brief Gets the source file info (name, start/end line) of an llvm::Function.

@@ -224,43 +224,6 @@ const SVFGNode* findSVFGNodeByLocation(SVFG* svfg, ICFG* icfg, const std::string
     return nullptr;
 }
 
-std::vector<const SVFVar*> findVarByLocation(SVFIR* pag, const std::string& location) {
-    std::vector<const SVFVar*> results;
-    for (SVFIR::const_iterator it = pag->begin(), eit = pag->end(); it != eit; ++it) {
-        const PAGNode* pagNode = it->second;
-        if (SVFUtil::isa<ValVar>(pagNode)) {
-            std::string locString = pagNode->getSourceLoc();
-            llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
-            if (auto file = locInfo.getString("fl")) {
-                if (auto line = locInfo.getInteger("ln")) {
-                    std::string formattedLoc = file->str() + ":" + std::to_string(*line);
-                    if (formattedLoc == location) {
-                        results.push_back(pagNode);
-                        SVF::SVFUtil::outs() << "Found ValVar at " << pagNode->getSourceLoc() << "\n";
-                    }
-                }
-            }
-        } else if (SVFUtil::isa<ObjVar>(pagNode)) {
-            std::string locString = pagNode->getSourceLoc();
-            llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
-            if (auto file = locInfo.getString("fl")) {
-                if (auto line = locInfo.getInteger("ln")) {
-                    std::string formattedLoc = file->str() + ":" + std::to_string(*line);
-                    if (formattedLoc == location) {
-                        results.push_back(pagNode);
-                        SVF::SVFUtil::outs() << "Found ObjVar at " << pagNode->getSourceLoc() << "\n";
-                    }
-                }
-            }
-        } else {
-            // impossible
-            SVF::SVFUtil::outs() << "not a var or obj" << "\n";
-        }
-    }
-    return results;
-}
-
-
 // /*!
 //  * \brief 在SVFG上分析从startLocation到targetLocation的路径控制条件。
 //  *
@@ -318,14 +281,14 @@ int main(int argc, char ** argv) {
     // SVF::SVFUtil::outs() << "SVFIR (PAG) built.\n";
 
     // 构建SVFG以供新函数使用
-    //AndersenWaveDiff* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
-    //SaberSVFGBuilder memSSA;
-    //SVFG* svfg = memSSA.buildFullSVFG(ander);
+    AndersenWaveDiff* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
+    // SaberSVFGBuilder memSSA;
+    // SVFG* svfg = memSSA.buildFullSVFG(ander);
     // 分配控制流图的分支条件
     // SaberCondAllocator condAllocator;
     // condAllocator.allocate();
 
-    ICFG* icfg = pag->getICFG();
+    ICFG* icfg = ander->getICFG();
     // I've also removed the pathCondReader function as it was redundant with pathCondFuncReader
     // and produced non-JSON output, which is inconsistent with the rest of the tool.
     // If simple text output is needed for debugging, it's better to add a flag
@@ -348,11 +311,11 @@ int main(int argc, char ** argv) {
         fq.findFunctionBodyByName(Options::FindBodyByName());
     }
     else if (!Options::FindVarByLocation().empty()) {
-        findVarByLocation(pag, Options::FindVarByLocation());
+        GraphReaderUtil::findVarByLocation(pag, Options::FindVarByLocation());
     }
-    // else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
-    //     pathCondFuncReader(icfg, Options::PathCondFuncStart(), Options::PathCondFuncEnd());
-    // }
+    else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
+        pathCondFuncReader(icfg, Options::PathCondFuncStart(), Options::PathCondFuncEnd());
+    }
     // else if (!Options::PathCondStart().empty() && !Options::PathCondEnd().empty()) {
     //     svfgPathCondReader(svfg, icfg, Options::PathCondStart(), Options::PathCondEnd());
     // }
@@ -364,90 +327,9 @@ int main(int argc, char ** argv) {
     return 0;
 }
 
-// // DeBug main
-// int main(int argc, char** argv) {
-//     // 解析命令行参数
-//     std::vector<std::string> moduleNameVec =
-//         OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
-
-//     SVF::SVFUtil::outs() << "Debug: Building SVF Module...\n";
-//     LLVMModuleSet::buildSVFModule(moduleNameVec);
-
-//     SVF::SVFUtil::outs() << "Debug: Building SVFIR (PAG)...\n";
-//     SVFIRBuilder builder;
-//     SVFIR* pag = builder.build();
-//     if (!pag) {
-//         SVF::SVFUtil::errs() << "Error: Failed to build SVFIR (PAG).\n";
-//         return 1;
-//     }
-//     SVF::SVFUtil::outs() << "Debug: SVFIR (PAG) built successfully.\n";
-
-//     // ICFG* icfg = pag->getICFG();
-//     findVarByLocation(pag, "slabs.c:162");
-//     findVarByLocation(pag, "items.c:1630");
-//     findVarByLocation(pag, "items.c:1625");
-
-
-
-//     // SVF::SVFUtil::outs() << "Debug: Building SVFG...\n";
-//     // AndersenWaveDiff* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
-//     // SaberSVFGBuilder memSSA;
-//     // SVFG* svfg = memSSA.buildFullSVFG(ander);
-//     // if (!svfg) {
-//     //     SVF::SVFUtil::errs() << "Error: Failed to build SVFG.\n";
-//     //     return 1;
-//     // }
-//     // SVF::SVFUtil::outs() << "Debug: SVFG built successfully.\n";
-
-//     // const SVFGNode* node1 = findSVFGNodeByLocation(svfg, icfg, "items.c:1625", 0);
-//     // const SVFGNode* node2 = findSVFGNodeByLocation(svfg, icfg, "slabs.c:162", -1);
-//     // const SVFGNode* node3 = findSVFGNodeByLocation(svfg, icfg, "items.c:1630", 0);
-    
-//     // if (node1) {
-//     //     SVF::SVFUtil::outs() << "Successfully found SVFGNode. ID: " << node1->getId() << "\n";
-//     // } else {
-//     //     SVF::SVFUtil::errs() << "Error: findSVFGNodeByLocation returned a null pointer. Cannot get node ID.\n";
-//     // }
-
-        
-//     // if (node2) {
-//     //     SVF::SVFUtil::outs() << "Successfully found SVFGNode. ID: " << node2->getId() << "\n";
-//     // } else {
-//     //     SVF::SVFUtil::errs() << "Error: findSVFGNodeByLocation returned a null pointer. Cannot get node ID.\n";
-//     // }
-
-//     // if (node3) {
-//     //     SVF::SVFUtil::outs() << "Successfully found SVFGNode. ID: " << node3->getId() << "\n";
-//     // } else {
-//     //     SVF::SVFUtil::errs() << "Error: findSVFGNodeByLocation returned a null pointer. Cannot get node ID.\n";
-//     // }
-
-// //     Debug: Searching for SVFGNode at location 'items.c:1625' with operand index 0...
-// // Debug: Found ICFGNode with ID: 15998
-// // retrieveD LLVM instruction from ICFGNode at items.c:1625.
-// // Debug: Found RHS operand 0 SVF Node ID: 1726
-// // Debug: Searching for SVFGNode at location 'slabs.c:162' with operand index LHS (defined value)...
-// // Error: Cannot find ICFGNode for location: slabs.c:162
-// // Debug: Searching for SVFGNode at location 'items.c:1630' with operand index 0...
-// // Debug: Found ICFGNode with ID: 15686
-// // retrieveD LLVM instruction from ICFGNode at items.c:1630.
-// // Debug: Found RHS operand 0 SVF Node ID: 21039
-// // Successfully found SVFGNode. ID: 1726
-// // Error: findSVFGNodeByLocation returned a null pointer. Cannot get node ID.
-// // Successfully found SVFGNode. ID: 21039
-
-
-//     // 示例1：查找两条路径之间的条件
-//     //pathCondFuncReader(icfg, "restart.c:76", "restart.c:121");
-
-//     // 示例2：根据代码行号查找并打印其所在函数的函数体
-//     // printFunctionBodyByLocation(icfg, "stats_prefix.c:118");
-
-//     // 示例3：根据代码行号查找函数调用，并打印被调用函数的函数体
-//     // printCalleeFunctionBodyByLocation(icfg, "stats_prefix.c:118");
-
-//     // 示例4：根据函数名查找其所有被调用的位置
-//     // printFunctionCallSites(icfg, "stats_prefix_record_get");
-
-//     return 0;
-// }
+// graph-reader -find-var-by-location slabs:162 PUT/memcached.bc
+// graph-reader -find-var-by-location slabs:163 PUT/memcached.bc
+// graph-reader -find-var-by-location slabs:164 PUT/memcached.bc
+// graph-reader -find-var-by-location items.c:1557 PUT/memcached.bc
+// graph-reader -path-cond-func-start items.c:1557 -path-cond-func-end items.c:1630 PUT/memcached.bc
+// graph-reader -find-function-body items.c:1557 PUT/memcached.bc

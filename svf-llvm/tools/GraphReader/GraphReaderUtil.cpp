@@ -1,5 +1,7 @@
 #include "GraphReaderUtil.h"
 #include "SVF-LLVM/LLVMUtil.h"
+#include "SVFIR/SVFIR.h"
+#include "SVF-LLVM/LLVMModule.h"
 #include <llvm/Support/FormatVariadic.h>
 #include <llvm/IR/DebugInfo.h>
 
@@ -62,6 +64,81 @@ const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& loca
         }
     }
     return nullptr;
+}
+
+std::string getSourceVariableName(const SVFVar* var) {
+    if (!var) {
+        return "";
+    }
+
+    // Get the underlying llvm::Value from the SVFVar.
+    // We need to get the base variable, as debug info is usually on the alloca.
+    const SVFVar* baseVar = SVF::SVFUtil::isa<ObjVar>(var) ? SVF::SVFIR::getPAG()->getBaseObject(var->getId()) : SVF::SVFUtil::isa<ValVar>(var) ? SVF::SVFIR::getPAG()->getBaseValVar(var->getId()) : var;
+    if (!baseVar) baseVar = var;
+
+    const llvm::Value* llvmVal = SVF::LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(baseVar);
+    if (!llvmVal) {
+        return "";
+    }
+
+    // Search for llvm.dbg.declare intrinsic that refers to this value.
+    if (const auto* inst = SVFUtil::dyn_cast<llvm::Instruction>(llvmVal)) {
+        const auto* func = inst->getFunction();
+        for (const auto& bb : *func) {
+            for (const auto& i : bb) {
+                if (const auto* ddi = SVFUtil::dyn_cast<llvm::DbgDeclareInst>(&i)) {
+                    if (ddi->getAddress() == llvmVal) {
+                        return ddi->getVariable()->getName().str();
+                    }
+                }
+            }
+        }
+    }
+    return ""; // Return empty if no debug info found
+}
+
+std::vector<const SVFVar*> findVarByLocation(const SVFIR* pag, const std::string& location) {
+    std::vector<const SVFVar*> results;
+    for (SVFIR::const_iterator it = pag->begin(), eit = pag->end(); it != eit; ++it) {
+        const PAGNode* pagNode = it->second;
+        if (SVFUtil::isa<ValVar>(pagNode)) {
+            std::string locString = pagNode->getSourceLoc();
+            llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
+            if (auto file = locInfo.getString("fl")) {
+                if (auto line = locInfo.getInteger("ln")) {
+                    std::string formattedLoc = file->str() + ":" + std::to_string(*line);
+                    if (formattedLoc == location) {
+                        results.push_back(pagNode);
+                        SVF::SVFUtil::outs() << "Found ValVar at " << pagNode->getSourceLoc() << "\n";
+                        SVF::SVFUtil::outs() << "Var info: " << SVFUtil::cast<ValVar>(pagNode)->toString() << "\n";
+                        std::string sourceName = getSourceVariableName(pagNode);
+                        SVF::SVFUtil::outs() << "IR Name: " << pagNode->getName() << "\n";
+                        SVF::SVFUtil::outs() << "Source Name: " << (sourceName.empty() ? "(not found)" : sourceName) << "\n";
+                    }
+                }
+            }
+        } else if (SVFUtil::isa<ObjVar>(pagNode)) {
+            std::string locString = pagNode->getSourceLoc();
+            llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
+            if (auto file = locInfo.getString("fl")) {
+                if (auto line = locInfo.getInteger("ln")) {
+                    std::string formattedLoc = file->str() + ":" + std::to_string(*line);
+                    if (formattedLoc == location) {
+                        results.push_back(pagNode);
+                        SVF::SVFUtil::outs() << "Found ObjVar at " << pagNode->getSourceLoc() << "\n";
+                        SVF::SVFUtil::outs() << "Var info: " << SVFUtil::cast<ObjVar>(pagNode)->toString() << "\n";
+                        std::string sourceName = getSourceVariableName(pagNode);
+                        SVF::SVFUtil::outs() << "IR Name: " << pagNode->getName() << "\n";
+                        SVF::SVFUtil::outs() << "Source Name: " << (sourceName.empty() ? "(not found)" : sourceName) << "\n";
+                    }
+                }
+            }
+        } else {
+            // impossible
+            SVF::SVFUtil::outs() << "not a var or obj" << "\n";
+        }
+    }
+    return results;
 }
 
 FunctionSourceInfo getFunctionSourceInfo(const llvm::Function* llvmFun) {
