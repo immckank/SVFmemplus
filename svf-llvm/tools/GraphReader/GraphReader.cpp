@@ -333,3 +333,7 @@ int main(int argc, char ** argv) {
 // graph-reader -find-var-by-location items.c:1557 PUT/memcached.bc
 // graph-reader -path-cond-func-start items.c:1557 -path-cond-func-end items.c:1630 PUT/memcached.bc
 // graph-reader -find-function-body items.c:1557 PUT/memcached.bc
+
+// graph-reader -find-body-by-name TIFFWriteDirectoryTagCheckedLongArray PUT/libtiff-57449991.bc
+// graph-reader -find-function-body tif_dirwrite.c:1893 PUT/libtiff-57449991.bc
+// graph-reader -find-var-by-location tif_dirread.c:231 PUT/libtiff-57449991.bc 236

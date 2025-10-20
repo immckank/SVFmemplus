@@ -71,30 +71,89 @@ std::string getSourceVariableName(const SVFVar* var) {
         return "";
     }
 
-    // Get the underlying llvm::Value from the SVFVar.
-    // We need to get the base variable, as debug info is usually on the alloca.
-    const SVFVar* baseVar = SVF::SVFUtil::isa<ObjVar>(var) ? SVF::SVFIR::getPAG()->getBaseObject(var->getId()) : SVF::SVFUtil::isa<ValVar>(var) ? SVF::SVFIR::getPAG()->getBaseValVar(var->getId()) : var;
-    if (!baseVar) baseVar = var;
-
-    const llvm::Value* llvmVal = SVF::LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(baseVar);
+    const llvm::Value* llvmVal = SVF::LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(var);
     if (!llvmVal) {
         return "";
     }
 
-    // Search for llvm.dbg.declare intrinsic that refers to this value.
-    if (const auto* inst = SVFUtil::dyn_cast<llvm::Instruction>(llvmVal)) {
-        const auto* func = inst->getFunction();
-        for (const auto& bb : *func) {
-            for (const auto& i : bb) {
-                if (const auto* ddi = SVFUtil::dyn_cast<llvm::DbgDeclareInst>(&i)) {
-                    if (ddi->getAddress() == llvmVal) {
+    // The llvm::Value we are looking for is often an AllocaInst, which has the debug info.
+    // We may need to traverse back from the current value to find it.
+    std::vector<const llvm::Value*> worklist;
+    worklist.push_back(llvmVal);
+
+    llvm::SmallPtrSet<const llvm::Value*, 8> visited;
+
+    while (!worklist.empty()) {
+        const llvm::Value* currentVal = worklist.back();
+        worklist.pop_back();
+
+        if (!visited.insert(currentVal).second) {
+            continue;
+        }
+
+        // If we found an AllocaInst, check for its debug info.
+        if (SVFUtil::isa<llvm::AllocaInst>(currentVal)) {
+            for (const llvm::User* user : currentVal->users()) {
+                if (const auto* ddi = SVFUtil::dyn_cast<llvm::DbgDeclareInst>(user)) {
+                    if (ddi->getAddress() == currentVal) {
                         return ddi->getVariable()->getName().str();
                     }
                 }
             }
         }
+
+        // If the current value is an instruction, trace back its operands.
+        if (const auto* inst = SVFUtil::dyn_cast<llvm::Instruction>(currentVal)) {
+            // For a load, the pointer operand is what we are interested in.
+            if (const auto* loadInst = SVFUtil::dyn_cast<llvm::LoadInst>(inst)) {
+                worklist.push_back(loadInst->getPointerOperand());
+            } else {
+                // For other instructions, check all operands.
+                for (const llvm::Use& op : inst->operands()) {
+                    worklist.push_back(op.get());
+                }
+            }
+        }
     }
+
     return ""; // Return empty if no debug info found
+}
+
+void printDebugSourceNames(const SVFVar* var) {
+    if (!var) return;
+
+    const llvm::Value* llvmVal = SVF::LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(var);
+    if (!llvmVal) return;
+
+    SVF::SVFUtil::outs() << "  Debug: Searching for related source names...\n";
+
+    std::vector<const llvm::Value*> worklist;
+    worklist.push_back(llvmVal);
+    llvm::SmallPtrSet<const llvm::Value*, 16> visited;
+
+    while (!worklist.empty()) {
+        const llvm::Value* currentVal = worklist.back();
+        worklist.pop_back();
+
+        if (!visited.insert(currentVal).second) {
+            continue;
+        }
+
+        // Check for debug info on the current value
+        for (const llvm::User* user : currentVal->users()) {
+            if (const auto* ddi = SVFUtil::dyn_cast<llvm::DbgDeclareInst>(user)) {
+                if (ddi->getAddress() == currentVal) {
+                    SVF::SVFUtil::outs() << "    - Found potential source name '" << ddi->getVariable()->getName().str() << "' from value: " << ddi->getAddress()->getName().str() << "\n";
+                }
+            }
+        }
+
+        if (const auto* inst = SVFUtil::dyn_cast<llvm::Instruction>(currentVal)) {
+            for (const llvm::Use& op : inst->operands()) {
+                worklist.push_back(op.get());
+            }
+        }
+    }
 }
 
 std::vector<const SVFVar*> findVarByLocation(const SVFIR* pag, const std::string& location) {
@@ -114,6 +173,9 @@ std::vector<const SVFVar*> findVarByLocation(const SVFIR* pag, const std::string
                         std::string sourceName = getSourceVariableName(pagNode);
                         SVF::SVFUtil::outs() << "IR Name: " << pagNode->getName() << "\n";
                         SVF::SVFUtil::outs() << "Source Name: " << (sourceName.empty() ? "(not found)" : sourceName) << "\n";
+                        if (sourceName.empty()) {
+                            printDebugSourceNames(pagNode);
+                        }
                     }
                 }
             }
@@ -130,6 +192,9 @@ std::vector<const SVFVar*> findVarByLocation(const SVFIR* pag, const std::string
                         std::string sourceName = getSourceVariableName(pagNode);
                         SVF::SVFUtil::outs() << "IR Name: " << pagNode->getName() << "\n";
                         SVF::SVFUtil::outs() << "Source Name: " << (sourceName.empty() ? "(not found)" : sourceName) << "\n";
+                        if (sourceName.empty()) {
+                            printDebugSourceNames(pagNode);
+                        }
                     }
                 }
             }
