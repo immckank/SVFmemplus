@@ -72,13 +72,11 @@ public:
         useNodes.insert(node);
     }
 
-    bool isSatisfiableForFreeAndUsePairs(ProgSlice* slice);
+    bool isSatisfiableForFreeAndUsePairs(ProgSlice* slice, GenericBug::EventStack& eventStack);
 
 private:
     SVFGNodeSet freeNodes;
     SVFGNodeSet useNodes;
-
-    GenericBug::EventStack eventStack;
 
 };
 

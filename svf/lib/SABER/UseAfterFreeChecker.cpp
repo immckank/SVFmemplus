@@ -2,7 +2,6 @@
 #include "SABER/UseAfterFreeChecker.h"
 #include "SABER/SaberCheckerAPI.h"
 #include "SVFIR/SVFIR.h"
-// #include "MSSA/SVFG.h"
 #include "Util/SVFUtil.h"
 #include "SABER/ProgSlice.h"
 
@@ -101,7 +100,7 @@ bool icfgReachable(const ICFGNode* start, const ICFGNode* target) {
     return false;
 }
 
-bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice){
+bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, GenericBug::EventStack& eventStack){
     bool flag = true;
     for(SVFGNodeSetIter fit = freeNodesBegin(), efit = freeNodesEnd(); fit!=efit; ++fit)
     {
@@ -130,8 +129,9 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice){
 
 void UseAfterFreeChecker::reportBug(ProgSlice* slice)
 {
+    GenericBug::EventStack eventStack;
 
-    if(!isSatisfiableForFreeAndUsePairs(slice))
+    if(!isSatisfiableForFreeAndUsePairs(slice, eventStack))
     {
         eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource())));
         report.addSaberBug(GenericBug::USEAFTERFREE, eventStack);
