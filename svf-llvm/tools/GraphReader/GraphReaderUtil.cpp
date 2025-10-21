@@ -260,5 +260,22 @@ llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun) {
     return funInfoJson;
 }
 
+llvm::json::Object formatBranchInfo(const IntraCFGEdge* intraEdge) {
+    std::string locString = intraEdge->getSrcNode()->getSourceLoc();
+    std::string formattedLoc = "unknown";
+    
+    llvm::json::Object locInfo = parseSourceLocation(locString);
+    if (auto file = locInfo.getString("fl")) {
+        if (auto line = locInfo.getInteger("ln")) {
+            formattedLoc = file->str() + ":" + std::to_string(*line);
+        }
+    }
+    return llvm::json::Object{
+        {"type", "branch"},
+        {"location", formattedLoc},
+        {"condition_value", intraEdge->getSuccessorCondValue() == 1 ? "true" : "false"}
+    };
+}
+
 } // namespace GraphReaderUtil
 } // namespace SVF

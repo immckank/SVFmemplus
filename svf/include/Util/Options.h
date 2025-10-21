@@ -278,8 +278,12 @@ public:
     static const Option<std::string> FindVarByLocation;
     static const Option<std::string> PathCondStart;
     static const Option<std::string> PathCondEnd;
+    static const Option<std::string> ValuePathStart;
+    static const Option<std::string> ValuePathOp;
     static const Option<std::string> PathCondFuncStart;
     static const Option<std::string> PathCondFuncEnd;
+    static const Option<std::string> PathCondInsideStart;
+    static const Option<std::string> PathCondInsideEnd;
     static const Option<std::string> Analysis;
 };
 }  // namespace SVF

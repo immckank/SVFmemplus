@@ -65,6 +65,12 @@ namespace GraphReaderUtil {
      */
     llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun);
 
+    /*!
+     * \brief Formats an IntraCFGEdge's branch information into a JSON object.
+     * \param intraEdge The edge to format.
+     * \return A llvm::json::Object with type, location, and condition_value.
+     */
+    llvm::json::Object formatBranchInfo(const IntraCFGEdge* intraEdge);
 
 } // namespace GraphReaderUtil
 } // namespace SVF

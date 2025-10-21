@@ -877,6 +877,19 @@ const Option<std::string> Options::PathCondEnd(
     ""
 );
 
+const Option<std::string> Options::ValuePathStart(
+    "value-path-start",
+    "Start location for value path analysis (e.g., file.c:123)",
+    ""
+);
+
+const Option<std::string> Options::ValuePathOp(
+    "value-path-op",
+    "Operand index for the value path start location (-1 for defined value)",
+    "-1"
+);
+
+
 // const Option<int> Options::StartOp(
 //     "start-op",
 //     "Operand index for the start location (-1 for defined value)",
@@ -898,6 +911,18 @@ const Option<std::string> Options::PathCondFuncStart(
 const Option<std::string> Options::PathCondFuncEnd(
     "path-cond-func-end",
     "End location for path condition and function call analysis",
+    ""
+);
+
+const Option<std::string> Options::PathCondInsideStart(
+    "path-cond-inside-start",
+    "Start location for intra-procedural path condition analysis",
+    ""
+);
+
+const Option<std::string> Options::PathCondInsideEnd(
+    "path-cond-inside-end",
+    "End location for intra-procedural path condition analysis",
     ""
 );
 

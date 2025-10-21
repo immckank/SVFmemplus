@@ -11,6 +11,7 @@
 #include "Util/CDGBuilder.h"
 // #include "GraphReader/SVFGChecker.h"
 #include "GraphReaderUtil.h"
+#include "PathQuery.h"
 #include "FunctionQuery.h"
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/Support/JSON.h>
@@ -18,125 +19,6 @@
 using namespace llvm;
 using namespace SVF;
 using namespace SVFUtil;
-
-/*!
- * \brief 遍历从 startNode 到 targetNode 的所有路径，并输出路径上的所有条件分支边及调用未返回的函数。
- *
- * 用栈模拟深搜过程 寻找所有路径 报出路径上的条件分支边和所有调用且未返回的函数调用边
- *
- * \param icfg 指向ICFG的指针。
- * \param startLocation 路径搜索的起始位置。
- * \param targetLocation 路径搜索的目标位置。
- */
-void pathCondFuncReader(ICFG* icfg, const std::string& startLocation, const std::string& targetLocation) 
-{
-    llvm::json::Object result;
-    llvm::json::Array pathsArray;
-
-    const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
-    const ICFGNode* targetNode = GraphReaderUtil::findICFGNodeByLocation(icfg, targetLocation);
-    if (!startNode || !targetNode) {
-        GraphReaderUtil::sendJsonError("Invalid start or target location.");
-        return;
-    }
-    // 调用栈，用于跟踪函数调用和返回，确保路径的有效性
-    using CallStack = std::vector<const RetICFGNode*>;
-    // 模拟栈进行深度优先搜索
-    // {当前节点, 到达此节点的路径上的分支边, 路径上已访问的节点集合, 调用栈}
-    std::vector<std::tuple<const ICFGNode*, llvm::json::Array, Set<const ICFGNode*>, CallStack>> worklist;
-    worklist.emplace_back(startNode, llvm::json::Array{}, Set<const ICFGNode*>{startNode}, CallStack{});
-    
-    int pathIdCounter = 0;
-
-    while (!worklist.empty())
-    {
-        auto [currentNode, currentPathEvents, pathVisited, callStack] = worklist.back();
-        worklist.pop_back();
-
-        if (currentNode == targetNode) {
-            pathIdCounter++;
-            llvm::json::Object pathObject;
-            pathObject["path_id"] = pathIdCounter;
-
-            llvm::json::Array finalPathEvents = currentPathEvents;
-            // 添加未返回的函数调用到事件列表
-            for (const auto* retNode : callStack) {
-                const CallICFGNode* callSiteNode = retNode->getCallICFGNode();
-                std::string locString = callSiteNode->getSourceLoc();
-                std::string formattedLoc = "unknown";
-                
-                llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
-                if (auto file = locInfo.getString("fl")) {
-                    if (auto line = locInfo.getInteger("ln")) {
-                        formattedLoc = file->str() + ":" + std::to_string(*line);
-                    }
-                }
-
-                finalPathEvents.push_back(llvm::json::Object{
-                    {"type", "unreturned-call"},
-                    {"location", formattedLoc},
-                    {"function", callSiteNode->getFun()->getName()}
-                });
-            }
-
-            pathObject["events"] = std::move(finalPathEvents);
-            pathsArray.push_back(std::move(pathObject));
-            continue; 
-        }
-
-        if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(currentNode); callNode && SVFUtil::isProgExitCall(callNode)) {
-            continue;
-        }
-
-        for (ICFGEdge* edge : currentNode->getOutEdges())
-        {
-            ICFGNode* succNode = edge->getDstNode();
-            if (pathVisited.count(succNode)) {
-                continue;
-            }
-
-            auto newPathEvents = currentPathEvents;
-            auto newPathVisited = pathVisited;
-            auto newCallStack = callStack;
-            newPathVisited.insert(succNode);
-
-            if (const CallCFGEdge* callEdge = SVFUtil::dyn_cast<CallCFGEdge>(edge)) {
-                const CallICFGNode* callSiteNode = callEdge->getCallSite();
-                newCallStack.push_back(callSiteNode->getRetICFGNode());
-            }
-            else if (SVFUtil::isa<RetCFGEdge>(edge)) {
-                const RetICFGNode* retSiteNode = SVFUtil::cast<RetICFGNode>(succNode);
-                if (newCallStack.empty() || newCallStack.back() != retSiteNode) {
-                    continue;
-                }
-                newCallStack.pop_back();
-            }
-            else if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
-                if (intraEdge->getCondition()) {
-                    std::string locString = intraEdge->getSrcNode()->getSourceLoc();
-                    std::string formattedLoc = "unknown";
-                    
-                    llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
-                    if (auto file = locInfo.getString("fl")) {
-                        if (auto line = locInfo.getInteger("ln")) {
-                            formattedLoc = file->str() + ":" + std::to_string(*line);
-                        }
-                    }
-                    newPathEvents.push_back(llvm::json::Object{
-                        {"type", "branch"},
-                        {"location", formattedLoc},
-                        {"condition_value", intraEdge->getSuccessorCondValue() == 1 ? "true" : "false"}
-                    });
-                }
-            }
-            worklist.emplace_back(succNode, std::move(newPathEvents), std::move(newPathVisited), std::move(newCallStack));
-        }
-    }
-
-    result["paths"] = std::move(pathsArray);
-    result["error"] = false;
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
-}
 
 /*!
  * \brief 根据源代码位置和可选的操作数索引查找SVFGNode。
@@ -266,36 +148,16 @@ const SVFGNode* findSVFGNodeByLocation(SVFG* svfg, ICFG* icfg, const std::string
  * It uses SVF's command-line option system for analysis selection.
  */
 int main(int argc, char ** argv) {
-    // 解析命令行参数，这会填充上面定义的 cl::opt 变量
-    // 并将非选项参数（即 bitcode 文件）收集到 moduleNameVec 中
     std::vector<std::string> moduleNameVec = 
         OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
 
-    // SVF::SVFUtil::outs() << pasMsg("GraphReader Tool Started\n");
-    // SVF::SVFUtil::outs() << "================================================================\n";
-
     LLVMModuleSet::buildSVFModule(moduleNameVec);
-
     SVFIRBuilder builder;
     SVFIR* pag = builder.build();
-    // SVF::SVFUtil::outs() << "SVFIR (PAG) built.\n";
 
-    // 构建SVFG以供新函数使用
     AndersenWaveDiff* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
-    // SaberSVFGBuilder memSSA;
-    // SVFG* svfg = memSSA.buildFullSVFG(ander);
-    // 分配控制流图的分支条件
-    // SaberCondAllocator condAllocator;
-    // condAllocator.allocate();
-
     ICFG* icfg = ander->getICFG();
-    // I've also removed the pathCondReader function as it was redundant with pathCondFuncReader
-    // and produced non-JSON output, which is inconsistent with the rest of the tool.
-    // If simple text output is needed for debugging, it's better to add a flag
-    // to pathCondFuncReader to change its output format.
-    if (!Options::PathCondStart().empty() && !Options::PathCondEnd().empty()) {
-        // pathCondReader(icfg, Options::PathCondStart(), Options::PathCondEnd());
-    }
+
     FunctionQuery fq(icfg, pag);
 
     if (!Options::FindCallSites().empty()) {
@@ -314,11 +176,36 @@ int main(int argc, char ** argv) {
         GraphReaderUtil::findVarByLocation(pag, Options::FindVarByLocation());
     }
     else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
-        pathCondFuncReader(icfg, Options::PathCondFuncStart(), Options::PathCondFuncEnd());
+        // SVFG is not needed for this query, so we can pass nullptr.
+        PathQuery pq(nullptr, icfg);
+        pq.getConditionPath(Options::PathCondFuncStart(), Options::PathCondFuncEnd());
     }
-    // else if (!Options::PathCondStart().empty() && !Options::PathCondEnd().empty()) {
-    //     svfgPathCondReader(svfg, icfg, Options::PathCondStart(), Options::PathCondEnd());
-    // }
+    else if (!Options::ValuePathStart().empty()) {
+        auto memSSA = std::make_unique<SaberSVFGBuilder>();
+        SVFG* svfg = memSSA->buildFullSVFG(ander);
+        int operandIndex = -1;
+        try {
+            operandIndex = std::stoi(Options::ValuePathOp());
+        } catch (const std::invalid_argument& ia) {
+            SVF::SVFUtil::errs() << "Warning: Invalid operand index '" << Options::ValuePathOp() << "'. Using default -1.\n";
+        } catch (const std::out_of_range& oor) {
+            SVF::SVFUtil::errs() << "Warning: Operand index '" << Options::ValuePathOp() << "' is out of range. Using default -1.\n";
+        }
+        const SVFGNode* startNode = findSVFGNodeByLocation(svfg, icfg, Options::ValuePathStart(), operandIndex);
+        if (startNode) {
+            PathQuery pq(svfg, icfg);
+            pq.getValuePath(startNode);
+        } else {
+            GraphReaderUtil::sendJsonError("Could not find start node for value path analysis. Check location and operand index.");
+        }
+    }
+    else if (!Options::PathCondStart().empty() && !Options::PathCondEnd().empty()) {
+        // svfgPathCondReader(svfg, icfg, Options::PathCondStart(), Options::PathCondEnd());
+    }
+    else if (!Options::PathCondInsideStart().empty() && !Options::PathCondInsideEnd().empty()) {
+        PathQuery pq(nullptr, icfg);
+        pq.getConditionInsidePath(Options::PathCondInsideStart(), Options::PathCondInsideEnd());
+    }
     else {
         SVF::SVFUtil::outs() << "No analysis option specified. Use --help to see available options.\n";
         SVF::SVFUtil::outs() << "Defaulting to an example: finding call sites for 'stats_prefix_record_get'\n";
@@ -337,3 +224,7 @@ int main(int argc, char ** argv) {
 // graph-reader -find-body-by-name TIFFWriteDirectoryTagCheckedLongArray PUT/libtiff-57449991.bc
 // graph-reader -find-function-body tif_dirwrite.c:1893 PUT/libtiff-57449991.bc
 // graph-reader -find-var-by-location tif_dirread.c:231 PUT/libtiff-57449991.bc 236
+
+// graph-reader -value-path-start=tif_dirwrite.c:1865 PUT/libtiff-57449991.bc
+
+// graph-reader -path-cond-inside-start=tif_dirwrite.c:1360 -path-cond-inside-end=tif_dirwrite.c:1369 PUT/libtiff-57449991.bc

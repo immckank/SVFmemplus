@@ -5,5 +5,6 @@ add_executable(graph-reader
     GraphReader.cpp
     GraphReaderUtil.cpp
     FunctionQuery.cpp
+    PathQuery.cpp
 )
 
