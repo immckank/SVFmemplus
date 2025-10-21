@@ -280,5 +280,52 @@ void PathQuery::getConditionInsidePath(const std::string& startLocation, const s
     llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
 }
 
+void PathQuery::getConstrain(const std::string& location) {
+    const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
+    if (!startNode) {
+        GraphReaderUtil::sendJsonError("Invalid location: " + location);
+        return;
+    }
+
+    // Use BFS to find the nearest conditional branch by traversing backwards.
+    std::queue<const ICFGNode*> worklist;
+    std::set<const ICFGNode*> visited;
+
+    worklist.push(startNode);
+    visited.insert(startNode);
+
+    while (!worklist.empty()) {
+        const ICFGNode* currentNode = worklist.front();
+        worklist.pop();
+
+        for (const ICFGEdge* edge : currentNode->getInEdges()) {
+            const ICFGNode* predNode = edge->getSrcNode();
+
+            // Check if the edge is a conditional branch.
+            if (const auto* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
+                if (intraEdge->getCondition()) {
+                    // Found the closest conditional branch.
+                    llvm::json::Object result;
+                    result["constraint_found"] = true;
+                    result["branch_info"] = GraphReaderUtil::formatBranchInfo(intraEdge);
+                    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+                    return;
+                }
+            }
+
+            // Add predecessor to the worklist if it's in the same function and not visited.
+            if (predNode->getFun() == startNode->getFun() && visited.find(predNode) == visited.end()) {
+                visited.insert(predNode);
+                worklist.push(predNode);
+            }
+        }
+    }
+
+    // If we reach here, no conditional branch was found in the backward slice within the function.
+    llvm::json::Object result;
+    result["constraint_found"] = false;
+    result["message"] = "No preceding conditional branch found within the function.";
+    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+}
 
 } // namespace SVF

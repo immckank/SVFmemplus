@@ -1,15 +1,15 @@
 #include "SVF-LLVM/LLVMUtil.h"
 #include "SVF-LLVM/SVFIRBuilder.h"
 #include "SVFIR/SVFValue.h"
-#include "Util/Options.h"
 #include "WPA/Andersen.h"
 #include "MSSA/MemSSA.h"
-#include "SABER/SaberSVFGBuilder.h"
 #include "Graphs/SVFG.h"
 #include "Graphs/CallGraph.h"
 #include "Graphs/ICFG.h"
+#include "Util/Options.h"
 #include "Util/CDGBuilder.h"
 // #include "GraphReader/SVFGChecker.h"
+#include "GraphReaderSVFGBuilder.h"
 #include "GraphReaderUtil.h"
 #include "PathQuery.h"
 #include "FunctionQuery.h"
@@ -158,6 +158,9 @@ int main(int argc, char ** argv) {
     AndersenWaveDiff* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
     ICFG* icfg = ander->getICFG();
 
+    auto memSSA = std::make_unique<GraphReaderSVFGBuilder>();
+    SVFG* svfg = memSSA->buildFullSVFG(ander);
+
     FunctionQuery fq(icfg, pag);
 
     if (!Options::FindCallSites().empty()) {
@@ -181,8 +184,6 @@ int main(int argc, char ** argv) {
         pq.getConditionPath(Options::PathCondFuncStart(), Options::PathCondFuncEnd());
     }
     else if (!Options::ValuePathStart().empty()) {
-        auto memSSA = std::make_unique<SaberSVFGBuilder>();
-        SVFG* svfg = memSSA->buildFullSVFG(ander);
         int operandIndex = -1;
         try {
             operandIndex = std::stoi(Options::ValuePathOp());
@@ -225,6 +226,6 @@ int main(int argc, char ** argv) {
 // graph-reader -find-function-body tif_dirwrite.c:1893 PUT/libtiff-57449991.bc
 // graph-reader -find-var-by-location tif_dirread.c:231 PUT/libtiff-57449991.bc 236
 
-// graph-reader -value-path-start=tif_dirwrite.c:1865 PUT/libtiff-57449991.bc
+// graph-reader -value-path-start=tif_dirwrite.c:1865 -value-path-op=0 PUT/libtiff-57449991.bc
 
 // graph-reader -path-cond-inside-start=tif_dirwrite.c:1360 -path-cond-inside-end=tif_dirwrite.c:1369 PUT/libtiff-57449991.bc

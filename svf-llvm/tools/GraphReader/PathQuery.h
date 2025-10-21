@@ -53,6 +53,9 @@ public:
 
     void getConditionInsidePath(const std::string& startLocation, const std::string& targetLocation);
 
+    //得到当前位置行代码的最近约束条件 如果没有返回no constrain
+    void getConstrain(const std::string& location);
+
 private:
     SVFG* svfg;
     ICFG* icfg;
