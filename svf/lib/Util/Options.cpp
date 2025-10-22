@@ -889,6 +889,12 @@ const Option<std::string> Options::ValuePathOp(
     "-1"
 );
 
+const Option<std::string> Options::ValuePathInsideStart(
+    "value-path-inside-start",
+    "Start location for intra-procedural value path analysis (e.g., file.c:123)",
+    ""
+);
+
 
 // const Option<int> Options::StartOp(
 //     "start-op",
@@ -929,6 +935,12 @@ const Option<std::string> Options::PathCondInsideEnd(
 const Option<std::string> Options::Analysis(
     "analysis",
     "Specify the type of analysis to run (e.g., svfg-check)",
+    ""
+);
+
+const Option<std::string> Options::ShowSVFGNode(
+    "show-svfg-node",
+    "Show SVFG nodes associated with a source location (e.g., file.c:123)",
     ""
 );
 

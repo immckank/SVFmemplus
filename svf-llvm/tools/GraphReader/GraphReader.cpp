@@ -20,6 +20,41 @@ using namespace llvm;
 using namespace SVF;
 using namespace SVFUtil;
 
+// Helper function to convert SVFGNode kind to string.
+// This is needed because SVFGNode itself does not have getNodeKindStr().
+std::string getSVFGNodeKindString(const SVFGNode* node) {
+    if (!node) return "Null";
+    switch (node->getNodeKind()) {
+        case SVF::SVFValue::Addr: return "Addr";
+        case SVF::SVFValue::Copy: return "Copy";
+        case SVF::SVFValue::Gep: return "Gep";
+        case SVF::SVFValue::Store: return "Store";
+        case SVF::SVFValue::Load: return "Load";
+        case SVF::SVFValue::Cmp: return "Cmp";
+        case SVF::SVFValue::BinaryOp: return "BinaryOp";
+        case SVF::SVFValue::UnaryOp: return "UnaryOp";
+        case SVF::SVFValue::Branch: return "Branch";
+        case SVF::SVFValue::DummyVProp: return "DummyVProp";
+        case SVF::SVFValue::NPtr: return "NPtr";
+        case SVF::SVFValue::FRet: return "FRet";
+        case SVF::SVFValue::ARet: return "ARet";
+        case SVF::SVFValue::AParm: return "AParm";
+        case SVF::SVFValue::FParm: return "FParm";
+        case SVF::SVFValue::TPhi: return "TPhi";
+        case SVF::SVFValue::TIntraPhi: return "TIntraPhi";
+        case SVF::SVFValue::TInterPhi: return "TInterPhi";
+        case SVF::SVFValue::FPIN: return "FPIN";
+        case SVF::SVFValue::FPOUT: return "FPOUT";
+        case SVF::SVFValue::APIN: return "APIN";
+        case SVF::SVFValue::APOUT: return "APOUT";
+        case SVF::SVFValue::MPhi: return "MPhi";
+        case SVF::SVFValue::MIntraPhi: return "MIntraPhi";
+        case SVF::SVFValue::MInterPhi: return "MInterPhi";
+        default: return "UnknownVFGNodeKind";
+    }
+}
+
+
 /*!
  * \brief 根据源代码位置和可选的操作数索引查找SVFGNode。
  *
@@ -62,7 +97,7 @@ const SVFGNode* findSVFGNodeByLocation(SVFG* svfg, ICFG* icfg, const std::string
         const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(retNode);
         inst = SVFUtil::dyn_cast<llvm::Instruction>(llvmVal);
     }
-    SVF::SVFUtil::errs() << "retrieveD LLVM instruction from ICFGNode at " << location << ".\n";
+    SVF::SVFUtil::outs() << "Debug: Retrieved LLVM instruction from ICFGNode at " << location << ".\n";
     if (!inst) {
         SVF::SVFUtil::errs() << "Error: Could not retrieve LLVM instruction from ICFGNode at " << location << ".\n";
         if (icfgNode->getSVFStmts().empty()) {
@@ -71,77 +106,106 @@ const SVFGNode* findSVFGNodeByLocation(SVFG* svfg, ICFG* icfg, const std::string
         return nullptr;
     }
 
-    LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
-
-    // Case 1: User wants the LHS (defined value) of the instruction
-    if (operandIndex == -1) {
-        // Instructions like 'store' have no defined value, but their type is not void.
-        // We only consider instructions that actually define a value that can have a pointer.
-        if (!inst->getType()->isVoidTy() && llvmModuleSet->hasValueNode(inst)) {
-            NodeID varId = llvmModuleSet->getValueNode(inst);
-            SVF::SVFUtil::outs() << "Debug: Found LHS SVF Node ID: " << varId << "\n";
-            return svfg->getSVFGNode(varId);
-        } else {
-            SVF::SVFUtil::errs() << "Warning: Instruction at " << location << " does not define a value (e.g., store, free) or has no pointer type. Try specifying an operand index like --start-op 0.\n";
+    // The core issue is that PAG/SVFIR node IDs do not map directly to SVFG node IDs.
+    // We must find the SVFGNode through the SVFStmts associated with the ICFGNode.
+    const llvm::Value* targetLLVMValue = nullptr;
+    if (operandIndex == -1) { // User wants the LHS (defined value)
+        if (inst->getType()->isVoidTy()) {
+            SVF::SVFUtil::errs() << "Warning: Instruction at " << location << " does not define a value (e.g., store, free). Try specifying an operand index like --start-op 0.\n";
             return nullptr;
+        }
+        targetLLVMValue = inst;
+    } else { // User wants an RHS operand
+        if (operandIndex < 0 || static_cast<unsigned>(operandIndex) >= inst->getNumOperands()) {
+            SVF::SVFUtil::errs() << "Error: Invalid operand index " << opIndexStr << " for instruction at " << location
+                                 << ". It has " << inst->getNumOperands() << " operands (0 to " << inst->getNumOperands() - 1 << ").\n";
+            return nullptr;
+        }
+        targetLLVMValue = inst->getOperand(operandIndex);
+    }
+
+    if (!targetLLVMValue) {
+        SVF::SVFUtil::errs() << "Error: Could not determine target LLVM value for operand " << opIndexStr << " at " << location << ".\n";
+        return nullptr;
+    }
+
+    // Iterate through all SVFStmts in the ICFGNode to find the one that defines our target value.
+    for (const SVFStmt* stmt : icfgNode->getSVFStmts()) {
+        const SVFGNode* svfgNode = svfg->getSVFGNode(stmt->getEdgeID()); // Corrected: use getEdgeID()
+        if (!svfgNode) continue;
+        
+        // Directly check the SVFGNode's associated LLVM value
+        // SVFGNode has getVal() which returns SVFVar*, and SVFVar has getLLVMValue()
+        // Correction: The base VFGNode::getValue() returns nullptr. We must cast to a derived
+        // type that actually implements getValue() to return a meaningful SVFVar.
+        // StmtVFGNode, PHIVFGNode, and ArgumentVFGNode are major classes that do this.
+        const SVFVar* svfVar = nullptr;
+        if (const auto* stmtNode = SVFUtil::dyn_cast<StmtVFGNode>(svfgNode)) {
+            svfVar = stmtNode->getValue(); // getValue() on StmtVFGNode returns the destination SVFVar
+        } else if (const auto* phiNode = SVFUtil::dyn_cast<PHIVFGNode>(svfgNode)) {
+            svfVar = phiNode->getValue(); // getValue() on PHIVFGNode returns the result SVFVar
+        } else if (const auto* argNode = SVFUtil::dyn_cast<ArgumentVFGNode>(svfgNode)) {
+            svfVar = argNode->getValue(); // getValue() on ArgumentVFGNode returns the parameter SVFVar
+        }
+
+        if (svfVar) {
+            // There is no direct getLLVMValue() on SVFVar.
+            // We must get the ICFGNode from the SVFVar, and then get the llvm::Value from it.
+            const ICFGNode* varIcfgNode = nullptr;
+            if (const auto* valVar = SVFUtil::dyn_cast<ValVar>(svfVar)) {
+                varIcfgNode = valVar->getICFGNode();
+            } else if (const auto* objVar = SVFUtil::dyn_cast<BaseObjVar>(svfVar)) {
+                // BaseObjVar and its children (Stack, Heap, Global) have an ICFGNode
+                varIcfgNode = objVar->getICFGNode();
+            }
+
+            if (varIcfgNode && LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(varIcfgNode) == targetLLVMValue) {
+            SVF::SVFUtil::outs() << "Debug: Found matching SVFGNode for value at " << location << ".\n";
+            SVF::SVFUtil::outs() << "       |-- SVFGNode ID: " << svfgNode->getId() << "\n";
+            SVF::SVFUtil::outs() << "       |-- SVFGNode Type: " << getSVFGNodeKindString(svfgNode) << "\n";
+            SVF::SVFUtil::outs() << "       |-- Statement: " << *svfgNode << "\n";
+            return svfgNode;
+            }
         }
     }
 
-    // Case 2: User wants an RHS operand
-    if (operandIndex >= 0 && static_cast<unsigned>(operandIndex) < inst->getNumOperands()) {
-        const llvm::Value* operand = inst->getOperand(operandIndex);
-        if (llvmModuleSet->hasValueNode(operand)) {
-            NodeID varId = llvmModuleSet->getValueNode(operand);
-            SVF::SVFUtil::outs() << "Debug: Found RHS operand " << operandIndex << " SVF Node ID: " << varId << "\n";
-            return svfg->getSVFGNode(varId);
-        } else {
-            SVF::SVFUtil::errs() << "Error: Operand " << operandIndex << " at " << location << " does not have a corresponding SVF value node.\n";
-            return nullptr;
-        }
-    }
-
-    // Handle invalid index
-    SVF::SVFUtil::errs() << "Error: Invalid operand index " << opIndexStr << " for instruction at " << location
-                         << ". It has " << inst->getNumOperands() << " operands (0 to " << inst->getNumOperands() - 1 << ").\n";
+    SVF::SVFUtil::errs() << "Error: Could not find a matching SVFGNode for operand " << opIndexStr << " at location " << location << ".\n";
+    SVF::SVFUtil::errs() << "This might happen if the value is a constant or not a pointer type, and thus not represented in the SVFG.\n";
     return nullptr;
 }
 
-// /*!
-//  * \brief 在SVFG上分析从startLocation到targetLocation的路径控制条件。
-//  *
-//  * 该函数利用了Saber的源-汇分析框架(SrcSnkDDA)来执行此操作。
-//  * 1. 查找与源代码位置对应的ICFGNode，然后找到它们在SVFG中的对应节点。
-//  * 2. 使用自定义的PathCondQuery分析器（继承自SrcSnkDDA）。
-//  * 3. 将startNode设为源(source)，targetNode设为汇(sink)。
-//  * 4. 执行前向值流切片，然后是后向相关性切片。
-//  * 5. 求解路径条件并以JSON格式输出。
-//  *
-//  * \param svfg 指向SVFG的指针。
-//  * \param icfg 指向ICFG的指针。
-//  * \param startLocation 路径分析的起始位置。
-//  * \param targetLocation 路径分析的目标位置。
-//  */
-// void svfgPathCondReader(SVFG* svfg, ICFG* icfg, const std::string& startLocation, const std::string& targetLocation) {
-//     llvm::json::Object result;
-    
-//     // 使用新的、更可靠的查找函数
-//     // Options::StartOp() 和 Options::EndOp() 是新添加的命令行选项
-//     const SVFGNode* startSVFGNode = findSVFGNodeByLocation(svfg, icfg, startLocation, Options::StartOp());
-//     const SVFGNode* targetSVFGNode = findSVFGNodeByLocation(svfg, icfg, targetLocation, Options::EndOp());
+/*!
+ * \brief Displays all SVFG nodes associated with a given source code location.
+ *
+ * This function first finds the ICFGNode corresponding to the provided source location.
+ * Then, it retrieves all SVF statements associated with that ICFGNode and, for each
+ * statement, finds and prints details about the corresponding SVFGNode.
+ *
+ * \param svfg Pointer to the SVFG.
+ * \param icfg Pointer to the ICFG.
+ * \param location Source code location string (e.g., "filename:line").
+ */
+const SVFGNode* showSVFGNodeByLocation(SVFG* svfg, ICFG* icfg, const std::string& location) {
+    SVF::SVFUtil::outs() << "Searching for SVFG nodes at location '" << location << "'...\n";
+    const ICFGNode* icfgNode = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
+    if (!icfgNode) {
+        SVF::SVFUtil::errs() << "Error: Cannot find ICFGNode for location: " << location << "\n";
+        return nullptr;
+    }
+    SVF::SVFUtil::outs() << "Found ICFGNode with ID: " << icfgNode->getId() << " at " << location << "\n";
 
-//     if (!startSVFGNode || !targetSVFGNode) {
-//         result["error"] = true;
-//         result["message"] = "Invalid start or target SVFGNode. Please check locations and operand indices.";
-//         llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
-//         return;
-//     }
+    //使用 SVFG 的迭代器 svfg->begin() 和 svfg->end() 来遍历所有节点。
+    for (auto& pair : *svfg) {
+        SVFGNode* node = pair.second;
+        if (node->getICFGNode() == icfgNode) {
+            SVF::SVFUtil::outs() << "Found SVFGNode with ID: " << node->getId() << "\n";
+            SVF::SVFUtil::outs() << "SVFGNode info: " << node->toString() << "\n";
+            return node;
+        }
+    }
+    return nullptr;
+}
 
-//     SVF::SVFUtil::outs() << "Starting analysis from SVFGNode " << startSVFGNode->getId() << " to " << targetSVFGNode->getId() << "\n";
-
-//     PathCondQuery query(startSVFGNode, targetSVFGNode);
-//     query.analyzeQuery();
-//     llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(query.getResult())) << "\n";
-// }
 
 /*!
  * GraphReader: A tool to read and analyze SVF graphs.
@@ -200,12 +264,34 @@ int main(int argc, char ** argv) {
             GraphReaderUtil::sendJsonError("Could not find start node for value path analysis. Check location and operand index.");
         }
     }
+    else if (!Options::ValuePathInsideStart().empty()) {
+        int operandIndex = -1;
+        try {
+            operandIndex = std::stoi(Options::ValuePathOp());
+        } catch (const std::invalid_argument& ia) {
+            SVF::SVFUtil::errs() << "Warning: Invalid operand index '" << Options::ValuePathOp() << "' for intra-procedural value path. Using default -1.\n";
+        } catch (const std::out_of_range& oor) {
+            SVF::SVFUtil::errs() << "Warning: Operand index '" << Options::ValuePathOp() << "' for intra-procedural value path is out of range. Using default -1.\n";
+        }
+        const SVFGNode* startNode = showSVFGNodeByLocation(svfg, icfg, Options::ValuePathInsideStart());
+        if (startNode) {
+            PathQuery pq(svfg, icfg);
+            pq.getValueInsidePath(startNode);
+        } else {
+            GraphReaderUtil::sendJsonError("Could not find start node for intra-procedural value path analysis. Check location and operand index.");
+            SVF::SVFUtil::errs() << operandIndex << "Warning: Operand index '" << Options::ValuePathOp() << "' for intra-procedural value path is out of range. Using default -1.\n";
+        }
+    }
+
     else if (!Options::PathCondStart().empty() && !Options::PathCondEnd().empty()) {
         // svfgPathCondReader(svfg, icfg, Options::PathCondStart(), Options::PathCondEnd());
     }
     else if (!Options::PathCondInsideStart().empty() && !Options::PathCondInsideEnd().empty()) {
         PathQuery pq(nullptr, icfg);
         pq.getConditionInsidePath(Options::PathCondInsideStart(), Options::PathCondInsideEnd());
+    }
+    else if (!Options::ShowSVFGNode().empty()) {
+        showSVFGNodeByLocation(svfg, icfg, Options::ShowSVFGNode());
     }
     else {
         SVF::SVFUtil::outs() << "No analysis option specified. Use --help to see available options.\n";
@@ -229,3 +315,6 @@ int main(int argc, char ** argv) {
 // graph-reader -value-path-start=tif_dirwrite.c:1865 -value-path-op=0 PUT/libtiff-57449991.bc
 
 // graph-reader -path-cond-inside-start=tif_dirwrite.c:1360 -path-cond-inside-end=tif_dirwrite.c:1369 PUT/libtiff-57449991.bc
+// graph-reader -value-path-inside-start=tif_dirwrite.c:1893 -value-path-op=-1 PUT/libtiff-57449991.bc
+
+// graph-reader -show-svfg-node=tif_dirwrite.c:1893 PUT/libtiff-57449991.bc

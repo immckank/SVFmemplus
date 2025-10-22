@@ -39,6 +39,8 @@ public:
      */
     void getValuePath(const SVFGNode* startNode);
 
+    void getValueInsidePath(const SVFGNode* startNode);
+
     /*!
      * \brief Traverses all paths from a start to a target location in the ICFG.
      *

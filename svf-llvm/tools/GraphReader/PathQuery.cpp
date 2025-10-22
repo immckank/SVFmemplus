@@ -30,6 +30,81 @@ void PathQuery::getValuePath(const SVFGNode* startNode) {
     dfsVisit(startNode, initialPath, visited);
 }
 
+void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
+    // Records all locations where the variable corresponding to the currently concerned node
+    // is used or modified within the current function.
+
+    if (!startNode) {
+        GraphReaderUtil::sendJsonError("Error: Start node is null for getValueInsidePath.");
+        return;
+    }
+
+    const FunObjVar* startFunction = startNode->getFun();
+    if (!startFunction) {
+        GraphReaderUtil::sendJsonError("Error: Start node does not belong to a function.");
+        return;
+    }
+
+    llvm::json::Object result;
+    llvm::json::Array locationsArray;
+    std::set<const SVFGNode*> visited;
+    std::queue<const SVFGNode*> worklist;
+
+    SVFUtil::errs() << "Starting intra-procedural value-flow analysis from SVFGNode " << startNode->getId()
+                    << " (" << startNode->toString() << ")\n";
+    SVFUtil::errs() << "Function: " << startFunction->getName() << "\n";
+    SVFUtil::errs() << "--------------------------------------------------\n";
+
+    // Start BFS from the initial node
+    worklist.push(startNode);
+    visited.insert(startNode);
+
+    // Add the start node itself to the results
+    llvm::json::Object startNodeInfo;
+    startNodeInfo["id"] = startNode->getId();
+    startNodeInfo["location"] = GraphReaderUtil::parseSourceLocation(startNode->getSourceLoc());
+    startNodeInfo["description"] = startNode->toString();
+    locationsArray.push_back(std::move(startNodeInfo));
+
+    SVFUtil::errs() << "  [+] Found Node " << startNode->getId()
+                    << " at " << startNode->getSourceLoc()
+                    << " | " << startNode->toString() << "\n";
+
+
+    while (!worklist.empty()) {
+        const SVFGNode* currentNode = worklist.front();
+        worklist.pop();
+
+        for (const SVFGEdge* edge : currentNode->getOutEdges()) {
+            const SVFGNode* nextNode = edge->getDstNode();
+
+            // Only traverse within the same function as the start node
+            if (nextNode->getFun() == startFunction && visited.find(nextNode) == visited.end()) {
+                visited.insert(nextNode);
+                worklist.push(nextNode);
+
+                llvm::json::Object nodeInfo;
+                nodeInfo["id"] = nextNode->getId();
+                nodeInfo["location"] = GraphReaderUtil::parseSourceLocation(nextNode->getSourceLoc());
+                nodeInfo["description"] = nextNode->toString();
+                locationsArray.push_back(std::move(nodeInfo));
+
+                SVFUtil::errs() << "  [+] Found Node " << nextNode->getId()
+                                << " at " << nextNode->getSourceLoc()
+                                << " | " << nextNode->toString() << "\n";
+            }
+        }
+    }
+
+    result["start_node_id"] = startNode->getId();
+    result["function"] = startFunction->getName();
+    result["involved_locations"] = std::move(locationsArray);
+    result["error"] = false;
+    SVFUtil::errs() << "--------------------------------------------------\n";
+    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+}
+
+
 void PathQuery::dfsVisit(const SVFGNode* currentNode, SVFGPath& currentPath, std::set<const SVFGNode*>& visited) {
     // Add current node to path and visited set
     currentPath.push_back(currentNode);
@@ -94,8 +169,9 @@ void PathQuery::printPath(const SVFGPath& path, bool isFreed) {
     for (size_t i = 0; i < path.size(); ++i) {
         const SVFGNode* node = path[i];
         SVFUtil::outs() << "  " << i << ": "
-                        << "Node " << node->getId() 
-                        << " at " << node->getSourceLoc() << "\n";
+                        << "Node " << node->getId()
+                        << " at " << node->getSourceLoc()
+                        << " | " << node->toString() << "\n";
     }
     SVFUtil::outs() << "--------------------------------------------------\n";
 }
