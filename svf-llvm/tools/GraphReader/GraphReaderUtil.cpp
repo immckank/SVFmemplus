@@ -1,6 +1,8 @@
 #include "GraphReaderUtil.h"
 #include "SVF-LLVM/LLVMUtil.h"
 #include "SVFIR/SVFIR.h"
+#include "Graphs/SVFG.h"
+#include "Graphs/SVFGNode.h"
 #include "SVF-LLVM/LLVMModule.h"
 #include <llvm/Support/FormatVariadic.h>
 #include <llvm/IR/DebugInfo.h>
@@ -205,6 +207,40 @@ std::vector<const SVFVar*> findVarByLocation(const SVFIR* pag, const std::string
     }
     return results;
 }
+
+std::vector<const SVFVar*> findDefinedVarByLocation(const SVFIR* pag, const SVF::SVFG* svfg, const std::string& location) {
+    std::vector<const SVFVar*> results;
+    for (SVFIR::const_iterator it = pag->begin(), eit = pag->end(); it != eit; ++it) {
+        const PAGNode* pagNode = it->second;
+        std::string locString = pagNode->getSourceLoc();
+        if (locString.empty()) continue;
+        llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
+        if (auto file = locInfo.getString("fl")) {
+            if (auto line = locInfo.getInteger("ln")) {
+                std::string formattedLoc = file->str() + ":" + std::to_string(*line);
+                if (formattedLoc == location) {
+                    if (svfg->hasDefSVFGNode(pagNode)) {
+                        SVF::SVFUtil::outs() << "Found defined pag at " << pagNode->getSourceLoc() << "\n";
+                        results.push_back(pagNode); 
+                        const SVFGNode* defSVFGNode = svfg->getDefSVFGNode(pagNode);
+                        SVF::SVFUtil::outs() << "DefSVFGNode info: " << defSVFGNode->toString() << "\n";
+                        
+                    } else {
+                        SVF::SVFUtil::outs() << "Not found defined pag at " << pagNode->getSourceLoc() << "\n";
+                    }
+                    if (SVFUtil::isa<ValVar>(pagNode)) {
+                        SVF::SVFUtil::outs() << "Var info: " << SVFUtil::cast<ValVar>(pagNode)->toString() << "\n";
+                    } else {
+                        SVF::SVFUtil::outs() << "Var info: " << SVFUtil::cast<ObjVar>(pagNode)->toString() << "\n";
+                    }
+                    SVF::SVFUtil::outs() << "\n";
+                }
+            }
+        }
+    }
+    return results;
+}
+
 
 FunctionSourceInfo getFunctionSourceInfo(const llvm::Function* llvmFun) {
     if (!llvmFun) {

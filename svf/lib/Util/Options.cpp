@@ -859,6 +859,12 @@ const Option<std::string> Options::FindBodyByName(
     ""
 );
 
+const Option<std::string> Options::FindAllCallees(
+    "find-all-callees",
+    "Find all functions that can be called by a given function name (transitively)",
+    ""
+);
+
 const Option<std::string> Options::FindVarByLocation(
     "find-var-by-location",
     "Find and print SVFVar by source location",

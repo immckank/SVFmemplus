@@ -239,8 +239,11 @@ int main(int argc, char ** argv) {
     else if (!Options::FindBodyByName().empty()) {
         fq.findFunctionBodyByName(Options::FindBodyByName());
     }
+    else if (!Options::FindAllCallees().empty()) {
+        fq.findAllCalleesByName(Options::FindAllCallees());
+    }
     else if (!Options::FindVarByLocation().empty()) {
-        GraphReaderUtil::findVarByLocation(pag, Options::FindVarByLocation());
+        GraphReaderUtil::findDefinedVarByLocation(pag, svfg, Options::FindVarByLocation());
     }
     else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
         // SVFG is not needed for this query, so we can pass nullptr.
