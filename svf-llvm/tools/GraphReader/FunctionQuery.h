@@ -34,6 +34,9 @@ public:
 
     //! Find and print information about a function by its name.
     void findFunctionBodyByName(const std::string& functionName);
+
+    //! Find all functions that can be called by a given function (transitively).
+    void findAllCalleesByName(const std::string& functionName);
 };
 
 } // namespace SVF

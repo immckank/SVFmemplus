@@ -859,6 +859,12 @@ const Option<std::string> Options::FindBodyByName(
     ""
 );
 
+const Option<std::string> Options::FindAllCallees(
+    "find-all-callees",
+    "Find all functions that can be called by a given function name (transitively)",
+    ""
+);
+
 const Option<std::string> Options::FindVarByLocation(
     "find-var-by-location",
     "Find and print SVFVar by source location",
@@ -876,6 +882,25 @@ const Option<std::string> Options::PathCondEnd(
     "End location for path condition analysis",
     ""
 );
+
+const Option<std::string> Options::ValuePathStart(
+    "value-path-start",
+    "Start location for value path analysis (e.g., file.c:123)",
+    ""
+);
+
+const Option<std::string> Options::ValuePathOp(
+    "value-path-op",
+    "Operand index for the value path start location (-1 for defined value)",
+    "-1"
+);
+
+const Option<std::string> Options::ValuePathInsideStart(
+    "value-path-inside-start",
+    "Start location for intra-procedural value path analysis (e.g., file.c:123)",
+    ""
+);
+
 
 // const Option<int> Options::StartOp(
 //     "start-op",
@@ -901,9 +926,27 @@ const Option<std::string> Options::PathCondFuncEnd(
     ""
 );
 
+const Option<std::string> Options::PathCondInsideStart(
+    "path-cond-inside-start",
+    "Start location for intra-procedural path condition analysis",
+    ""
+);
+
+const Option<std::string> Options::PathCondInsideEnd(
+    "path-cond-inside-end",
+    "End location for intra-procedural path condition analysis",
+    ""
+);
+
 const Option<std::string> Options::Analysis(
     "analysis",
     "Specify the type of analysis to run (e.g., svfg-check)",
+    ""
+);
+
+const Option<std::string> Options::ShowSVFGNode(
+    "show-svfg-node",
+    "Show SVFG nodes associated with a source location (e.g., file.c:123)",
     ""
 );
 

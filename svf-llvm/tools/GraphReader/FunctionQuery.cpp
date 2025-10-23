@@ -113,6 +113,12 @@ void SVF::FunctionQuery::findFunctionBodyByName(const std::string& functionName)
 
     if (!svfFun) {
         GraphReaderUtil::sendJsonError("Function '" + functionName + "' not found.");
+        // 调试输出：当找不到函数时，打印 PAG 中所有可用的函数名
+        SVF::SVFUtil::errs() << "Debug: Available functions in PAG:\n";
+        // 遍历 funArgsListMap 来获取所有的 FunObjVar，然后打印它们的名称
+        for (auto const& [fun, args] : pag->getFunArgsMap()) {
+            SVF::SVFUtil::errs() << "  - " << fun->getName() << "\n";
+        }
         return;
     }
 
@@ -126,6 +132,55 @@ void SVF::FunctionQuery::findFunctionBodyByName(const std::string& functionName)
     }
 
     result = GraphReaderUtil::getFunctionInfoJson(llvmFun);
+    result["error"] = false;
+    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+}
+
+void SVF::FunctionQuery::findAllCalleesByName(const std::string& functionName) {
+    llvm::json::Object result;
+    const CallGraph* callGraph = pag->getCallGraph();
+    const FunObjVar* startFun = pag->getFunObjVar(functionName);
+
+    if (!startFun) {
+        GraphReaderUtil::sendJsonError("Function '" + functionName + "' not found.");
+        return;
+    }
+
+    const CallGraphNode* startNode = callGraph->getCallGraphNode(startFun);
+    if (!startNode) {
+        GraphReaderUtil::sendJsonError("Could not find CallGraphNode for function '" + functionName + "'.");
+        return;
+    }
+
+    llvm::json::Array calleesArray;
+    Set<std::string> calleeNames;
+    std::queue<const CallGraphNode*> worklist;
+    Set<const CallGraphNode*> visited;
+
+    worklist.push(startNode);
+    visited.insert(startNode);
+
+    while (!worklist.empty()) {
+        const CallGraphNode* currentNode = worklist.front();
+        worklist.pop();
+
+        for (const CallGraphEdge* edge : currentNode->getOutEdges()) {
+            const CallGraphNode* calleeNode = edge->getDstNode();
+            const FunObjVar* calleeFun = calleeNode->getFunction();
+            if (calleeFun && calleeNames.find(calleeFun->getName()) == calleeNames.end()) {
+                calleeNames.insert(calleeFun->getName());
+                calleesArray.push_back(calleeFun->getName());
+            }
+
+            if (visited.find(calleeNode) == visited.end()) {
+                visited.insert(calleeNode);
+                worklist.push(calleeNode);
+            }
+        }
+    }
+
+    result["function"] = functionName;
+    result["callees"] = std::move(calleesArray);
     result["error"] = false;
     llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
 }

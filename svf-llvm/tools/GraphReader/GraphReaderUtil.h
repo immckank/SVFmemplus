@@ -5,6 +5,8 @@
 #include "SVFIR/SVFIR.h"
 #include "SVFIR/SVFVariables.h"
 #include "SVFIR/SVFValue.h"
+#include "Graphs/SVFG.h"
+#include "Graphs/SVFGNode.h"
 #include <llvm/IR/Function.h>
 #include <llvm/Support/JSON.h>
 #include <string>
@@ -12,6 +14,7 @@
 namespace SVF {
 
 class SVFIR; // Forward declaration
+class SVFG;  // Forward declaration
 
 /// @struct FunctionSourceInfo
 /// @brief Encapsulates source code information extracted from LLVM debug info.
@@ -41,6 +44,8 @@ namespace GraphReaderUtil {
 
     std::vector<const SVFVar*> findVarByLocation(const SVFIR* pag, const std::string& location);
 
+    std::vector<const SVFVar*> findDefinedVarByLocation(const SVFIR* pag, const SVFG* svfg, const std::string& location);
+    
     /*!
      * \brief Gets the source file info (name, start/end line) of an llvm::Function.
      */
@@ -65,6 +70,12 @@ namespace GraphReaderUtil {
      */
     llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun);
 
+    /*!
+     * \brief Formats an IntraCFGEdge's branch information into a JSON object.
+     * \param intraEdge The edge to format.
+     * \return A llvm::json::Object with type, location, and condition_value.
+     */
+    llvm::json::Object formatBranchInfo(const IntraCFGEdge* intraEdge);
 
 } // namespace GraphReaderUtil
 } // namespace SVF

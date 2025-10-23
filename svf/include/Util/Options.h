@@ -275,12 +275,19 @@ public:
     static const Option<std::string> FindCalleeBody;
     static const Option<std::string> FindFuncBody;
     static const Option<std::string> FindBodyByName;
+    static const Option<std::string> FindAllCallees;
     static const Option<std::string> FindVarByLocation;
     static const Option<std::string> PathCondStart;
     static const Option<std::string> PathCondEnd;
+    static const Option<std::string> ValuePathStart;
+    static const Option<std::string> ValuePathOp;
+    static const Option<std::string> ValuePathInsideStart;
     static const Option<std::string> PathCondFuncStart;
     static const Option<std::string> PathCondFuncEnd;
+    static const Option<std::string> PathCondInsideStart;
+    static const Option<std::string> PathCondInsideEnd;
     static const Option<std::string> Analysis;
+    static const Option<std::string> ShowSVFGNode;
 };
 }  // namespace SVF
 
