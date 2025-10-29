@@ -673,7 +673,7 @@ const Option<bool> Options::AnderSVFG(
     false
 );
 
-const Option<bool> Options::SABERFULLSVFG(
+Option<bool> Options::SABERFULLSVFG(
     "saber-full-svfg",
     "When using SABER for bug detection pass, enable full svfg on top of the pointer-only one",
     false
@@ -818,6 +818,8 @@ const Option<bool> Options::DFreeCheck(
     "dfree", "Double Free Detection",false);
 const Option<bool> Options::UAFCheck(
     "uaf", "Use Afrer Free Detection",false);
+const Option<bool> Options::UninitCheck(
+    "uninit", "Use Afrer Free Detection",false);
 const Option<bool> Options::RaceCheck(
     "race", "Data race Detection",false);
 const Option<bool> Options::GepUnknownIdx(
@@ -832,6 +834,13 @@ const Option<u32_t> Options::AEPrecision(
     "precision",
     "symbolic abstraction precision for float",
     0
+);
+
+// SaberSVFGBuilder.cpp
+Option<bool> Options::SaberKeepDerefDirSVFGEdges(
+    "saber-keep-deref-dir-svfg-edges",
+    "Don't rm DerefDirSVFGEdges in SaberSVFGBuilder::buildSVFG",
+    false
 );
 
 } // namespace SVF.

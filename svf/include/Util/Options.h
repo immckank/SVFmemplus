@@ -216,7 +216,7 @@ public:
     // WPAPass.cpp
     static const Option<std::string> ExtAPIPath;
     static const Option<bool> AnderSVFG;
-    static const Option<bool> SABERFULLSVFG;
+    static Option<bool> SABERFULLSVFG;
     static const Option<bool> PrintAliases;
     static OptionMultiple<PointerAnalysis::PTATY> PASelected;
     static OptionMultiple<u32_t> AliasRule;
@@ -259,6 +259,8 @@ public:
     static const Option<bool> DFreeCheck;
     /// use after free checker, Default: false
     static const Option<bool> UAFCheck;
+    /// use of uninit checker, Default: false
+    static const Option<bool> UninitCheck;
     /// data race checker, Default: false
     static const Option<bool> RaceCheck;
     /// if the access index of gepstmt is unknown, skip it, Default: false
@@ -269,6 +271,9 @@ public:
 
     // float precision for symbolic abstraction
     static const Option<u32_t> AEPrecision;
+
+    // Whether to keep DerefDirSVFGEdges in SaberSVFGBuilder::buildSVFG, Default: false
+    static Option<bool> SaberKeepDerefDirSVFGEdges;
 };
 }  // namespace SVF
 

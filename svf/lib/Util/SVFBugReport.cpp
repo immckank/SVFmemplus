@@ -46,7 +46,8 @@ const std::map<GenericBug::BugType, std::string> GenericBug::BugType2Str =
     {GenericBug::DOUBLEFREE, "Double Free"},
     {GenericBug::FULLNULLPTRDEREFERENCE, "Full Null Ptr Dereference"},
     {GenericBug::PARTIALNULLPTRDEREFERENCE, "Partial Null Ptr Dereference"},
-    {GenericBug::USEAFTERFREE, "Use After Free"}
+    {GenericBug::USEAFTERFREE, "Use After Free"},
+    {GenericBug::UNINIT, "Use of Uninitalized Struct"}
 };
 
 const std::string GenericBug::getLoc() const
@@ -219,7 +220,7 @@ cJSON * UseAfterFreeBug::getBugDescription() const
 
         cJSON_AddItemToArray(pathInfo, newBranch);
     }
-    cJSON_AddItemToObject(bugDescription, "DoubleFreePath", pathInfo);
+    cJSON_AddItemToObject(bugDescription, "UseAfterFreePath", pathInfo);
 
     return bugDescription;
 }
@@ -246,6 +247,48 @@ void UseAfterFreeBug::printBugToTerminal() const
     }
     SVFUtil::errs() << "\n";
 }
+
+cJSON * UninitBug::getBugDescription() const
+{
+    cJSON *bugDescription = cJSON_CreateObject();
+
+    cJSON *pathInfo = cJSON_CreateArray();
+    auto lastBranchEventIt = bugEventStack.end() - 1;
+    for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
+    {
+        cJSON *newBranch = cJSON_CreateObject();
+        cJSON *branchLoc = cJSON_Parse((*eventIt).getEventLoc().c_str());
+        if(branchLoc == nullptr) branchLoc = cJSON_CreateObject();
+        cJSON *branchCondition = cJSON_CreateString((*eventIt).getEventDescription().c_str());
+
+        cJSON_AddItemToObject(newBranch, "BranchLoc", branchLoc);
+        cJSON_AddItemToObject(newBranch, "BranchCond", branchCondition);
+
+        cJSON_AddItemToArray(pathInfo, newBranch);
+    }
+    cJSON_AddItemToObject(bugDescription, "UninitPath", pathInfo);
+
+    return bugDescription;
+}
+
+void UninitBug::printBugToTerminal() const
+{
+    SVFUtil::errs() << SVFUtil::bugMsg2("\t Uninit use :") <<  " memory allocation at : ("
+                    << GenericBug::getLoc() << ")\n";
+
+    auto lastBranchEventIt = bugEventStack.end() - 1;
+    for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
+    {
+        u32_t eventType = (*eventIt).getEventType();
+
+        if(eventType == SVFBugEvent::Use){
+            SVFUtil::errs() << "\t  Use at : ("<< (*eventIt).getEventLoc() << ")  \n";
+        }
+        else SVFUtil::errs() << "\t\t  --> (" << (*eventIt).getEventLoc() << "|" << (*eventIt).getEventDescription() << ") \n";
+    }
+    SVFUtil::errs() << "\n";
+}
+
 
 cJSON * FileNeverCloseBug::getBugDescription() const
 {
