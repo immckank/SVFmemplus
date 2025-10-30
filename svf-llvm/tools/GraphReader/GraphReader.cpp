@@ -212,6 +212,9 @@ const SVFGNode* showSVFGNodeByLocation(SVFG* svfg, ICFG* icfg, const std::string
  * It uses SVF's command-line option system for analysis selection.
  */
 int main(int argc, char ** argv) {
+    //现在graph-reader只接受一次bc文件输入
+    //随后一直接受各种json格式的分析选项
+    // 首次启动分析 graph-reader <input-bitcode>
     std::vector<std::string> moduleNameVec = 
         OptionBase::parseOptions(argc, argv, "GraphReader", "[options] <input-bitcode...>");
 
@@ -226,81 +229,142 @@ int main(int argc, char ** argv) {
     SVFG* svfg = memSSA->buildFullSVFG(ander);
 
     FunctionQuery fq(icfg, pag);
+    PathQuery pq(svfg, icfg);
+    {
+        llvm::json::Object ready;
+        ready["ready"] = true;
+        ready["message"] = "graphreader-initialized";
+        llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(ready))) << "\n";
+        SVF::SVFUtil::outs().flush();
+    }
+    
+    // 作为长驻进程，按行读取 JSON 请求，仅在收到 exit 或 EOF 时退出
+    while (true) {
+        std::string jsonInput;
+        if (!std::getline(std::cin, jsonInput)) {
+            break; // EOF
+        }
+        if (jsonInput.empty()) {
+            continue;
+        }
 
-    if (!Options::FindCallSites().empty()) {
-        fq.findCallSites(Options::FindCallSites());
-    }
-    else if (!Options::FindCalleeBody().empty()) {
-        fq.findCalleeBodyByLocation(Options::FindCalleeBody());
-    }
-    else if (!Options::FindFuncBody().empty()) {
-        fq.findFunctionBodyByLocation(Options::FindFuncBody());
-    }
-    else if (!Options::FindBodyByName().empty()) {
-        fq.findFunctionBodyByName(Options::FindBodyByName());
-    }
-    else if (!Options::FindAllCallees().empty()) {
-        fq.findAllCalleesByName(Options::FindAllCallees());
-    }
-    else if (!Options::FindVarByLocation().empty()) {
-        GraphReaderUtil::findDefinedVarByLocation(pag, svfg, Options::FindVarByLocation());
-    }
-    else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
-        // SVFG is not needed for this query, so we can pass nullptr.
-        PathQuery pq(nullptr, icfg);
-        pq.getConditionPath(Options::PathCondFuncStart(), Options::PathCondFuncEnd());
-    }
-    else if (!Options::ValuePathStart().empty()) {
-        int operandIndex = -1;
-        try {
-            operandIndex = std::stoi(Options::ValuePathOp());
-        } catch (const std::invalid_argument& ia) {
-            SVF::SVFUtil::errs() << "Warning: Invalid operand index '" << Options::ValuePathOp() << "'. Using default -1.\n";
-        } catch (const std::out_of_range& oor) {
-            SVF::SVFUtil::errs() << "Warning: Operand index '" << Options::ValuePathOp() << "' is out of range. Using default -1.\n";
+        std::string errMsg;
+        std::vector<llvm::json::Object> cmds;
+        if (!SVF::GraphReaderUtil::parseCommandsLine(jsonInput, cmds, errMsg)) {
+            SVF::GraphReaderUtil::sendJsonError("json parse error: " + errMsg);
+            SVF::SVFUtil::outs().flush();
+            SVF::SVFUtil::errs().flush();
+            continue;
         }
-        const SVFGNode* startNode = findSVFGNodeByLocation(svfg, icfg, Options::ValuePathStart(), operandIndex);
-        if (startNode) {
-            PathQuery pq(svfg, icfg);
-            pq.getValuePath(startNode);
-        } else {
-            GraphReaderUtil::sendJsonError("Could not find start node for value path analysis. Check location and operand index.");
-        }
-    }
-    else if (!Options::ValuePathInsideStart().empty()) {
-        int operandIndex = -1;
-        try {
-            operandIndex = std::stoi(Options::ValuePathOp());
-        } catch (const std::invalid_argument& ia) {
-            SVF::SVFUtil::errs() << "Warning: Invalid operand index '" << Options::ValuePathOp() << "' for intra-procedural value path. Using default -1.\n";
-        } catch (const std::out_of_range& oor) {
-            SVF::SVFUtil::errs() << "Warning: Operand index '" << Options::ValuePathOp() << "' for intra-procedural value path is out of range. Using default -1.\n";
-        }
-        const SVFGNode* startNode = showSVFGNodeByLocation(svfg, icfg, Options::ValuePathInsideStart());
-        if (startNode) {
-            PathQuery pq(svfg, icfg);
-            pq.getValueInsidePath(startNode);
-        } else {
-            GraphReaderUtil::sendJsonError("Could not find start node for intra-procedural value path analysis. Check location and operand index.");
-            SVF::SVFUtil::errs() << operandIndex << "Warning: Operand index '" << Options::ValuePathOp() << "' for intra-procedural value path is out of range. Using default -1.\n";
-        }
-    }
 
-    else if (!Options::PathCondStart().empty() && !Options::PathCondEnd().empty()) {
-        // svfgPathCondReader(svfg, icfg, Options::PathCondStart(), Options::PathCondEnd());
+        bool shouldExit = false;
+        for (auto &cmd : cmds) {
+            std::string cname;
+            if (auto s = cmd.getString("command")) {
+                cname = s->str();
+            } else {
+                SVF::GraphReaderUtil::sendJsonError("missing 'command'");
+                continue;
+            }
+
+            if (cname == "find-function-body-by-name") {
+                if (auto n = cmd.getString("name")) {
+                    fq.findFunctionBodyByName(n->str());
+                } else {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'name'");
+                }
+            } else if (cname == "find-function-body-by-location") {
+                if (auto loc = cmd.getString("location")) {
+                    fq.findFunctionBodyByLocation(loc->str());
+                } else {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                }
+            } else if (cname == "find-all-function-call-sites") {
+                if (auto n = cmd.getString("name")) {
+                    fq.findCallSites(n->str());
+                } else {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'name'");
+                }
+            } else if (cname == "find-all-function-callees") {
+                if (auto n = cmd.getString("name")) {
+                    fq.findAllCalleesByName(n->str());
+                } else {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'name'");
+                }
+            } else if (cname == "exit") {
+                shouldExit = true;
+            } else {
+                SVF::GraphReaderUtil::sendJsonError("unknown command: " + cname);
+            }
+        }
+
+        SVF::SVFUtil::outs().flush();
+        SVF::SVFUtil::errs().flush();
+        if (shouldExit) break;
     }
-    else if (!Options::PathCondInsideStart().empty() && !Options::PathCondInsideEnd().empty()) {
-        PathQuery pq(nullptr, icfg);
-        pq.getConditionInsidePath(Options::PathCondInsideStart(), Options::PathCondInsideEnd());
-    }
-    else if (!Options::ShowSVFGNode().empty()) {
-        showSVFGNodeByLocation(svfg, icfg, Options::ShowSVFGNode());
-    }
-    else {
-        SVF::SVFUtil::outs() << "No analysis option specified. Use --help to see available options.\n";
-        SVF::SVFUtil::outs() << "Defaulting to an example: finding call sites for 'stats_prefix_record_get'\n";
-        fq.findCallSites("stats_prefix_record_get");
-    }
+    
+
+    // else if (!Options::FindCalleeBody().empty()) {
+    //     fq.findCalleeBodyByLocation(Options::FindCalleeBody());
+    // }
+    // else if (!Options::FindVarByLocation().empty()) {
+    //     GraphReaderUtil::findDefinedVarByLocation(pag, svfg, Options::FindVarByLocation());
+    // }
+    // else if (!Options::PathCondFuncStart().empty() && !Options::PathCondFuncEnd().empty()) {
+    //     // SVFG is not needed for this query, so we can pass nullptr.
+    //     PathQuery pq(nullptr, icfg);
+    //     pq.getConditionPath(Options::PathCondFuncStart(), Options::PathCondFuncEnd());
+    // }
+    // else if (!Options::ValuePathStart().empty()) {
+    //     int operandIndex = -1;
+    //     try {
+    //         operandIndex = std::stoi(Options::ValuePathOp());
+    //     } catch (const std::invalid_argument& ia) {
+    //         SVF::SVFUtil::errs() << "Warning: Invalid operand index '" << Options::ValuePathOp() << "'. Using default -1.\n";
+    //     } catch (const std::out_of_range& oor) {
+    //         SVF::SVFUtil::errs() << "Warning: Operand index '" << Options::ValuePathOp() << "' is out of range. Using default -1.\n";
+    //     }
+    //     const SVFGNode* startNode = findSVFGNodeByLocation(svfg, icfg, Options::ValuePathStart(), operandIndex);
+    //     if (startNode) {
+    //         PathQuery pq(svfg, icfg);
+    //         pq.getValuePath(startNode);
+    //     } else {
+    //         GraphReaderUtil::sendJsonError("Could not find start node for value path analysis. Check location and operand index.");
+    //     }
+    // }
+    // else if (!Options::ValuePathInsideStart().empty()) {
+    //     int operandIndex = -1;
+    //     try {
+    //         operandIndex = std::stoi(Options::ValuePathOp());
+    //     } catch (const std::invalid_argument& ia) {
+    //         SVF::SVFUtil::errs() << "Warning: Invalid operand index '" << Options::ValuePathOp() << "' for intra-procedural value path. Using default -1.\n";
+    //     } catch (const std::out_of_range& oor) {
+    //         SVF::SVFUtil::errs() << "Warning: Operand index '" << Options::ValuePathOp() << "' for intra-procedural value path is out of range. Using default -1.\n";
+    //     }
+    //     const SVFGNode* startNode = showSVFGNodeByLocation(svfg, icfg, Options::ValuePathInsideStart());
+    //     if (startNode) {
+    //         PathQuery pq(svfg, icfg);
+    //         pq.getValueInsidePath(startNode);
+    //     } else {
+    //         GraphReaderUtil::sendJsonError("Could not find start node for intra-procedural value path analysis. Check location and operand index.");
+    //         SVF::SVFUtil::errs() << operandIndex << "Warning: Operand index '" << Options::ValuePathOp() << "' for intra-procedural value path is out of range. Using default -1.\n";
+    //     }
+    // }
+    // else if (!Options::PathCondStart().empty() && !Options::PathCondEnd().empty()) {
+    //     // svfgPathCondReader(svfg, icfg, Options::PathCondStart(), Options::PathCondEnd());
+    // }
+    // else if (!Options::PathCondInsideStart().empty() && !Options::PathCondInsideEnd().empty()) {
+    //     PathQuery pq(nullptr, icfg);
+    //     pq.getConditionInsidePath(Options::PathCondInsideStart(), Options::PathCondInsideEnd());
+    // }
+    // else if (!Options::ShowSVFGNode().empty()) {
+    //     showSVFGNodeByLocation(svfg, icfg, Options::ShowSVFGNode());
+    // }
+    // else {
+    //     SVF::SVFUtil::outs() << "No analysis option specified. Use --help to see available options.\n";
+    //     SVF::SVFUtil::outs() << "Defaulting to an example: finding call sites for 'stats_prefix_record_get'\n";
+    //     fq.findCallSites("stats_prefix_record_get");
+    // }
     return 0;
 }
 

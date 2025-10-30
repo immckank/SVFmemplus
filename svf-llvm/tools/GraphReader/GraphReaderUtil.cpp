@@ -1,14 +1,55 @@
 #include "GraphReaderUtil.h"
 #include "SVF-LLVM/LLVMUtil.h"
+#include "SVF-LLVM/LLVMModule.h"
 #include "SVFIR/SVFIR.h"
 #include "Graphs/SVFG.h"
 #include "Graphs/SVFGNode.h"
-#include "SVF-LLVM/LLVMModule.h"
-#include <llvm/Support/FormatVariadic.h>
-#include <llvm/IR/DebugInfo.h>
+#include "llvm/IR/DebugInfo.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/JSON.h"
 
 namespace SVF {
 namespace GraphReaderUtil {
+
+bool parseCommandsLine(const std::string& jsonStr,
+                       std::vector<llvm::json::Object>& outCmds,
+                       std::string& errMsg) {
+    outCmds.clear();
+
+    auto parsed = llvm::json::parse(jsonStr);
+    if (!parsed) {
+        errMsg = llvm::toString(parsed.takeError());
+        return false;
+    }
+
+    llvm::json::Value root = std::move(*parsed);
+
+    if (auto* arr = root.getAsArray()) {
+        for (auto& v : *arr) {
+            if (auto* o = v.getAsObject()) {
+                outCmds.push_back(*o);
+            }
+        }
+        return true;
+    }
+
+    if (auto* obj = root.getAsObject()) {
+        if (auto* arr2 = obj->getArray("commands")) {
+            for (auto& v : *arr2) {
+                if (auto* o = v.getAsObject()) {
+                    outCmds.push_back(*o);
+                }
+            }
+            return true;
+        }
+        outCmds.push_back(*obj);
+        return true;
+    }
+
+    errMsg = "unsupported json format";
+    return false;
+}
 
 llvm::json::Object parseSourceLocation(const std::string& sourceLocString) {
     if (sourceLocString.empty()) {

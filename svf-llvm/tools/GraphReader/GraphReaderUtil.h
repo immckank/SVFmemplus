@@ -10,6 +10,7 @@
 #include <llvm/IR/Function.h>
 #include <llvm/Support/JSON.h>
 #include <string>
+#include <vector>
 
 namespace SVF {
 
@@ -76,6 +77,14 @@ namespace GraphReaderUtil {
      * \return A llvm::json::Object with type, location, and condition_value.
      */
     llvm::json::Object formatBranchInfo(const IntraCFGEdge* intraEdge);
+
+    /// Parse a JSON string into a list of command objects.
+    /// Supports: an array of objects; a single object; or an object with a
+    /// top-level "commands" array. Returns true on success; otherwise false and
+    /// sets errMsg.
+    bool parseCommandsLine(const std::string& jsonStr,
+                           std::vector<llvm::json::Object>& outCmds,
+                           std::string& errMsg);
 
 } // namespace GraphReaderUtil
 } // namespace SVF

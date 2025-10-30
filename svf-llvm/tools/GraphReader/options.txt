@@ -1,0 +1,8 @@
+function
+{ "command" : "find-function-body-by-name", "name" : "X509V3_EXT_add_alias" }
+{ "command" : "find-function-body-by-location", "location" : "bf_enc.c:30" } 
+{ "command" : "find-all-function-call-sites", "name" : "TIFFCreateDirectory" }
+{ "command" : "find-all-function-callees", "name" : "ssl_module_init" }
+
+command
+{ "command" : "exit" }
