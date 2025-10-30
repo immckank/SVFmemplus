@@ -49,7 +49,8 @@ void SVF::FunctionQuery::findCallSites(const std::string& functionName) {
     }
     result["call_sites"] = std::move(callSites);
     result["error"] = false;
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
 }
 
 void SVF::FunctionQuery::findCalleeBodyByLocation(const std::string& location) {
@@ -82,7 +83,8 @@ void SVF::FunctionQuery::findCalleeBodyByLocation(const std::string& location) {
     }
     result["callee_functions"] = std::move(calleeFunctions);
     result["error"] = false;
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
 }
 
 void SVF::FunctionQuery::findFunctionBodyByLocation(const std::string& location) {
@@ -104,7 +106,8 @@ void SVF::FunctionQuery::findFunctionBodyByLocation(const std::string& location)
 
     result = GraphReaderUtil::getFunctionInfoJson(llvmFun);
     result["error"] = false;
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
 }
 
 void SVF::FunctionQuery::findFunctionBodyByName(const std::string& functionName) {
@@ -133,7 +136,8 @@ void SVF::FunctionQuery::findFunctionBodyByName(const std::string& functionName)
 
     result = GraphReaderUtil::getFunctionInfoJson(llvmFun);
     result["error"] = false;
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
 }
 
 void SVF::FunctionQuery::findAllCalleesByName(const std::string& functionName) {
@@ -182,5 +186,6 @@ void SVF::FunctionQuery::findAllCalleesByName(const std::string& functionName) {
     result["function"] = functionName;
     result["callees"] = std::move(calleesArray);
     result["error"] = false;
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
 }

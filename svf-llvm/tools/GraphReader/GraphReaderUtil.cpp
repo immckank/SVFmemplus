@@ -317,7 +317,8 @@ void sendJsonError(const std::string& message) {
     llvm::json::Object result;
     result["error"] = true;
     result["message"] = message;
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
 }
 
 llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun) {

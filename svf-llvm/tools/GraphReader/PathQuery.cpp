@@ -101,7 +101,8 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
     result["involved_locations"] = std::move(locationsArray);
     result["error"] = false;
     SVFUtil::errs() << "--------------------------------------------------\n";
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
 }
 
 
@@ -270,7 +271,8 @@ void PathQuery::getConditionPath(const std::string& startLocation, const std::st
 
     result["paths"] = std::move(pathsArray);
     result["error"] = false;
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
 }
 
 void PathQuery::getConditionInsidePath(const std::string& startLocation, const std::string& targetLocation)
@@ -353,7 +355,8 @@ void PathQuery::getConditionInsidePath(const std::string& startLocation, const s
 
     result["paths"] = std::move(pathsArray);
     result["error"] = false;
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
 }
 
 void PathQuery::getConstrain(const std::string& location) {
@@ -384,7 +387,8 @@ void PathQuery::getConstrain(const std::string& location) {
                     llvm::json::Object result;
                     result["constraint_found"] = true;
                     result["branch_info"] = GraphReaderUtil::formatBranchInfo(intraEdge);
-                    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+                    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                    llvm::outs().flush();
                     return;
                 }
             }
@@ -401,7 +405,8 @@ void PathQuery::getConstrain(const std::string& location) {
     llvm::json::Object result;
     result["constraint_found"] = false;
     result["message"] = "No preceding conditional branch found within the function.";
-    llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
 }
 
 } // namespace SVF

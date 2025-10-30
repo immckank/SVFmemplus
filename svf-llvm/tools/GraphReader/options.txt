@@ -4,5 +4,20 @@ function
 { "command" : "find-all-function-call-sites", "name" : "TIFFCreateDirectory" }
 { "command" : "find-all-function-callees", "name" : "ssl_module_init" }
 
+path
+{ "command" : "find-cond-path-inside", "start" : "example.c:123", "end" : "example.c:132" }
+{ "command" : "find-cond-path", "start" : "example.c:123", "end" : "example.c:345" }
+
+value path Debug
+{ "command" : "show-value-path-inside", "start" : "tif_dirwrite.c:1083", "index" : "1" }
+
+
+
 command
 { "command" : "exit" }
+
+
+
+command for test 
+{ "command" : "show-value-path-inside", "start" : "tif_dirwrite.c:1099", "index" : "-1" }
+{ "command" : "show-value-path-inside", "start" : "tif_dirwrite.c:1096", "index" : "-1" }

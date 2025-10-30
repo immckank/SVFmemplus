@@ -234,8 +234,8 @@ int main(int argc, char ** argv) {
         llvm::json::Object ready;
         ready["ready"] = true;
         ready["message"] = "graphreader-initialized";
-        llvm::outs() << llvm::formatv("{0:2}", llvm::json::Value(std::move(ready))) << "\n";
-        SVF::SVFUtil::outs().flush();
+        llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(ready))) << "\n";
+        llvm::outs().flush();
     }
     
     // 作为长驻进程，按行读取 JSON 请求，仅在收到 exit 或 EOF 时退出
@@ -252,8 +252,8 @@ int main(int argc, char ** argv) {
         std::vector<llvm::json::Object> cmds;
         if (!SVF::GraphReaderUtil::parseCommandsLine(jsonInput, cmds, errMsg)) {
             SVF::GraphReaderUtil::sendJsonError("json parse error: " + errMsg);
-            SVF::SVFUtil::outs().flush();
-            SVF::SVFUtil::errs().flush();
+            llvm::outs().flush();
+            llvm::outs().flush();
             continue;
         }
 
@@ -291,15 +291,57 @@ int main(int argc, char ** argv) {
                 } else {
                     SVF::GraphReaderUtil::sendJsonError("missing 'name'");
                 }
+            } else if (cname == "find-cond-path") {
+                auto s = cmd.getString("start");
+                auto e = cmd.getString("end");
+                if (!s || !e) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'start' or 'end'");
+                } else {
+                    PathQuery condPQ(nullptr, icfg);
+                    condPQ.getConditionPath(s->str(), e->str());
+                }
+            } else if (cname == "find-cond-path-inside") {
+                auto s = cmd.getString("start");
+                auto e = cmd.getString("end");
+                if (!s || !e) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'start' or 'end'");
+                } else {
+                    PathQuery condPQ(nullptr, icfg);
+                    condPQ.getConditionInsidePath(s->str(), e->str());
+                }
             } else if (cname == "exit") {
                 shouldExit = true;
+            } else if (cname == "show-value-path-inside") {
+                auto s = cmd.getString("start");
+                auto i = cmd.getString("index");
+                int operandIndex = -1;
+                if (i) {
+                    try {
+                        operandIndex = std::stoi(i->str());
+                    } catch (...) {
+                        // leave as -1
+                    }
+                }
+                if (!s) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'start'");
+                } else {
+                    // show node for value-path-inside
+                    const SVFGNode* startNode = showSVFGNodeByLocation(svfg, icfg, s->str());
+                    if (startNode) {
+                        PathQuery pq(svfg, icfg);
+                        pq.getValueInsidePath(startNode);
+                    } else {
+                        SVF::GraphReaderUtil::sendJsonError("Could not find start node for intra-procedural value path analysis. Check location and operand index.");
+                        SVF::SVFUtil::errs() << operandIndex << " Warning: Operand index '" << (i ? i->str() : std::string("")) << "' for intra-procedural value path is out of range. Using default -1.\n";
+                    }
+                }
             } else {
                 SVF::GraphReaderUtil::sendJsonError("unknown command: " + cname);
             }
         }
 
-        SVF::SVFUtil::outs().flush();
-        SVF::SVFUtil::errs().flush();
+        llvm::outs().flush();
+        llvm::outs().flush();
         if (shouldExit) break;
     }
     
