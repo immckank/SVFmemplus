@@ -189,3 +189,185 @@ void SVF::FunctionQuery::findAllCalleesByName(const std::string& functionName) {
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
     llvm::outs().flush();
 }
+
+void SVF::FunctionQuery::findRetLocations(const std::string& functionName, const std::string& location) {
+    llvm::json::Object result;
+    
+    // Find the function
+    const FunObjVar* targetFun = pag->getFunObjVar(functionName);
+    if (!targetFun) {
+        GraphReaderUtil::sendJsonError("Function '" + functionName + "' not found.");
+        return;
+    }
+    
+    // Step 1: Find all exit nodes (isRetInst=1 nodes or function exit nodes)
+    // and nodes that directly point to them
+    Set<NodeID> exitNodeIDs;
+    Set<NodeID> coreExitNodes;
+    
+    // Step 1.1: First, find all isRetInst=1 and FunExitICFGNode nodes
+    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
+        const ICFGNode* node = it->second;
+        const FunObjVar* nodeFun = node->getFun();
+        if (nodeFun && nodeFun->getName() == functionName) {
+            // Check if this is an IntraICFGNode with isRetInst=1
+            if (const IntraICFGNode* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(node)) {
+                if (intraNode->isRetInst()) {
+                    coreExitNodes.insert(node->getId());
+                    exitNodeIDs.insert(node->getId());
+                }
+            }
+            // Also check if this is a FunExitICFGNode
+            if (SVFUtil::isa<FunExitICFGNode>(node)) {
+                coreExitNodes.insert(node->getId());
+                exitNodeIDs.insert(node->getId());
+            }
+        }
+    }
+    
+    // Step 1.2: Find all nodes that directly point to the core exit nodes
+    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
+        const ICFGNode* node = it->second;
+        const FunObjVar* nodeFun = node->getFun();
+        if (nodeFun && nodeFun->getName() == functionName) {
+            for (const ICFGEdge* edge : node->getOutEdges()) {
+                if (coreExitNodes.count(edge->getDstID())) {
+                    exitNodeIDs.insert(node->getId());
+                }
+            }
+        }
+    }
+    
+    // Find the starting node by location
+    const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
+    if (!startNode) {
+        GraphReaderUtil::sendJsonError("Could not find ICFGNode for the given location.");
+        return;
+    }
+    
+    // Verify the node is in the target function
+    const FunObjVar* nodeFun = startNode->getFun();
+    if (!nodeFun) {
+        GraphReaderUtil::sendJsonError("The given location is not inside any function.");
+        return;
+    }
+    
+    if (nodeFun->getName() != functionName) {
+        GraphReaderUtil::sendJsonError("The given location is in function '" + nodeFun->getName() + 
+                                       "', not in '" + functionName + "'.");
+        return;
+    }
+    
+    // BFS traversal to find all reachable return nodes
+    llvm::json::Array returnLocations;
+    Set<const ICFGNode*> visited;
+    std::queue<const ICFGNode*> worklist;
+    Set<std::string> reportedLocations; // To avoid duplicate locations
+    
+    worklist.push(startNode);
+    visited.insert(startNode);
+    
+    while (!worklist.empty()) {
+        const ICFGNode* currentNode = worklist.front();
+        worklist.pop();
+        
+        // Check if this node points to any exit node
+        // But exclude nodes that themselves point to core exit nodes (they are intermediate nodes)
+        bool pointsToExitNode = false;
+        bool pointsToCoreExitNode = false;
+        
+        for (const ICFGEdge* edge : currentNode->getOutEdges()) {
+            const ICFGNode* dstNode = edge->getDstNode();
+            NodeID dstID = dstNode->getId();
+            
+            if (coreExitNodes.count(dstID)) {
+                // This node directly points to a core exit node (isRetInst=1)
+                // It's an intermediate node (like 60829), not a real return statement
+                pointsToCoreExitNode = true;
+                break;
+            }
+            
+            if (exitNodeIDs.count(dstID)) {
+                pointsToExitNode = true;
+            }
+        }
+        
+        // Only report if it points to exit nodes but NOT directly to core exit nodes
+        if (pointsToExitNode && !pointsToCoreExitNode) {
+            std::string locString = currentNode->getSourceLoc();
+            std::string formattedLoc = "unknown";
+            
+            llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
+            if (auto file = locInfo.getString("fl")) {
+                if (auto line = locInfo.getInteger("ln")) {
+                    formattedLoc = file->str() + ":" + std::to_string(*line);
+                }
+            }
+            
+            // Avoid duplicate locations (same line might have multiple nodes)
+            if (reportedLocations.find(formattedLoc) == reportedLocations.end()) {
+                reportedLocations.insert(formattedLoc);
+                
+                llvm::json::Object retLocation;
+                retLocation["location"] = formattedLoc;
+                returnLocations.push_back(std::move(retLocation));
+            }
+        }
+        
+        // Special handling for CallICFGNode: jump directly to its return node
+        if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(currentNode)) {
+            const RetICFGNode* retNode = callNode->getRetICFGNode();
+            if (retNode) {
+                const FunObjVar* retFun = retNode->getFun();
+                if (retFun && retFun->getName() == functionName) {
+                    if (visited.find(retNode) == visited.end()) {
+                        visited.insert(retNode);
+                        worklist.push(retNode);
+                    }
+                }
+            }
+            continue;
+        }
+        
+        // Traverse outgoing edges for non-call nodes
+        for (ICFGEdge* edge : currentNode->getOutEdges()) {
+            const ICFGNode* nextNode = edge->getDstNode();
+            
+            // Skip call edges (edges from call site to callee entry)
+            if (SVFUtil::isa<CallCFGEdge>(edge)) {
+                continue;
+            }
+            
+            // For return edges (edges from callee exit back to caller),
+            // check if the destination is in our target function
+            if (SVFUtil::isa<RetCFGEdge>(edge)) {
+                const FunObjVar* nextFun = nextNode->getFun();
+                if (nextFun && nextFun->getName() == functionName) {
+                    if (visited.find(nextNode) == visited.end()) {
+                        visited.insert(nextNode);
+                        worklist.push(nextNode);
+                    }
+                }
+                continue;
+            }
+            
+            // For other edges, only continue if the next node is in the same function
+            const FunObjVar* nextFun = nextNode->getFun();
+            if (!nextFun || nextFun->getName() != functionName) {
+                continue;
+            }
+            
+            if (visited.find(nextNode) == visited.end()) {
+                visited.insert(nextNode);
+                worklist.push(nextNode);
+            }
+        }
+    }
+    
+    result["function"] = functionName;
+    result["start_location"] = location;
+    result["return_locations"] = std::move(returnLocations);
+    result["error"] = false;
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
+}

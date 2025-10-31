@@ -291,6 +291,14 @@ int main(int argc, char ** argv) {
                 } else {
                     SVF::GraphReaderUtil::sendJsonError("missing 'name'");
                 }
+            } else if (cname == "find-return-locations") {
+                auto n = cmd.getString("name");
+                auto loc = cmd.getString("location");
+                if (!n || !loc) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'name' or 'location'");
+                } else {
+                    fq.findRetLocations(n->str(), loc->str());
+                }
             } else if (cname == "find-cond-path") {
                 auto s = cmd.getString("start");
                 auto e = cmd.getString("end");

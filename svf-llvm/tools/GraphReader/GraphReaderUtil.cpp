@@ -54,24 +54,72 @@ bool parseCommandsLine(const std::string& jsonStr,
 llvm::json::Object parseSourceLocation(const std::string& sourceLocString) {
     if (sourceLocString.empty()) {
         return llvm::json::Object();
-    }    
+    }
+    
+    // Strategy: Try to find the JSON object containing location fields ("ln", "cl", "fl")
+    // We search from the end of the string backwards for valid JSON objects
+    // This is necessary because some node types (e.g., IntraMSSAPHISVFGNode) have multiple
+    // {...} patterns in their toString() output, and the location info is typically at the end.
+    // Example: "IntraMSSAPHISVFGNode ID: 116550 {fun: ...}...pts{3742 }{ "ln": 1053, "cl": 5, "fl": "tif_dirwrite.c" }"
+    
+    // First, try to find a JSON-like pattern with quotes (location info format)
+    // Location info typically appears as: { "ln": 1053, "cl": 5, "fl": "tif_dirwrite.c" }
+    size_t lastBrace = sourceLocString.rfind('}');
+    
+    while (lastBrace != std::string::npos) {
+        // Find the corresponding opening brace by searching backwards
+        int braceCount = 1;
+        size_t pos = lastBrace;
+        
+        while (pos > 0 && braceCount > 0) {
+            pos--;
+            if (sourceLocString[pos] == '}') {
+                braceCount++;
+            } else if (sourceLocString[pos] == '{') {
+                braceCount--;
+            }
+        }
+        
+        if (braceCount == 0) {
+            // Found a matching pair of braces
+            std::string candidate = sourceLocString.substr(pos, lastBrace - pos + 1);
+            
+            // Try to parse this candidate
+            llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(candidate);
+            if (parsed) {
+                if (const auto* obj = parsed->getAsObject()) {
+                    // Check if this object contains location fields
+                    if (obj->getString("fl") || obj->getInteger("ln")) {
+                        return *obj;
+                    }
+                }
+            } else {
+                // Consume the error
+                llvm::consumeError(parsed.takeError());
+            }
+        }
+        
+        // Try to find the next (previous) closing brace
+        if (pos > 0) {
+            lastBrace = sourceLocString.rfind('}', pos - 1);
+        } else {
+            break;
+        }
+    }
+    
+    // Fallback: try the old method (first { to last })
     size_t start = sourceLocString.find('{');
     size_t end = sourceLocString.rfind('}');
-    if (start == std::string::npos || end == std::string::npos) {
-        return llvm::json::Object();
-    }
-
-    std::string parsedLocString = sourceLocString.substr(start, end - start + 1);
-    llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(parsedLocString);
-    if (!parsed) {
-        // In case of parsing error, return an empty object.
-        // We can ignore the error for this utility's purpose.
-        llvm::consumeError(parsed.takeError());
-        return llvm::json::Object();
-    }
-
-    if (const auto* obj = parsed->getAsObject()) {
-        return *obj;
+    if (start != std::string::npos && end != std::string::npos && start < end) {
+        std::string parsedLocString = sourceLocString.substr(start, end - start + 1);
+        llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(parsedLocString);
+        if (parsed) {
+            if (const auto* obj = parsed->getAsObject()) {
+                return *obj;
+            }
+        } else {
+            llvm::consumeError(parsed.takeError());
+        }
     }
 
     return llvm::json::Object();

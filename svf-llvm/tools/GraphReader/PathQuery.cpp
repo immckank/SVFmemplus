@@ -101,29 +101,43 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
 
     auto processNode = [&](const SVFGNode* node) {
         llvm::json::Object locObj;
-        
-        // Special handling for different node types
-        // 1. For ActualParm/ActualRet nodes: get location from CallSite
-        if (const ActualParmVFGNode* apNode = SVFUtil::dyn_cast<ActualParmVFGNode>(node)) {
-            const CallICFGNode* callSite = apNode->getCallSite();
-            if (callSite) {
-                std::string callSiteLoc = callSite->getSourceLoc();
-                if (!callSiteLoc.empty()) {
-                    locObj = GraphReaderUtil::parseSourceLocation(callSiteLoc);
-                }
-            }
-        }
-        else if (const ActualRetVFGNode* arNode = SVFUtil::dyn_cast<ActualRetVFGNode>(node)) {
-            const CallICFGNode* callSite = arNode->getCallSite();
-            if (callSite) {
-                std::string callSiteLoc = callSite->getSourceLoc();
-                if (!callSiteLoc.empty()) {
-                    locObj = GraphReaderUtil::parseSourceLocation(callSiteLoc);
-                }
-            }
-        }
-        
-        // 2. For other nodes: extract from toString() which contains IR code with debug info
+        // if (const ActualParmVFGNode* apNode = SVFUtil::dyn_cast<ActualParmVFGNode>(node)) {
+        //     // 忽略这个 这个是参数传递 不是使用
+        //     (void)apNode;
+        //     // const CallICFGNode* callSite = apNode->getCallSite();
+        //     // if (callSite) {
+        //     //     std::string callSiteLoc = callSite->getSourceLoc();
+        //     //     if (!callSiteLoc.empty()) {
+        //     //         locObj = GraphReaderUtil::parseSourceLocation(callSiteLoc);
+        //     //     }
+        //     // }
+        // } else if (const ActualRetVFGNode* arNode = SVFUtil::dyn_cast<ActualRetVFGNode>(node)) {
+        //     (void)arNode;
+        //     // const CallICFGNode* callSite = arNode->getCallSite();
+        //     // if (callSite) {
+        //     //     std::string callSiteLoc = callSite->getSourceLoc();
+        //     //     if (!callSiteLoc.empty()) {
+        //     //         locObj = GraphReaderUtil::parseSourceLocation(callSiteLoc);
+        //     //     }
+        //     // }
+        // } else if (const ActualINSVFGNode* aiNode = SVFUtil::dyn_cast<ActualINSVFGNode>(node)) {
+        //     const CallICFGNode* callSite = aiNode->getCallSite();
+        //     if (callSite) {
+        //         std::string callSiteLoc = callSite->getSourceLoc();
+        //         if (!callSiteLoc.empty()) {
+        //             locObj = GraphReaderUtil::parseSourceLocation(callSiteLoc);
+        //         }
+        //     }
+        // } else if (const ActualOUTSVFGNode* aoNode = SVFUtil::dyn_cast<ActualOUTSVFGNode>(node)) {
+        //     const CallICFGNode* callSite = aoNode->getCallSite();
+        //     if (callSite) {
+        //         std::string callSiteLoc = callSite->getSourceLoc();
+        //         if (!callSiteLoc.empty()) {
+        //             locObj = GraphReaderUtil::parseSourceLocation(callSiteLoc);
+        //         }
+        //     }
+        // }
+        // 优化后的parseSourceLocation几乎可以找到所有类型的节点的位置信息
         if (locObj.empty()) {
             std::string nodeStr = node->toString();
             locObj = GraphReaderUtil::parseSourceLocation(nodeStr);
