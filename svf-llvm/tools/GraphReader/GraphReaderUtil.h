@@ -36,6 +36,14 @@ namespace GraphReaderUtil {
     const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& location);
 
     /*!
+     * \brief Finds ALL ICFGNodes matching a source code location string.
+     * \param icfg Pointer to the ICFG.
+     * \param location A string in "filename:line" format.
+     * \return A vector of all matching ICFGNodes.
+     */
+    std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const std::string& location);
+
+    /*!
      * \brief Finds the source code variable name for a given SVFVar by inspecting debug info.
      * \param var The SVFVar to inspect.
      * \return The source code name as a string, or an empty string if not found.

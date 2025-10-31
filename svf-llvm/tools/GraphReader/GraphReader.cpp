@@ -297,8 +297,7 @@ int main(int argc, char ** argv) {
                 if (!s || !e) {
                     SVF::GraphReaderUtil::sendJsonError("missing 'start' or 'end'");
                 } else {
-                    PathQuery condPQ(nullptr, icfg);
-                    condPQ.getConditionPath(s->str(), e->str());
+                    pq.getConditionPath(s->str(), e->str());
                 }
             } else if (cname == "find-cond-path-inside") {
                 auto s = cmd.getString("start");
@@ -306,8 +305,7 @@ int main(int argc, char ** argv) {
                 if (!s || !e) {
                     SVF::GraphReaderUtil::sendJsonError("missing 'start' or 'end'");
                 } else {
-                    PathQuery condPQ(nullptr, icfg);
-                    condPQ.getConditionInsidePath(s->str(), e->str());
+                    pq.getConditionInsidePath(s->str(), e->str());
                 }
             } else if (cname == "exit") {
                 shouldExit = true;
@@ -328,12 +326,56 @@ int main(int argc, char ** argv) {
                     // show node for value-path-inside
                     const SVFGNode* startNode = showSVFGNodeByLocation(svfg, icfg, s->str());
                     if (startNode) {
-                        PathQuery pq(svfg, icfg);
                         pq.getValueInsidePath(startNode);
                     } else {
                         SVF::GraphReaderUtil::sendJsonError("Could not find start node for intra-procedural value path analysis. Check location and operand index.");
                         SVF::SVFUtil::errs() << operandIndex << " Warning: Operand index '" << (i ? i->str() : std::string("")) << "' for intra-procedural value path is out of range. Using default -1.\n";
                     }
+                }
+            } else if (cname == "find-arg-value-path-inside") {
+                auto funcName = cmd.getString("function_name");
+                auto indexStr = cmd.getString("index");
+                if (!funcName || !indexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'function_name' or 'index'");
+                } else {
+                    int argIndex = -1;
+                    try {
+                        argIndex = std::stoi(indexStr->str());
+                    } catch (...) {
+                        SVF::GraphReaderUtil::sendJsonError("invalid 'index' value: " + indexStr->str());
+                        continue;
+                    }
+                    pq.findFunArgValuePathInside(funcName->str(), argIndex);
+                }
+            } else if (cname == "find-var-value-path-inside") {
+                auto loc = cmd.getString("location");
+                auto indexStr = cmd.getString("index");
+                if (!loc || !indexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'index'");
+                } else {
+                    int operandIndex = -1;
+                    try {
+                        operandIndex = std::stoi(indexStr->str());
+                    } catch (...) {
+                        SVF::GraphReaderUtil::sendJsonError("invalid 'index' value: " + indexStr->str());
+                        continue;
+                    }
+                    pq.findVarValuePathInsideByLocation(loc->str(), operandIndex);
+                }
+            } else if (cname == "find-lvalue-path-inside") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                } else {
+                    int eqPosition = -1;
+                    try {
+                        eqPosition = std::stoi(eqPositionStr->str());
+                    } catch (...) {
+                        SVF::GraphReaderUtil::sendJsonError("invalid 'eqPosition' value: " + eqPositionStr->str());
+                        continue;
+                    }
+                    pq.findLVarPathInsideByLocation(loc->str(), eqPosition);
                 }
             } else {
                 SVF::GraphReaderUtil::sendJsonError("unknown command: " + cname);

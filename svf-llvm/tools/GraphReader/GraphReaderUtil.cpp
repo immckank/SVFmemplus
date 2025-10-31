@@ -109,6 +109,39 @@ const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& loca
     return nullptr;
 }
 
+std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const std::string& location) {
+    std::vector<const ICFGNode*> results;
+    size_t colon_pos = location.find(':');
+    if (colon_pos == std::string::npos) {
+        return results;
+    }
+    std::string target_filename = location.substr(0, colon_pos);
+    long long target_line;
+    try {
+        target_line = std::stoll(location.substr(colon_pos + 1));
+    } catch (const std::invalid_argument& ia) {
+        return results;
+    }
+
+    for (auto const& [id, node] : *icfg) {
+        if (node) {
+            llvm::json::Object locInfo = parseSourceLocation(node->getSourceLoc());
+            if (!locInfo.empty()) {
+                if (auto file = locInfo.getString("fl")) {
+                    if (auto line = locInfo.getInteger("ln")) {
+                        // Check if the filename contains the target filename (to handle relative/absolute paths)
+                        // and if the line number matches.
+                        if (file->str().find(target_filename) != std::string::npos && *line == target_line) {
+                            results.push_back(node);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return results;
+}
+
 std::string getSourceVariableName(const SVFVar* var) {
     if (!var) {
         return "";

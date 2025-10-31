@@ -116,12 +116,12 @@ void SVF::FunctionQuery::findFunctionBodyByName(const std::string& functionName)
 
     if (!svfFun) {
         GraphReaderUtil::sendJsonError("Function '" + functionName + "' not found.");
-        // 调试输出：当找不到函数时，打印 PAG 中所有可用的函数名
-        SVF::SVFUtil::errs() << "Debug: Available functions in PAG:\n";
-        // 遍历 funArgsListMap 来获取所有的 FunObjVar，然后打印它们的名称
-        for (auto const& [fun, args] : pag->getFunArgsMap()) {
-            SVF::SVFUtil::errs() << "  - " << fun->getName() << "\n";
-        }
+        // // 调试输出：当找不到函数时，打印 PAG 中所有可用的函数名
+        // SVF::SVFUtil::errs() << "Debug: Available functions in PAG:\n";
+        // // 遍历 funArgsListMap 来获取所有的 FunObjVar，然后打印它们的名称
+        // for (auto const& [fun, args] : pag->getFunArgsMap()) {
+        //     SVF::SVFUtil::errs() << "  - " << fun->getName() << "\n";
+        // }
         return;
     }
 

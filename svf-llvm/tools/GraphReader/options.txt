@@ -10,8 +10,11 @@ path
 
 value path Debug
 { "command" : "show-value-path-inside", "start" : "tif_dirwrite.c:1083", "index" : "1" }
+{ "command" : "find-arg-value-path-inside", "function_name" : "TIFFWriteDirectorySec", "index" : "1"}
+{ "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:1099", "index" : "-1"}
+{ "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:1099", "index" : "0"}
 
-
+findVarValuePathInsideByLocation
 
 command
 { "command" : "exit" }
@@ -20,4 +23,32 @@ command
 
 command for test 
 { "command" : "show-value-path-inside", "start" : "tif_dirwrite.c:1099", "index" : "-1" }
-{ "command" : "show-value-path-inside", "start" : "tif_dirwrite.c:1096", "index" : "-1" }
+{ "command" : "find-arg-value-path-inside", "function_name" : "TIFFWriteDirectorySec", "index" : "1"}
+{ "command" : "find-arg-value-path-inside", "function_name" : "TIFFWriteDirectoryTagSampleformatArray", "index" : "0"}
+{ "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:1113", "index" : "-1"}
+{ "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:956", "index" : "-1"}
+{ "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:1161", "index" : "-1"}
+{ "command" : "find-lvalue-path-inside", "location" : "tif_dirwrite.c:956", "eq_position" : "9"}
+
+[DEBUG 1] ICFGNode #4 (ID: 38386)
+  Source Location: { "ln": 956, "cl": 9, "fl": "tif_dirwrite.c" }
+  Type: IntraICFGNode
+  [DEBUG 2] Retrieving LLVM instructions from this ICFGNode...
+  store i32 %1795, ptr %32, align 4, !dbg !13259    Primary LLVM Instruction: 
+    Instruction Type: store
+    Operands (2):
+  %1795 = trunc i64 %1794 to i32, !dbg !13258      [0] 
+  %32 = alloca i32, align 4      [1] 
+  [DEBUG 3] Finding all PAGNodes/SVFVars in this ICFGNode...
+    This ICFGNode has 1 SVFStmt(s)
+    [Stmt 0] EdgeID: 43679, Kind: StoreStmt
+  %32 = alloca i32, align 4      LHS: PAGNode ID=44058, LLVM=
+  %1795 = trunc i64 %1794 to i32, !dbg !13258      RHS: PAGNode ID=46146, LLVM=
+  [DEBUG 4] Finding def SVFGNodes for all PAGNodes at this location...
+    Found 2 unique PAGNode(s)
+
+    PAGNode ID: 44058
+  %32 = alloca i32, align 4      LLVM Value: 
+      ✓ Has def SVFGNode: ID=4760 [Addr]
+      Def Node Location: 
+      Def Node Info: AddrVFGNode ID: 4760 AddrStmt: [Var44058 <-- Var44059]
