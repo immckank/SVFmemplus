@@ -10,6 +10,8 @@
 #include <llvm/IR/Instructions.h>
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/FormatVariadic.h>
+#include <algorithm>
+#include <deque>
 #include <iostream>
 #include <map>
 #include <queue>
@@ -90,10 +92,14 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
 
     std::set<const SVFGNode*> visited;
     std::queue<const SVFGNode*> worklist;
+    
+    // Map to track predecessors for path reconstruction
+    std::map<const SVFGNode*, const SVFGNode*> predecessorMap;
 
     // Start BFS from the initial node
     worklist.push(startNode);
     visited.insert(startNode);
+    predecessorMap[startNode] = nullptr; // Start node has no predecessor
 
     // Map: location key -> {location_obj, list of {node_id, node_kind}}
     // Location key format: "file:line:column" or empty if no location
@@ -191,6 +197,7 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
             if (nextNode->getFun() == startFunction && visited.find(nextNode) == visited.end()) {
                 visited.insert(nextNode);
                 worklist.push(nextNode);
+                predecessorMap[nextNode] = currentNode; // Record predecessor
                 processNode(nextNode);
             }
         }
@@ -216,12 +223,47 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
         
         locationsArray.push_back(std::move(locEntry));
     }
+    
+    // Build paths: reconstruct paths from start node to each visited node
+    llvm::json::Array pathsArray;
+    for (const SVFGNode* node : visited) {
+        // Reconstruct path from start node to current node
+        std::vector<const SVFGNode*> pathNodes;
+        const SVFGNode* current = node;
+        
+        while (current != nullptr) {
+            pathNodes.push_back(current);
+            auto it = predecessorMap.find(current);
+            if (it != predecessorMap.end()) {
+                current = it->second;
+            } else {
+                break;
+            }
+        }
+        
+        // Reverse to get path from start to end
+        std::reverse(pathNodes.begin(), pathNodes.end());
+        
+        // Build JSON array for this path
+        llvm::json::Array singlePath;
+        for (const SVFGNode* pathNode : pathNodes) {
+            llvm::json::Object nodeObj;
+            nodeObj["node_id"] = pathNode->getId();
+            nodeObj["node_kind"] = getSVFGNodeKindString(pathNode);
+            singlePath.push_back(std::move(nodeObj));
+        }
+        
+        pathsArray.push_back(std::move(singlePath));
+    }
 
     // Count total nodes with valid locations
     size_t nodesWithLocation = 0;
     for (const auto& [locKey, entry] : locationMap) {
         nodesWithLocation += entry.second.size();
     }
+    
+    // Save path count before moving
+    size_t pathCount = pathsArray.size();
 
     llvm::json::Object result;
     result["start_node_id"] = startNode->getId();
@@ -231,12 +273,20 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
     result["total_nodes_with_location"] = nodesWithLocation;
     result["total_nodes_visited"] = visited.size();
     result["nodes_filtered"] = visited.size() - nodesWithLocation;
+    
+    // Add path information
+    llvm::json::Object pathInfo;
+    pathInfo["pathcount"] = static_cast<int64_t>(pathCount);
+    pathInfo["paths"] = std::move(pathsArray);
+    result["path_info"] = std::move(pathInfo);
+    
     result["error"] = false;
     
     SVFUtil::errs() << "--------------------------------------------------\n";
     SVFUtil::errs() << "Summary: " << locationMap.size() << " unique locations, "
                     << nodesWithLocation << " nodes with location, "
-                    << (visited.size() - nodesWithLocation) << " nodes filtered (no location)\n";
+                    << (visited.size() - nodesWithLocation) << " nodes filtered (no location), "
+                    << pathCount << " paths found\n";
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
     llvm::outs().flush();
 }
@@ -1021,7 +1071,6 @@ void PathQuery::findLVarPathInsideByLocation(const std::string& location, int eq
         }
     }
     const ICFGNode* targetICFGNode = allICFGNodes[idx];
-    //
 
     auto intraNode = SVFUtil::dyn_cast<IntraICFGNode>(targetICFGNode);
     if (!intraNode) {
@@ -1116,5 +1165,1082 @@ void PathQuery::findLVarPathInsideByLocation(const std::string& location, int eq
     SVFUtil::outs() << "[findLVarPathInsideByLocation] ---- Start intra-procedural value flow BFS ----\n";
     getValueInsidePath(defNode);
     SVFUtil::outs() << "[findLVarPathInsideByLocation] ---- End BFS ----\n";    
-} 
+}
+
+// Helper function to find actual return statement ICFG nodes (not wrapper nodes)
+std::vector<const ICFGNode*> findActualReturnICFGNodes(ICFG* icfg, const FunObjVar* function) {
+    std::vector<const ICFGNode*> actualReturnNodes;
+    
+    Set<NodeID> coreExitNodes;  // isRetInst=1 and FunExitICFGNode (wrapper nodes)
+    Set<NodeID> exitNodeIDs;    // includes core and nodes pointing to them
+    
+    // Step 1: Find all core exit nodes (wrappers)
+    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
+        const ICFGNode* node = it->second;
+        if (node->getFun() == function) {
+            if (const IntraICFGNode* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(node)) {
+                if (intraNode->isRetInst()) {
+                    coreExitNodes.insert(node->getId());
+                    exitNodeIDs.insert(node->getId());
+                }
+            }
+            if (SVFUtil::isa<FunExitICFGNode>(node)) {
+                coreExitNodes.insert(node->getId());
+                exitNodeIDs.insert(node->getId());
+            }
+        }
+    }
+    
+    // Step 2: Find nodes that point to core exit nodes
+    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
+        const ICFGNode* node = it->second;
+        if (node->getFun() == function) {
+            for (const ICFGEdge* edge : node->getOutEdges()) {
+                if (coreExitNodes.count(edge->getDstID())) {
+                    exitNodeIDs.insert(node->getId());
+                }
+            }
+        }
+    }
+    
+    // Step 3: Collect actual return nodes (point to exit but not directly to core)
+    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
+        const ICFGNode* node = it->second;
+        if (node->getFun() == function) {
+            bool pointsToExitNode = false;
+            bool pointsToCoreExitNode = false;
+            
+            for (const ICFGEdge* edge : node->getOutEdges()) {
+                NodeID dstID = edge->getDstID();
+                if (coreExitNodes.count(dstID)) {
+                    pointsToCoreExitNode = true;
+                    break;
+                }
+                if (exitNodeIDs.count(dstID)) {
+                    pointsToExitNode = true;
+                }
+            }
+            
+            // Actual return locations: point to exit but not directly to core
+            if (pointsToExitNode && !pointsToCoreExitNode) {
+                actualReturnNodes.push_back(node);
+            }
+        }
+    }
+    
+    return actualReturnNodes;
+}
+
+// Helper function to check if an ICFG node can reach target return location
+bool canICFGReach(const ICFGNode* from, const ICFGNode* target, const FunObjVar* function, bool debug = false) {
+    if (!from || !target) return false;
+    if (from == target) return true;
+    
+    std::queue<const ICFGNode*> worklist;
+    Set<const ICFGNode*> visited;
+    
+    worklist.push(from);
+    visited.insert(from);
+    
+    int steps = 0;
+    const int maxSteps = 10000;  // Prevent infinite loops
+    
+    while (!worklist.empty() && steps < maxSteps) {
+        const ICFGNode* current = worklist.front();
+        worklist.pop();
+        steps++;
+        
+        if (current == target) {
+            if (debug) {
+                SVFUtil::outs() << "      [canICFGReach] Found target after " << steps << " steps\n";
+            }
+            return true;
+        }
+        
+        int outEdgeCount = 0;
+        for (const ICFGEdge* edge : current->getOutEdges()) {
+            const ICFGNode* next = edge->getDstNode();
+            outEdgeCount++;
+            
+            // Skip call edges into callees (intra-procedural only)
+            if (SVFUtil::isa<CallCFGEdge>(edge)) {
+                // Jump to the return site instead
+                if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(current)) {
+                    const RetICFGNode* retNode = callNode->getRetICFGNode();
+                    if (retNode && retNode->getFun() == function && !visited.count(retNode)) {
+                        visited.insert(retNode);
+                        worklist.push(retNode);
+                    }
+                }
+                continue;
+            }
+            
+            // Skip return edges to callers
+            if (SVFUtil::isa<RetCFGEdge>(edge)) {
+                continue;
+            }
+            
+            // Only traverse within the same function
+            if (next->getFun() != function) continue;
+            if (visited.count(next)) continue;
+            
+            visited.insert(next);
+            worklist.push(next);
+        }
+        
+        if (debug && steps <= 5) {
+            SVFUtil::outs() << "      [canICFGReach] Step " << steps << ": ICFG " << current->getId() 
+                            << " has " << outEdgeCount << " out edges, worklist size: " << worklist.size() << "\n";
+        }
+    }
+    
+    if (debug) {
+        SVFUtil::outs() << "      [canICFGReach] Target not found after " << steps << " steps (visited " << visited.size() << " nodes)\n";
+    }
+    
+    return false;
+}
+
+// Helper function to find all ICFG paths from start to target (intra-procedural)
+void findICFGPaths(
+    const ICFGNode* startICFG,
+    const ICFGNode* targetICFG,
+    const FunObjVar* function,
+    std::vector<std::vector<const ICFGNode*>>& allICFGPaths
+) {
+    // Use BFS to find paths (prioritizes shorter paths over DFS)
+    std::deque<std::tuple<const ICFGNode*, std::vector<const ICFGNode*>, Set<const ICFGNode*>>> worklist;
+    std::vector<const ICFGNode*> initialPath;
+    initialPath.push_back(startICFG);
+    worklist.emplace_back(startICFG, initialPath, Set<const ICFGNode*>{startICFG});
+    
+    // Add limits to prevent infinite loops and focus on simple paths
+    const size_t MAX_PATHS = 50;  // Maximum number of paths to find (focus on simple paths)
+    const size_t MAX_PATH_LENGTH = 100;  // Maximum length of a single path (shorter = simpler)
+    const size_t MAX_ITERATIONS = 50000;  // Maximum iterations
+    
+    size_t iterations = 0;
+    size_t lastReportIteration = 0;
+    
+    while (!worklist.empty()) {
+        iterations++;
+        
+        // Progress reporting every 5000 iterations (more frequent for faster feedback)
+        if (iterations - lastReportIteration >= 5000) {
+            // SVFUtil::outs() << "  [findICFGPaths] Progress: " << iterations 
+            //                 << " iterations, worklist size: " << worklist.size()
+            //                 << ", paths found: " << allICFGPaths.size() << "\n";
+            lastReportIteration = iterations;
+        }
+        
+        // Check iteration limit
+        if (iterations > MAX_ITERATIONS) {
+            // SVFUtil::outs() << "  [findICFGPaths] Stopped: Reached max iterations (" 
+            //                 << MAX_ITERATIONS << "), found " << allICFGPaths.size() << " paths.\n";
+            break;
+        }
+        
+        // Check path count limit - stop early to focus on simpler paths
+        if (allICFGPaths.size() >= MAX_PATHS) {
+            // SVFUtil::outs() << "  [findICFGPaths] Stopped: Found " << MAX_PATHS 
+            //                 << " paths (limit reached).\n";
+            break;
+        }
+        
+        // BFS: take from front instead of back (this prioritizes shorter paths)
+        auto [currentNode, currentPath, pathVisited] = worklist.front();
+        worklist.pop_front();
+        
+        // Check path length limit
+        if (currentPath.size() > MAX_PATH_LENGTH) {
+            continue;  // Skip this path
+        }
+        
+        if (currentNode == targetICFG) {
+            allICFGPaths.push_back(currentPath);
+            continue;
+        }
+        
+        for (ICFGEdge* edge : currentNode->getOutEdges()) {
+            ICFGNode* succNode = edge->getDstNode();
+            
+            // Handle function calls: skip into callee, jump to return site
+            if (const CallCFGEdge* callEdge = SVFUtil::dyn_cast<CallCFGEdge>(edge)) {
+                const CallICFGNode* callSiteNode = callEdge->getCallSite();
+                succNode = const_cast<RetICFGNode*>(callSiteNode->getRetICFGNode());
+            }
+            else if (SVFUtil::isa<RetCFGEdge>(edge)) {
+                // Ignore return edges that lead to callers (intra-procedural only)
+                continue;
+            }
+            
+            // Only traverse within the same function
+            if (succNode->getFun() != function) {
+                continue;
+            }
+            
+            if (pathVisited.count(succNode)) {
+                continue;
+            }
+            
+            auto newPath = currentPath;
+            newPath.push_back(succNode);
+            auto newVisited = pathVisited;
+            newVisited.insert(succNode);
+            
+            worklist.emplace_back(succNode, std::move(newPath), std::move(newVisited));
+        }
+    }
+    
+    // if (iterations > lastReportIteration) {
+    //     SVFUtil::outs() << "  [findICFGPaths] Completed: " << iterations 
+    //                     << " total iterations, found " << allICFGPaths.size() << " paths\n";
+    // }
+}
+
+void PathQuery::dfsToReturnLocation(
+    const SVFGNode* currentNode,
+    const ICFGNode* targetReturnICFG,
+    const FunObjVar* function,
+    std::vector<const SVFGNode*>& currentPath,
+    std::set<const SVFGNode*>& visited,
+    std::vector<std::vector<const SVFGNode*>>& allPaths
+) {
+    // Check if current SVFG node's ICFG node can reach the target return location
+    const ICFGNode* curICFG = currentNode->getICFGNode();
+    
+    // Debug output
+    if (currentPath.size() <= 3) {  // Only log first few steps to avoid spam
+        SVFUtil::outs() << "    [DFS] Current SVFG Node " << currentNode->getId() 
+                        << " [" << getSVFGNodeKindString(currentNode) << "]";
+        if (curICFG) {
+            SVFUtil::outs() << " -> ICFG " << curICFG->getId();
+        } else {
+            SVFUtil::outs() << " -> No ICFG";
+        }
+        SVFUtil::outs() << "\n";
+    }
+    
+    // If current ICFG node matches the target, we've reached the return location
+    if (curICFG && (curICFG == targetReturnICFG || curICFG->getId() == targetReturnICFG->getId())) {
+        SVFUtil::outs() << "    [DFS] ✓ Reached target! Path length: " << currentPath.size() << "\n";
+        std::vector<const SVFGNode*> completePath = currentPath;
+        allPaths.push_back(completePath);
+        return;
+    }
+    
+    // Early pruning: if current ICFG cannot reach target at ICFG level, skip this branch
+    if (curICFG && !canICFGReach(curICFG, targetReturnICFG, function)) {
+        if (currentPath.size() <= 3) {
+            SVFUtil::outs() << "    [DFS] ✗ Cannot reach target from ICFG " << curICFG->getId() << ", pruning\n";
+        }
+        return;
+    }
+
+    // Mark current node as visited
+    visited.insert(currentNode);
+
+    // Check if current node is MIntraPhi - if so, add to path
+    bool isMIntraPhi = SVFUtil::isa<IntraMSSAPHISVFGNode>(currentNode);
+    if (isMIntraPhi && currentNode != currentPath.front()) {
+        // Add MIntraPhi to path (not if it's the source node itself)
+        currentPath.push_back(currentNode);
+    }
+
+    // Traverse outgoing edges
+    int edgeCount = 0;
+    for (const SVFGEdge* edge : currentNode->getOutEdges()) {
+        const SVFGNode* nextNode = edge->getDstNode();
+        edgeCount++;
+
+        // Only traverse within the same function
+        if (nextNode->getFun() != function) {
+            continue;
+        }
+
+        // Avoid cycles
+        if (visited.find(nextNode) != visited.end()) {
+            continue;
+        }
+
+        // Recursively explore
+        dfsToReturnLocation(nextNode, targetReturnICFG, function, currentPath, visited, allPaths);
+    }
+    
+    if (currentPath.size() <= 3 && edgeCount == 0) {
+        SVFUtil::outs() << "    [DFS] Dead end: no outgoing edges\n";
+    }
+
+    // Backtrack: remove current node from path if it was added
+    if (isMIntraPhi && currentNode != currentPath.front()) {
+        currentPath.pop_back();
+    }
+
+    // Remove from visited to allow other paths through this node
+    visited.erase(currentNode);
+}
+
+void PathQuery::findPathsToFormalOUT(const std::string& location, int eqPosition) {
+    SVFUtil::outs() << "\n========================================\n";
+    SVFUtil::outs() << "[findPathsToFormalOUT] Location: " << location 
+                    << ", Eq position: " << eqPosition << "\n";
+    SVFUtil::outs() << "========================================\n\n";
+    
+    if (!icfg || !svfg || !pag) {
+        GraphReaderUtil::sendJsonError("ICFG, SVFG, or PAG is null!");
+        return;
+    }
+
+    // Step 1: Find the starting SVFG node at the current location (not the def location)
+    SVFUtil::outs() << "[Step 1] Finding starting node at location " << location << "...\n";
+    std::vector<const ICFGNode*> allICFGNodes = GraphReaderUtil::findAllICFGNodesByLocation(icfg, location);
+
+    if (allICFGNodes.empty()) {
+        GraphReaderUtil::sendJsonError("Cannot find any ICFGNode for location: " + location);
+        return;
+    }
+
+    // Find the ICFGNode matching the eqPosition
+    SVFUtil::outs() << "  Searching for ICFG node matching eqPosition=" << eqPosition << "\n";
+    SVFUtil::outs() << "  Total candidate ICFG nodes: " << allICFGNodes.size() << "\n";
+    
+    const ICFGNode* targetICFGNode = nullptr;
+    std::vector<const ICFGNode*> matchedNodes;  // Collect all matches
+    
+    for (size_t i = 0; i < allICFGNodes.size(); i++) {
+        const ICFGNode* icfgNode = allICFGNodes[i];
+        SVFUtil::outs() << "  [" << i << "] Checking ICFG Node ID=" << icfgNode->getId();
+        
+        if (SVFUtil::isa<IntraICFGNode>(icfgNode)) {
+            const std::string sourceLocation = icfgNode->getSourceLoc();
+            SVFUtil::outs() << " (IntraICFGNode) at " << sourceLocation;
+            
+            llvm::json::Object locObj = GraphReaderUtil::parseSourceLocation(sourceLocation);
+            if (!locObj.empty()) {
+                if (auto cl = locObj.getInteger("cl")) {
+                    SVFUtil::outs() << " [line=" << *cl << "]";
+                    if (*cl == eqPosition) {
+                        SVFUtil::outs() << " *** MATCHED ***";
+                        matchedNodes.push_back(icfgNode);
+                        if (!targetICFGNode) {
+                            targetICFGNode = icfgNode;  // Keep first match
+                        }
+                    }
+                }
+            }
+        } else {
+            SVFUtil::outs() << " (Not IntraICFGNode, kind=" << icfgNode->getNodeKind() << ")";
+        }
+        SVFUtil::outs() << "\n";
+    }
+    
+    // Report if multiple matches found
+    if (matchedNodes.size() > 1) {
+        SVFUtil::outs() << "  WARNING: Found " << matchedNodes.size() 
+                        << " ICFG nodes matching eqPosition=" << eqPosition << ":\n";
+        for (size_t i = 0; i < matchedNodes.size(); i++) {
+            SVFUtil::outs() << "    [" << i << "] Node ID=" << matchedNodes[i]->getId() 
+                            << " at " << matchedNodes[i]->getSourceLoc() << "\n";
+        }
+        SVFUtil::outs() << "  Using the first matched node (ID=" << targetICFGNode->getId() << ")\n";
+    } else if (matchedNodes.size() == 1) {
+        SVFUtil::outs() << "  Found exactly 1 matching ICFG node (ID=" << targetICFGNode->getId() << ")\n";
+    }
+
+    if (!targetICFGNode) {
+        targetICFGNode = allICFGNodes[0];
+        SVFUtil::outs() << "  Could not find exact match for eq position, using first ICFGNode\n";
+    }
+
+    SVFUtil::outs() << "  Found target ICFG Node ID=" << targetICFGNode->getId() << "\n";
+    SVFUtil::outs() << "  ICFG Location: " << targetICFGNode->getSourceLoc() << "\n";
+
+    // Find SVFG nodes at this ICFG location by reverse lookup
+    // We need to traverse all SVFG nodes and find those whose getICFGNode() matches targetICFGNode
+    const SVFGNode* startNode = nullptr;
+    std::vector<const SVFGNode*> candidateNodes;
+
+    SVFUtil::outs() << "  Searching SVFG nodes associated with ICFG " << targetICFGNode->getId() << "...\n";
+
+    for (auto it = svfg->begin(); it != svfg->end(); ++it) {
+        const SVFGNode* svfgNode = it->second;
+        if (svfgNode->getICFGNode() == targetICFGNode) {
+            candidateNodes.push_back(svfgNode);
+            SVFUtil::outs() << "    Found SVFG Node " << svfgNode->getId() 
+                            << " [" << getSVFGNodeKindString(svfgNode) << "]";
+            // Verify the association
+            const ICFGNode* verifyICFG = svfgNode->getICFGNode();
+            if (verifyICFG) {
+                SVFUtil::outs() << " -> ICFG " << verifyICFG->getId();
+            }
+            SVFUtil::outs() << "\n";
+        }
+    }
+
+    if (candidateNodes.empty()) {
+        GraphReaderUtil::sendJsonError("No SVFG nodes found at the target ICFG location");
+        return;
+    }
+
+    // Prioritize certain node types that represent actual operations
+    // Store, Copy, ActualParm (for calls like _TIFFmalloc)
+    for (const SVFGNode* node : candidateNodes) {
+        if (SVFUtil::isa<StoreSVFGNode>(node) || 
+            SVFUtil::isa<CopySVFGNode>(node) ||
+            SVFUtil::isa<ActualParmSVFGNode>(node)) {
+            startNode = node;
+            SVFUtil::outs() << "  Prioritizing node type: " << getSVFGNodeKindString(node) << "\n";
+            break;
+        }
+    }
+
+    // If no specific type found, use the first one
+    if (!startNode) {
+        startNode = candidateNodes[0];
+    }
+
+    SVFUtil::outs() << "  Selected start SVFG Node ID=" << startNode->getId() 
+                    << " [" << getSVFGNodeKindString(startNode) << "]\n";
+    
+    // Verify the start node's ICFG association
+    if (const ICFGNode* verifyICFG = startNode->getICFGNode()) {
+        SVFUtil::outs() << "  Verification: Start SVFG -> ICFG " << verifyICFG->getId() 
+                        << " at " << verifyICFG->getSourceLoc() << "\n";
+    }
+
+    // Step 2: Get the function and find actual return locations
+    const FunObjVar* function = startNode->getFun();
+    if (!function) {
+        GraphReaderUtil::sendJsonError("Start node does not belong to a function");
+        return;
+    }
+
+    SVFUtil::outs() << "[Step 2] Function: " << function->getName() << "\n";
+
+    // Find actual return statement ICFG nodes (not wrappers)
+    std::vector<const ICFGNode*> returnLocations = findActualReturnICFGNodes(icfg, function);
+    SVFUtil::outs() << "  Found " << returnLocations.size() << " actual return location(s)\n";
+
+    if (returnLocations.empty()) {
+        SVFUtil::outs() << "  Function has no identifiable return locations\n";
+        llvm::json::Object result;
+        result["source_location"] = location;
+        result["source_node_id"] = static_cast<int64_t>(startNode->getId());
+        result["function"] = function->getName();
+        result["return_locations"] = llvm::json::Array{};
+        result["total_paths"] = 0;
+        result["error"] = false;
+        llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+        llvm::outs().flush();
+        return;
+    }
+
+    // Step 3: For each return location, find all paths from startNode
+    SVFUtil::outs() << "[Step 3] Searching for paths to each return location...\n";
+    
+    // First, let's check ICFG reachability from start node's ICFG
+    const ICFGNode* startICFG = startNode->getICFGNode();
+    SVFUtil::outs() << "  Start SVFG Node " << startNode->getId() << " -> ICFG Node " 
+                    << (startICFG ? std::to_string(startICFG->getId()) : "NULL") << "\n";
+    
+    if (startICFG) {
+        SVFUtil::outs() << "  Start ICFG Location: " << startICFG->getSourceLoc() << "\n";
+        SVFUtil::outs() << "  Start ICFG has " << startICFG->getOutEdges().size() << " outgoing edges\n";
+        
+        // Show first few outgoing edges
+        int edgeIdx = 0;
+        for (const ICFGEdge* edge : startICFG->getOutEdges()) {
+            if (edgeIdx < 3) {
+                const ICFGNode* dst = edge->getDstNode();
+                SVFUtil::outs() << "    Out edge " << edgeIdx << ": to ICFG " << dst->getId() 
+                                << " at " << dst->getSourceLoc();
+                if (SVFUtil::isa<CallCFGEdge>(edge)) {
+                    SVFUtil::outs() << " [CallEdge]";
+                } else if (SVFUtil::isa<RetCFGEdge>(edge)) {
+                    SVFUtil::outs() << " [RetEdge]";
+                } else if (SVFUtil::isa<IntraCFGEdge>(edge)) {
+                    SVFUtil::outs() << " [IntraEdge]";
+                }
+                SVFUtil::outs() << "\n";
+            }
+            edgeIdx++;
+        }
+        if (edgeIdx > 3) {
+            SVFUtil::outs() << "    ... and " << (edgeIdx - 3) << " more edges\n";
+        }
+        
+        // Test ICFG-level reachability for each return location
+        SVFUtil::outs() << "  [ICFG Reachability Test]\n";
+        for (const ICFGNode* retLocation : returnLocations) {
+            std::string retLoc = retLocation->getSourceLoc();
+            SVFUtil::outs() << "    Testing reachability to " << retLoc << " (ICFG " << retLocation->getId() << ")...\n";
+            bool reachable = canICFGReach(startICFG, retLocation, function, true);  // Enable debug
+            SVFUtil::outs() << "    → " << retLoc << " : " << (reachable ? "REACHABLE" : "NOT REACHABLE") << "\n";
+            
+            if (reachable) {
+                // Find ICFG paths to verify
+                std::vector<std::vector<const ICFGNode*>> icfgPaths;
+                findICFGPaths(startICFG, retLocation, function, icfgPaths);
+                SVFUtil::outs() << "      ICFG paths found: " << icfgPaths.size() << "\n";
+            }
+        }
+    }
+    
+    // Map: returnICFGNode -> list of paths
+    std::map<const ICFGNode*, std::vector<std::vector<const SVFGNode*>>> pathsByReturn;
+
+    for (const ICFGNode* retLocation : returnLocations) {
+        std::string retLoc = retLocation->getSourceLoc();
+        SVFUtil::outs() << "\n  [SVFG Path Search] Searching paths to return at: " << retLoc << "\n";
+        SVFUtil::outs() << "    Target ICFG Node ID: " << retLocation->getId() << "\n";
+
+        std::vector<std::vector<const SVFGNode*>> pathsToThisReturn;
+        std::vector<const SVFGNode*> currentPath;
+        currentPath.push_back(startNode);
+        std::set<const SVFGNode*> visited;
+
+        dfsToReturnLocation(startNode, retLocation, function, currentPath, visited, pathsToThisReturn);
+        
+        if (!pathsToThisReturn.empty()) {
+            pathsByReturn[retLocation] = pathsToThisReturn;
+            SVFUtil::outs() << "    ✓ Found " << pathsToThisReturn.size() << " SVFG path(s)\n";
+        } else {
+            SVFUtil::outs() << "    ✗ No SVFG paths found\n";
+        }
+    }
+
+    // Step 4: Build JSON output grouped by return location
+    llvm::json::Array returnLocationsArray;
+    int globalPathId = 1;
+
+    for (const auto& [retICFG, paths] : pathsByReturn) {
+        llvm::json::Object retLocationObj;
+        
+        // Get location info for this return
+        std::string retLocStr = retICFG->getSourceLoc();
+        llvm::json::Object parsedLoc = GraphReaderUtil::parseSourceLocation(retLocStr);
+        retLocationObj["location"] = std::move(parsedLoc);
+        
+        // Build paths array for this return location
+        llvm::json::Array pathsArray;
+        for (const auto& path : paths) {
+            llvm::json::Object pathObj;
+            pathObj["path_id"] = globalPathId++;
+            
+            // Build nodes array
+            llvm::json::Array nodesArray;
+            for (const SVFGNode* node : path) {
+                llvm::json::Object nodeObj;
+                nodeObj["node_id"] = static_cast<int64_t>(node->getId());
+                nodeObj["node_type"] = getSVFGNodeKindString(node);
+                nodeObj["node_desc"] = node->toString();
+                nodesArray.push_back(std::move(nodeObj));
+            }
+            
+            pathObj["nodes"] = std::move(nodesArray);
+            pathsArray.push_back(std::move(pathObj));
+        }
+        
+        retLocationObj["paths"] = std::move(pathsArray);
+        retLocationObj["path_count"] = static_cast<int64_t>(paths.size());
+        returnLocationsArray.push_back(std::move(retLocationObj));
+    }
+
+    int totalPaths = globalPathId - 1;
+    SVFUtil::outs() << "  Total paths found across all returns: " << totalPaths << "\n";
+
+    llvm::json::Object result;
+    result["source_location"] = location;
+    result["source_node_id"] = static_cast<int64_t>(startNode->getId());
+    result["function"] = function->getName();
+    result["return_locations"] = std::move(returnLocationsArray);
+    result["total_return_locations"] = static_cast<int64_t>(pathsByReturn.size());
+    result["total_paths"] = static_cast<int64_t>(totalPaths);
+    result["error"] = false;
+
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
+
+    SVFUtil::outs() << "\n========================================\n";
+    SVFUtil::outs() << "[findPathsToFormalOUT] Complete\n";
+    SVFUtil::outs() << "========================================\n\n";
+}
+
+void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
+    SVFUtil::outs() << "\n========================================\n";
+    SVFUtil::outs() << "[getConditionReturnInsidePath] Start Location: " << startLocation << "\n";
+    SVFUtil::outs() << "========================================\n\n";
+    
+    if (!icfg) {
+        GraphReaderUtil::sendJsonError("ICFG is null!");
+        return;
+    }
+
+    // Step 1: Find the starting ICFG node
+    const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
+    if (!startNode) {
+        GraphReaderUtil::sendJsonError("Cannot find ICFGNode for location: " + startLocation);
+        return;
+    }
+    
+    const FunObjVar* function = startNode->getFun();
+    if (!function) {
+        GraphReaderUtil::sendJsonError("Start location is not inside any function");
+        return;
+    }
+    
+    SVFUtil::outs() << "[Step 1] Found start ICFG Node ID=" << startNode->getId() << "\n";
+    SVFUtil::outs() << "  Function: " << function->getName() << "\n";
+    SVFUtil::outs() << "  Location: " << startNode->getSourceLoc() << "\n";
+
+    // Step 2: Find all actual return locations in the function
+    std::vector<const ICFGNode*> returnLocations = findActualReturnICFGNodes(icfg, function);
+    SVFUtil::outs() << "\n[Step 2] Found " << returnLocations.size() << " actual return location(s)\n";
+    
+    for (const ICFGNode* retLoc : returnLocations) {
+        SVFUtil::outs() << "  - " << retLoc->getSourceLoc() << " (ICFG ID: " << retLoc->getId() << ")\n";
+    }
+
+    if (returnLocations.empty()) {
+        llvm::json::Object result;
+        result["start_location"] = startLocation;
+        result["function"] = function->getName();
+        result["return_locations"] = llvm::json::Array{};
+        result["total_paths"] = 0;
+        result["error"] = false;
+        llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+        llvm::outs().flush();
+        return;
+    }
+
+    // Step 3: For each return location, find all ICFG paths
+    SVFUtil::outs() << "\n[Step 3] Searching for ICFG paths to each return location...\n";
+    
+    std::map<const ICFGNode*, std::vector<std::vector<const ICFGNode*>>> pathsByReturn;
+
+    for (const ICFGNode* retLocation : returnLocations) {
+        SVFUtil::outs() << "  Searching paths to: " << retLocation->getSourceLoc() << "\n";
+        
+        std::vector<std::vector<const ICFGNode*>> pathsToThisReturn;
+        findICFGPaths(startNode, retLocation, function, pathsToThisReturn);
+        
+        if (!pathsToThisReturn.empty()) {
+            pathsByReturn[retLocation] = pathsToThisReturn;
+            SVFUtil::outs() << "    Found " << pathsToThisReturn.size() << " path(s)\n";
+        } else {
+            SVFUtil::outs() << "    No paths found\n";
+        }
+    }
+
+    // Step 4: Build JSON output - collect SVFG nodes along ICFG paths
+    SVFUtil::outs() << "\n[Step 4] Collecting SVFG nodes along ICFG paths...\n";
+    llvm::json::Array returnLocationsArray;
+    int globalPathId = 1;
+
+    // Structure to store collected node information for each path
+    struct PathNodeInfo {
+        Set<NodeID> nodeIds;  // Node IDs in this path
+        std::vector<const SVFGNode*> nodes;  // Ordered list of nodes
+    };
+
+    for (const auto& [retICFG, icfgPaths] : pathsByReturn) {
+        llvm::json::Object retLocationObj;
+        
+        // Get location info for this return
+        std::string retLocStr = retICFG->getSourceLoc();
+        llvm::json::Object parsedLoc = GraphReaderUtil::parseSourceLocation(retLocStr);
+        retLocationObj["location"] = std::move(parsedLoc);
+        
+        // Step 4a: First pass - collect all SVFG nodes for all paths to this return location
+        std::vector<PathNodeInfo> pathNodeInfos;
+        pathNodeInfos.reserve(icfgPaths.size());
+        
+        for (const auto& icfgPath : icfgPaths) {
+            PathNodeInfo pathInfo;
+            
+            SVFUtil::outs() << "  Path " << (globalPathId + pathNodeInfos.size()) << ": Collecting SVFG nodes...\n";
+            
+            for (const ICFGNode* icfgNode : icfgPath) {
+                // Find all SVFG nodes at this ICFG location
+                for (auto it = svfg->begin(); it != svfg->end(); ++it) {
+                    const SVFGNode* svfgNode = it->second;
+                    if (svfgNode->getICFGNode() == icfgNode) {
+                        // Only record Branch and MIntraPhi nodes
+                        bool isKeyNode = false;
+                        
+                        if (SVFUtil::isa<IntraMSSAPHISVFGNode>(svfgNode)) {
+                            isKeyNode = true;  // Memory state merge point (MIntraPhi)
+                        } 
+                        // else if (SVFUtil::isa<BranchVFGNode>(svfgNode)) {
+                        //     isKeyNode = true;  // Control flow branch
+                        // }
+                        
+                        if (isKeyNode && !pathInfo.nodeIds.count(svfgNode->getId())) {
+                            pathInfo.nodeIds.insert(svfgNode->getId());
+                            pathInfo.nodes.push_back(svfgNode);
+                            
+                            SVFUtil::outs() << "    + SVFG Node " << svfgNode->getId() 
+                                            << " [" << getSVFGNodeKindString(svfgNode) << "]\n";
+                        }
+                    }
+                }
+            }
+            
+            pathNodeInfos.push_back(std::move(pathInfo));
+        }
+        
+        // Step 4b: Compute differential nodes (key events) for multiple paths
+        bool hasMultiplePaths = icfgPaths.size() > 1;
+        std::vector<Set<NodeID>> differentialNodes;
+        Set<NodeID> allDifferentialNodes;  // Union of all differential nodes
+        std::map<NodeID, const SVFGNode*> nodeIdToSVFGNode;  // Map for quick lookup
+        
+        if (hasMultiplePaths) {
+            SVFUtil::outs() << "  Computing differential nodes for " << icfgPaths.size() << " paths...\n";
+            
+            // Build node ID to SVFG node mapping
+            for (const auto& pathInfo : pathNodeInfos) {
+                for (const SVFGNode* node : pathInfo.nodes) {
+                    nodeIdToSVFGNode[node->getId()] = node;
+                }
+            }
+            
+            // Compute differential nodes for each path
+            for (size_t i = 0; i < pathNodeInfos.size(); i++) {
+                Set<NodeID> differential;
+                
+                // For each node in this path, check if it appears in all other paths
+                for (NodeID nodeId : pathNodeInfos[i].nodeIds) {
+                    bool uniqueToThisPath = false;
+                    
+                    // Check if this node is missing from any other path
+                    for (size_t j = 0; j < pathNodeInfos.size(); j++) {
+                        if (i != j && !pathNodeInfos[j].nodeIds.count(nodeId)) {
+                            uniqueToThisPath = true;
+                            break;
+                        }
+                    }
+                    
+                    if (uniqueToThisPath) {
+                        differential.insert(nodeId);
+                        allDifferentialNodes.insert(nodeId);
+                    }
+                }
+                
+                differentialNodes.push_back(differential);
+                SVFUtil::outs() << "    Path " << (globalPathId + i) << " has " 
+                                << differential.size() << " differential node(s)\n";
+            }
+            
+            SVFUtil::outs() << "  Total unique differential nodes across all paths: " 
+                            << allDifferentialNodes.size() << "\n";
+        }
+        
+        // Step 4c: Build JSON output
+        llvm::json::Array pathsArray;
+        for (size_t i = 0; i < pathNodeInfos.size(); i++) {
+            llvm::json::Object pathObj;
+            pathObj["path_id"] = globalPathId++;
+            
+            const PathNodeInfo& pathInfo = pathNodeInfos[i];
+            
+            // Build key_events array
+            llvm::json::Array keyEventsArray;
+            
+            if (hasMultiplePaths) {
+                // For multiple paths: include all differential nodes with pass field
+                for (NodeID nodeId : allDifferentialNodes) {
+                    llvm::json::Object keyEventObj;
+                    
+                    const SVFGNode* svfgNode = nodeIdToSVFGNode[nodeId];
+                    keyEventObj["node_id"] = static_cast<int64_t>(nodeId);
+                    keyEventObj["node_type"] = getSVFGNodeKindString(svfgNode);
+                    // keyEventObj["node_desc"] = svfgNode->toString();
+                    
+                    // pass: true if this node exists in current path, false otherwise
+                    keyEventObj["pass"] = pathInfo.nodeIds.count(nodeId) > 0;
+                    
+                    keyEventsArray.push_back(std::move(keyEventObj));
+                }
+            }
+            // For single path: empty key_events array
+            
+            pathObj["key_events"] = std::move(keyEventsArray);
+            pathsArray.push_back(std::move(pathObj));
+        }
+        
+        retLocationObj["paths"] = std::move(pathsArray);
+        retLocationObj["path_count"] = static_cast<int64_t>(icfgPaths.size());
+        returnLocationsArray.push_back(std::move(retLocationObj));
+    }
+
+    int totalPaths = globalPathId - 1;
+    SVFUtil::outs() << "\n[Step 4] Total paths found: " << totalPaths << "\n";
+
+    llvm::json::Object result;
+    result["start_location"] = startLocation;
+    result["function"] = function->getName();
+    result["return_locations"] = std::move(returnLocationsArray);
+    result["total_return_locations"] = static_cast<int64_t>(pathsByReturn.size());
+    result["total_paths"] = static_cast<int64_t>(totalPaths);
+    result["error"] = false;
+
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
+
+    SVFUtil::outs() << "\n========================================\n";
+    SVFUtil::outs() << "[getConditionReturnInsidePath] Complete\n";
+    SVFUtil::outs() << "========================================\n\n";
+}
+
+void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocation, const PAGNode* targetPAG) {
+    // Step A: Validate inputs and get starting ICFG node
+    if (!icfg || !svfg || !pag || !targetPAG) {
+        GraphReaderUtil::sendJsonError("ICFG, SVFG, PAG, or targetPAG is null!");
+        return;
+    }
+
+    const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
+    if (!startNode) {
+        GraphReaderUtil::sendJsonError("Cannot find ICFGNode for location: " + startLocation);
+        return;
+    }
+    
+    const FunObjVar* function = startNode->getFun();
+    if (!function) {
+        GraphReaderUtil::sendJsonError("Start location is not inside any function");
+        return;
+    }
+
+    // Step B: Get def SVFGNode from PAGNode*
+    const SVFGNode* defNode = nullptr;
+    if (svfg->hasDefSVFGNode(targetPAG)) {
+        defNode = svfg->getDefSVFGNode(targetPAG);
+    } else {
+        GraphReaderUtil::sendJsonError("No def SVFGNode found for the target PAG node");
+        return;
+    }
+
+    // Step C: Find all reachable SVFGNodes from defNode (keySVFGNodes)
+    Set<const SVFGNode*> keySVFGNodes;
+    std::queue<const SVFGNode*> worklist;
+    
+    worklist.push(defNode);
+    keySVFGNodes.insert(defNode);
+    
+    // BFS traversal to find all reachable SVFG nodes within the same function
+    while (!worklist.empty()) {
+        const SVFGNode* currentNode = worklist.front();
+        worklist.pop();
+        
+        for (const SVFGEdge* edge : currentNode->getOutEdges()) {
+            const SVFGNode* nextNode = edge->getDstNode();
+            
+            // Only traverse within the same function as the def node
+            if (nextNode->getFun() != function) continue;
+            if (keySVFGNodes.find(nextNode) != keySVFGNodes.end()) continue;
+            
+            // Filter out pure control-flow nodes that don't affect values/memory
+            bool shouldFilter = false;
+            
+            if (SVFUtil::isa<BranchVFGNode>(nextNode)) {
+                shouldFilter = true;
+            } else if (SVFUtil::isa<NullPtrSVFGNode>(nextNode)) {
+                shouldFilter = true;
+            } else if (SVFUtil::isa<DummyVersionPropSVFGNode>(nextNode)) {
+                shouldFilter = true;
+            } else if (SVFUtil::isa<BinaryOPVFGNode>(nextNode)) {
+                shouldFilter = true;
+            } else if (SVFUtil::isa<UnaryOPVFGNode>(nextNode)) {
+                shouldFilter = true;
+            } else if (SVFUtil::isa<CmpVFGNode>(nextNode)) {
+                shouldFilter = true;
+            }
+            
+            if (shouldFilter) {
+                // Still traverse through this node to reach other nodes, but don't include it in keySVFGNodes
+                // We need to continue the traversal to find value-affecting nodes beyond control-flow nodes
+                for (const SVFGEdge* nextEdge : nextNode->getOutEdges()) {
+                    const SVFGNode* beyondNode = nextEdge->getDstNode();
+                    if (beyondNode->getFun() == function && keySVFGNodes.find(beyondNode) == keySVFGNodes.end()) {
+                        worklist.push(beyondNode);
+                    }
+                }
+            } else {
+                // This is a value/memory-affecting node - include it
+                keySVFGNodes.insert(nextNode);
+                worklist.push(nextNode);
+            }
+        }
+    }
+    
+    // Step D: Find all ICFG paths to return locations
+    std::vector<const ICFGNode*> returnLocations = findActualReturnICFGNodes(icfg, function);
+
+    if (returnLocations.empty()) {
+        llvm::json::Object result;
+        result["start_location"] = startLocation;
+        result["target_pag_node"] = static_cast<int64_t>(targetPAG->getId());
+        result["function"] = function->getName();
+        result["return_locations"] = llvm::json::Array{};
+        result["total_paths"] = 0;
+        result["error"] = false;
+        llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+        llvm::outs().flush();
+        return;
+    }
+
+    // Find all ICFG paths to each return location
+    std::map<const ICFGNode*, std::vector<std::vector<const ICFGNode*>>> pathsByReturn;
+
+    for (const ICFGNode* retLocation : returnLocations) {
+        std::vector<std::vector<const ICFGNode*>> pathsToThisReturn;
+        findICFGPaths(startNode, retLocation, function, pathsToThisReturn);
+        
+        if (!pathsToThisReturn.empty()) {
+            pathsByReturn[retLocation] = pathsToThisReturn;
+        }
+    }
+
+    // Step E & F: For each path, collect keySVFGNode sequence and group by sequence
+    // Structure: return location -> (keySVFGNode sequence -> list of path indices)
+    std::map<const ICFGNode*, std::map<std::vector<NodeID>, std::vector<int>>> pathGroupsByReturn;
+    
+    // Also store the actual ICFG paths for later reference
+    std::map<const ICFGNode*, std::vector<std::vector<const ICFGNode*>>> allICFGPathsByReturn = pathsByReturn;
+
+    for (const auto& [retICFG, icfgPaths] : pathsByReturn) {
+        for (size_t pathIdx = 0; pathIdx < icfgPaths.size(); pathIdx++) {
+            const auto& icfgPath = icfgPaths[pathIdx];
+            
+            // Collect keySVFGNode sequence for this path
+            std::vector<NodeID> keySVFGSequence;
+            Set<NodeID> seenInPath;  // Avoid duplicates in same path
+            
+            for (const ICFGNode* icfgNode : icfgPath) {
+                // Find all SVFG nodes at this ICFG location
+                for (auto it = svfg->begin(); it != svfg->end(); ++it) {
+                    const SVFGNode* svfgNode = it->second;
+                    if (svfgNode->getICFGNode() == icfgNode) {
+                        // Check if this is a keySVFGNode
+                        if (keySVFGNodes.count(svfgNode) && !seenInPath.count(svfgNode->getId())) {
+                            keySVFGSequence.push_back(svfgNode->getId());
+                            seenInPath.insert(svfgNode->getId());
+                        }
+                    }
+                }
+            }
+            
+            // Group this path by its keySVFGNode sequence
+            pathGroupsByReturn[retICFG][keySVFGSequence].push_back(pathIdx);
+        }
+    }
+
+    // Step G: Build JSON output with differential analysis
+    llvm::json::Array returnLocationsArray;
+    int groupIdCounter = 1;
+    int totalPaths = 0;
+
+    for (const auto& [retICFG, pathGroups] : pathGroupsByReturn) {
+        llvm::json::Object retLocationObj;
+        
+        // Get location info for this return
+        std::string retLocStr = retICFG->getSourceLoc();
+        llvm::json::Object parsedLoc = GraphReaderUtil::parseSourceLocation(retLocStr);
+        retLocationObj["location"] = std::move(parsedLoc);
+        
+        // Differential analysis: compute common nodes (intersection) and union
+        Set<NodeID> commonNodes;
+        Set<NodeID> unionNodes;
+        bool isFirst = true;
+        
+        for (const auto& [keySVFGSequence, pathIndices] : pathGroups) {
+            Set<NodeID> currentSet(keySVFGSequence.begin(), keySVFGSequence.end());
+            
+            if (isFirst) {
+                commonNodes = currentSet;
+                isFirst = false;
+            } else {
+                // Intersection: keep only nodes that appear in all groups
+                Set<NodeID> newCommon;
+                for (NodeID nodeId : commonNodes) {
+                    if (currentSet.count(nodeId)) {
+                        newCommon.insert(nodeId);
+                    }
+                }
+                commonNodes = newCommon;
+            }
+            
+            // Union: add all nodes
+            for (NodeID nodeId : currentSet) {
+                unionNodes.insert(nodeId);
+            }
+        }
+        
+        // Build path groups array with differential info
+        llvm::json::Array pathGroupsArray;
+        
+        for (const auto& [keySVFGSequence, pathIndices] : pathGroups) {
+            llvm::json::Object groupObj;
+            groupObj["group_id"] = groupIdCounter++;
+            
+            Set<NodeID> currentSet(keySVFGSequence.begin(), keySVFGSequence.end());
+            
+            // key_svfg_sequence: nodes in current group but not in common nodes (extra nodes)
+            llvm::json::Array sequenceArray;
+            llvm::json::Array sequenceDescArray;
+            
+            for (NodeID nodeId : keySVFGSequence) {
+                if (!commonNodes.count(nodeId)) {
+                    sequenceArray.push_back(static_cast<int64_t>(nodeId));
+                    
+                    // Get node description using toString()
+                    const SVFGNode* node = svfg->getSVFGNode(nodeId);
+                    if (node) {
+                        sequenceDescArray.push_back(node->toString());
+                    } else {
+                        sequenceDescArray.push_back("unknown");
+                    }
+                }
+            }
+            
+            groupObj["key_svfg_sequence"] = std::move(sequenceArray);
+            groupObj["key_svfg_sequence_desc"] = std::move(sequenceDescArray);
+            
+            // Count paths for statistics (but don't output to JSON)
+            totalPaths += pathIndices.size();
+            
+            pathGroupsArray.push_back(std::move(groupObj));
+        }
+        
+        retLocationObj["path_groups"] = std::move(pathGroupsArray);
+        retLocationObj["mergeable_groups"] = static_cast<int64_t>(pathGroups.size());
+        
+        // Add common nodes info to return location
+        llvm::json::Array commonNodesArray;
+        for (NodeID nodeId : commonNodes) {
+            commonNodesArray.push_back(static_cast<int64_t>(nodeId));
+        }
+        retLocationObj["common_nodes"] = std::move(commonNodesArray);
+        retLocationObj["common_nodes_count"] = static_cast<int64_t>(commonNodes.size());
+        
+        returnLocationsArray.push_back(std::move(retLocationObj));
+    }
+
+    // Build final result
+    llvm::json::Object result;
+    result["start_location"] = startLocation;
+    result["target_pag_node"] = static_cast<int64_t>(targetPAG->getId());
+    result["function"] = function->getName();
+    result["key_svfg_nodes_count"] = static_cast<int64_t>(keySVFGNodes.size());
+    result["return_locations"] = std::move(returnLocationsArray);
+    result["total_return_locations"] = static_cast<int64_t>(pathGroupsByReturn.size());
+    result["total_paths"] = static_cast<int64_t>(totalPaths);
+    result["total_path_groups"] = static_cast<int64_t>(groupIdCounter - 1);
+    result["error"] = false;
+
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
+}
+
 }// namespace SVF

@@ -92,6 +92,44 @@ public:
      */
     void findLVarPathInsideByLocation(const std::string& location, int eqPosition);
 
+    /*!
+     * \brief Finds all paths from a variable definition to FormalOUT nodes within the function.
+     *
+     * This method locates a variable at a specific source location (by line + column position),
+     * finds its definition node in SVFG, and discovers all paths to the function's FormalOUT nodes.
+     * Only MIntraPhi nodes are recorded along the paths.
+     *
+     * \param location Source code location string (e.g., "file.c:123").
+     * \param eqPosition The column position of the assignment operator.
+     */
+    void findPathsToFormalOUT(const std::string& location, int eqPosition);
+
+    /*!
+     * \brief Finds all ICFG paths from a location to all function return locations.
+     *
+     * This method performs pure ICFG-level traversal (control flow) from the given location
+     * to all actual return statements in the function. Unlike findPathsToFormalOUT, this does
+     * not track value flow (SVFG) or memory states, only control flow paths.
+     *
+     * \param startLocation Source code location string (e.g., "file.c:123").
+     */
+    void getConditionReturnInsidePath(const std::string& startLocation);
+
+    /*!
+     * \brief Performs value-sensitive path merging from a location to function returns.
+     *
+     * This method combines control-flow analysis with value-flow analysis to determine
+     * which paths are mergeable. Paths are considered mergeable if they reach the same
+     * return location and have identical sequences of key SVFG nodes (nodes that affect
+     * the target variable's memory). This enables more precise path-sensitive analysis
+     * by distinguishing paths that make semantically different modifications to the
+     * variable of interest.
+     *
+     * \param startLocation Source code location string (e.g., "file.c:123").
+     * \param targetPAG The PAG node representing the variable of interest.
+     */
+    void getValueSensitiveReturnInsidePath(const std::string& startLocation, const PAGNode* targetPAG);
+
 private:
     SVFG* svfg;
     ICFG* icfg;
@@ -100,6 +138,25 @@ private:
 
     void dfsVisit(const SVFGNode* currentNode, SVFGPath& currentPath, std::set<const SVFGNode*>& visited);
     void printPath(const SVFGPath& path, bool isFreed);
+
+    /*!
+     * \brief DFS helper to find paths from current node to a specific return location.
+     *
+     * \param currentNode Current node being visited
+     * \param targetReturnICFG Target ICFG node representing an actual return location
+     * \param function The function context (for intra-procedural traversal)
+     * \param currentPath Current path of key nodes (source, MIntraPhis)
+     * \param visited Set of visited nodes to avoid cycles
+     * \param allPaths Collection of all found paths
+     */
+    void dfsToReturnLocation(
+        const SVFGNode* currentNode,
+        const ICFGNode* targetReturnICFG,
+        const FunObjVar* function,
+        std::vector<const SVFGNode*>& currentPath,
+        std::set<const SVFGNode*>& visited,
+        std::vector<std::vector<const SVFGNode*>>& allPaths
+    );
 };
 
 } // namespace SVF

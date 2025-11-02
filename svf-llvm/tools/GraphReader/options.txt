@@ -33,6 +33,7 @@ command for test
 { "command" : "find-arg-value-path-inside", "function_name" : "TIFFWriteDirectorySec", "index" : "1"}
 { "command" : "find-arg-value-path-inside", "function_name" : "TIFFWriteDirectoryTagSampleformatArray", "index" : "0"}
 { "command" : "find-arg-value-path-inside", "function_name" : "TIFFjpeg_set_defaults", "index" : "0"}
+{ "command" : "find-arg-value-path-inside", "function_name" : "TIFFWriteDirectoryTagIfdIfd8Array", "index" : "0"}
 
 
 { "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:1113", "index" : "-1"}
@@ -43,33 +44,98 @@ command for test
 { "command" : "find-lvalue-path-inside", "location" : "tif_dirwrite.c:956", "eq_position" : "9"}
 { "command" : "find-lvalue-path-inside", "location" : "tif_jpeg.c:798", "eq_position" : "10"}
 { "command" : "find-lvalue-path-inside", "location" : "tif_dirwrite.c:1009", "eq_position" : "7"}
+{ "command" : "find-lvalue-path-inside", "location" : "tif_dirwrite.c:2276", "eq_position" : "3"}
 { "command" : "find-lvalue-path-inside", "location" : "tif_dirread.c:4981", "eq_position" : "9"}
 { "command" : "find-lvalue-path-inside", "location" : "tif_dirread.c:4992", "eq_position" : "11"}
 { "command" : "find-lvalue-path-inside", "location" : "tif_dirwrite.c:1746", "eq_position" : "7"}
 
-11
+{ "command" : "find-lvalue-memory-path-inside", "location" : "tif_dirwrite.c:1746", "eq_position" : "7"}
+{ "command" : "find-lvalue-memory-path-inside", "location" : "tif_getimage.c:368", "eq_position" : "17"}
+{ "command" : "find-lvalue-memory-path-inside", "location" : "tif_getimage.c:368", "eq_position" : "32"}
 
-tif_dirread.c
+{ "command": "find-icfg-return-paths", "location": "tif_dirwrite.c:1746" }
+{ "command": "find-icfg-return-paths", "location": "tif_dirwrite.c:2276" }
+{ "command": "find-icfg-return-paths", "location": "tif_getimage.c:368" }
+{ "command": "find-icfg-return-paths", "location": "tif_dirwrite.c:1720" }
 
-[DEBUG 1] ICFGNode #4 (ID: 38386)
-  Source Location: { "ln": 956, "cl": 9, "fl": "tif_dirwrite.c" }
-  Type: IntraICFGNode
-  [DEBUG 2] Retrieving LLVM instructions from this ICFGNode...
-  store i32 %1795, ptr %32, align 4, !dbg !13259    Primary LLVM Instruction: 
-    Instruction Type: store
-    Operands (2):
-  %1795 = trunc i64 %1794 to i32, !dbg !13258      [0] 
-  %32 = alloca i32, align 4      [1] 
-  [DEBUG 3] Finding all PAGNodes/SVFVars in this ICFGNode...
-    This ICFGNode has 1 SVFStmt(s)
-    [Stmt 0] EdgeID: 43679, Kind: StoreStmt
-  %32 = alloca i32, align 4      LHS: PAGNode ID=44058, LLVM=
-  %1795 = trunc i64 %1794 to i32, !dbg !13258      RHS: PAGNode ID=46146, LLVM=
-  [DEBUG 4] Finding def SVFGNodes for all PAGNodes at this location...
-    Found 2 unique PAGNode(s)
 
-    PAGNode ID: 44058
-  %32 = alloca i32, align 4      LLVM Value: 
-      ✓ Has def SVFGNode: ID=4760 [Addr]
-      Def Node Location: 
-      Def Node Info: AddrVFGNode ID: 4760 AddrStmt: [Var44058 <-- Var44059]
+65890,43515,105059,102526,43516,65893,117732,117734,43564,89016,106019,102533,(43517,79422,145128),117741,43518,21677,79436,146543,43519,79440
+65890,43515,105059,102526,43516,65893,117732,117734,43564,89016,106019,102533,117741,43518,21677,79436,146543,43519,79440
+
+{
+    "error":false,
+    "function":"TIFFWriteDirectoryTagSampleformatArray",
+    "key_svfg_nodes_count":69,
+    "return_locations":[{
+        "location":{"cl":3,"fl":"tif_dirwrite.c","ln":1013},
+        "mergeable_groups":1,
+        "path_groups":[{
+            "group_id":1,
+            "key_svfg_sequence":[64861,41104],
+            "path_count":1,
+            "paths":[1]}]
+            },{
+        "location":{"cl":2,"fl":"tif_dirwrite.c","ln":1075},
+        "mergeable_groups":8,
+        "path_groups":[{
+            "group_id":2,
+            "key_svfg_sequence":[64861,41104,41119,78774],
+            "path_count":2,
+            "paths":[1,2]},{
+            "group_id":3,
+            "key_svfg_sequence":[64861,41104,116524,41106,78707,142657,41119,78774],
+            "path_count":1,
+            "paths":[3]},{
+            "group_id":4,
+            "key_svfg_sequence":[64861,41104,116532,41108,78717,145376,41119,78774],
+            "path_count":1,
+            "paths":[4]},{
+            "group_id":5,
+            "key_svfg_sequence":[64861,41104,116534,41110,76963,145820,41119,78774],
+            "path_count":1,
+            "paths":[6]},{
+            "group_id":6,
+            "key_svfg_sequence":[64861,41104,116536,41112,78741,146093,41119,78774],
+            "path_count":1,
+            "paths":[7]},{
+            "group_id":7,
+            "key_svfg_sequence":[64861,41104,116550,41114,75319,143704,41119,78774],
+            "path_count":1,
+            "paths":[5]},{
+            "group_id":8,
+            "key_svfg_sequence":[64861,41104,116552,41116,78761,141432,41119,78774],
+            "path_count":1,
+            "paths":[8]},{
+            "group_id":9,
+            "key_svfg_sequence":[64861,41104,116554,41118,78771,143619,41119,78774],
+            "path_count":1,
+            "paths":[9]}]}
+        ],
+        "start_location":"tif_dirwrite.c:1009","target_pag_node":54562,"total_path_groups":9,"total_paths":10,"total_return_locations":2}
+
+{"error":false,"function":"TIFFWriteDirectorySec","key_svfg_nodes_count":7,
+"return_locations":[
+    {"common_nodes":[64692],"common_nodes_count":1,"location":{"cl":3,"fl":"tif_dirwrite.c","ln":370},"mergeable_groups":1,"path_groups":[{"group_id":1,"key_svfg_sequence":[],"key_svfg_sequence_desc":[]}]},
+    {"common_nodes":[64692],"common_nodes_count":1,"location":{"cl":5,"fl":"tif_dirwrite.c","ln":388},"mergeable_groups":1,"path_groups":[{"group_id":2,"key_svfg_sequence":[],"key_svfg_sequence_desc":[]}]},
+    {"common_nodes":[64692],"common_nodes_count":1,"location":{"cl":4,"fl":"tif_dirwrite.c","ln":406},"mergeable_groups":1,"path_groups":[{"group_id":3,"key_svfg_sequence":[],"key_svfg_sequence_desc":[]}]},
+    {"common_nodes":[40441,64692],"common_nodes_count":2,"location":{"cl":2,"fl":"tif_dirwrite.c","ln":945},"mergeable_groups":3,
+    "path_groups":[
+        {"group_id":4,"key_svfg_sequence":[],"key_svfg_sequence_desc":[]},
+        {"group_id":5,"key_svfg_sequence":[40442],"key_svfg_sequence_desc":["LoadVFGNode ID: 40442 LoadStmt: [Var53353 <-- Var51621]\t\nValVar ID: 53353\n   %1466 = load i32, ptr %7, align 4, !dbg !13299 { \"ln\": 790, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }"]},
+        {"group_id":6,"key_svfg_sequence":[40444],"key_svfg_sequence_desc":["LoadVFGNode ID: 40444 LoadStmt: [Var53481 <-- Var51621]\t\nValVar ID: 53481\n   %1577 = load i32, ptr %7, align 4, !dbg !13396 { \"ln\": 816, \"cl\": 6, \"fl\": \"tif_dirwrite.c\" }"]}
+    ]}],"start_location":"tif_dirwrite.c:361","target_pag_node":51614,"total_path_groups":6,"total_paths":34,"total_return_locations":4}
+
+{"command":"find-function-body-by-location","location":"tif_dirwrite.c:1746"}
+tions: [
+    {'location': 'tif_dirread.c:5606', 'done': 0, 'group_items': [
+        [
+            {'vfg_node_kind': 'LoadVFGNode', 'location': 'tif_dirread.c:4996'}, 
+            {'vfg_node_kind': 'ActualParmVFGNode', 'location': 'tif_dirread.c:4996'}
+        ], []
+        ]}, 
+    {'location': 'tif_dirread.c:5606', 'done': 0, 'group_items': [
+        [
+            {'vfg_node_kind': 'LoadVFGNode', 'location': 'tif_dirread.c:4996'}, 
+            {'vfg_node_kind': 'ActualParmVFGNode', 'location': 'tif_dirread.c:4996'}
+        ], []]},
+    {'location': 'tif_dirread.c:5604', 'done': 0, 'group_items': [[{'vfg_node_kind': 'LoadVFGNode', 'location': 'tif_dirread.c:4996'}, {'vfg_node_kind': 'ActualParmVFGNode', 'location': 'tif_dirread.c:4996'}], []]}, {'location': 'tif_dirread.c:5604', 'done': 0, 'group_items': [[{'vfg_node_kind': 'LoadVFGNode', 'location': 'tif_dirread.c:4996'}, {'vfg_node_kind': 'ActualParmVFGNode', 'location': 'tif_dirread.c:4996'}], []]}, {'location': 'tif_dirread.c:4998', 'done': 0, 'group_items': [[], [{'vfg_node_kind': 'LoadVFGNode', 'location': 'tif_dirread.c:4996'}, {'vfg_node_kind': 'ActualParmVFGNode', 'location': 'tif_dirread.c:4996'}]]}, {'location': 'tif_dirread.c:4998', 'done': 0, 'group_items': [[], [{'vfg_node_kind': 'LoadVFGNode', 'location': 'tif_dirread.c:4996'}, {'vfg_node_kind': 'ActualParmVFGNode', 'location': 'tif_dirread.c:4996'}]]}, {'location': 'tif_dirread.c:4986', 'done': 0, 'group_items': []}, {'location': 'tif_dirread.c:4986', 'done': 0, 'group_items': []}]

@@ -353,7 +353,30 @@ int main(int argc, char ** argv) {
                         SVF::GraphReaderUtil::sendJsonError("invalid 'index' value: " + indexStr->str());
                         continue;
                     }
-                    pq.findFunArgValuePathInside(funcName->str(), argIndex);
+                    const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromArg(pag, funcName->str(), argIndex);
+                    if (!targetPAG) {
+                        SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for function '" + funcName->str() + "' argument " + std::to_string(argIndex));
+                    } else {
+                        // Get function start location automatically
+                        const FunObjVar* funObj = pag->getFunObjVar(funcName->str());
+                        if (!funObj) {
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find function '" + funcName->str() + "'");
+                        } else {
+                            const llvm::Value* funVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(funObj);
+                            const llvm::Function* llvmFun = SVF::SVFUtil::dyn_cast<llvm::Function>(funVal);
+                            if (!llvmFun) {
+                                SVF::GraphReaderUtil::sendJsonError("Cannot get LLVM function for '" + funcName->str() + "'");
+                            } else {
+                                SVF::FunctionSourceInfo sourceInfo = SVF::GraphReaderUtil::getFunctionSourceInfo(llvmFun);
+                                if (sourceInfo.filename.empty()) {
+                                    SVF::GraphReaderUtil::sendJsonError("Cannot get source location for function '" + funcName->str() + "'");
+                                } else {
+                                    std::string startLocation = sourceInfo.filename + ":" + std::to_string(sourceInfo.startLine);
+                                    pq.getValueSensitiveReturnInsidePath(startLocation, targetPAG);
+                                }
+                            }
+                        }
+                    }
                 }
             } else if (cname == "find-var-value-path-inside") {
                 auto loc = cmd.getString("location");
@@ -383,7 +406,34 @@ int main(int argc, char ** argv) {
                         SVF::GraphReaderUtil::sendJsonError("invalid 'eqPosition' value: " + eqPositionStr->str());
                         continue;
                     }
-                    pq.findLVarPathInsideByLocation(loc->str(), eqPosition);
+                    const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
+                    if (!targetPAG) {
+                        SVF::GraphReaderUtil::sendJsonError("Cannot find LHS PAGNode at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
+                    } else {
+                        pq.getValueSensitiveReturnInsidePath(loc->str(), targetPAG);
+                    }
+                }
+            } else if (cname == "find-lvalue-memory-path-inside") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                } else {
+                    int eqPosition = -1;
+                    try {
+                        eqPosition = std::stoi(eqPositionStr->str());
+                    } catch (...) {
+                        SVF::GraphReaderUtil::sendJsonError("invalid 'eqPosition' value: " + eqPositionStr->str());
+                        continue;
+                    }
+                    pq.findPathsToFormalOUT(loc->str(), eqPosition);
+                }
+            } else if (cname == "find-icfg-return-paths") {
+                auto loc = cmd.getString("location");
+                if (!loc) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                } else {
+                    pq.getConditionReturnInsidePath(loc->str());
                 }
             } else {
                 SVF::GraphReaderUtil::sendJsonError("unknown command: " + cname);

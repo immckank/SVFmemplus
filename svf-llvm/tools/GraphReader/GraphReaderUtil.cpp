@@ -436,5 +436,79 @@ llvm::json::Object formatBranchInfo(const IntraCFGEdge* intraEdge) {
     };
 }
 
+const PAGNode* getPAGNodeFromArg(SVFIR* pag, const std::string& funcName, int argIndex) {
+    if (!pag) {
+        return nullptr;
+    }
+    
+    const FunObjVar* fun = pag->getFunObjVar(funcName);
+    if (!fun) {
+        return nullptr;
+    }
+    
+    const SVFIR::SVFVarList& args = pag->getFunArgsList(fun);
+    if (argIndex < 0 || static_cast<size_t>(argIndex) >= args.size()) {
+        return nullptr;
+    }
+    
+    return args[argIndex];
+}
+
+const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
+    if (!icfg || !pag) {
+        return nullptr;
+    }
+    
+    std::vector<const ICFGNode*> allICFGNodes = findAllICFGNodesByLocation(icfg, location);
+    if (allICFGNodes.empty()) {
+        return nullptr;
+    }
+    
+    int idx = 0;
+    for (size_t i = 0; i < allICFGNodes.size(); i++) {
+        const ICFGNode* icfgNode = allICFGNodes[i];
+        if (SVFUtil::isa<IntraICFGNode>(icfgNode)) {
+            const std::string sourceLocation = icfgNode->getSourceLoc();
+            llvm::json::Object locObj = parseSourceLocation(sourceLocation);
+            if (locObj.empty()) {
+                continue;
+            }
+            if (auto cl = locObj.getInteger("cl")) {
+                if (*cl == eqPosition) {
+                    idx = i;
+                    break;
+                }
+            }
+        }
+    }
+    
+    const ICFGNode* targetICFGNode = allICFGNodes[idx];
+    auto intraNode = SVFUtil::dyn_cast<IntraICFGNode>(targetICFGNode);
+    if (!intraNode) {
+        return nullptr;
+    }
+    
+    if (targetICFGNode->getSVFStmts().empty()) {
+        return nullptr;
+    }
+    
+    const SVFStmt* targetStmt = targetICFGNode->getSVFStmts().front();
+    const SVFVar* lhs = nullptr;
+    
+    if (const AddrStmt* addr = SVFUtil::dyn_cast<AddrStmt>(targetStmt)) {
+        lhs = addr->getLHSVar();
+    } else if (const CopyStmt* copy = SVFUtil::dyn_cast<CopyStmt>(targetStmt)) {
+        lhs = copy->getLHSVar();
+    } else if (const LoadStmt* load = SVFUtil::dyn_cast<LoadStmt>(targetStmt)) {
+        lhs = load->getLHSVar();
+    } else if (const StoreStmt* store = SVFUtil::dyn_cast<StoreStmt>(targetStmt)) {
+        lhs = store->getLHSVar();
+    } else if (const GepStmt* gep = SVFUtil::dyn_cast<GepStmt>(targetStmt)) {
+        lhs = gep->getLHSVar();
+    }
+    
+    return lhs;
+}
+
 } // namespace GraphReaderUtil
 } // namespace SVF

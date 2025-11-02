@@ -94,6 +94,25 @@ namespace GraphReaderUtil {
                            std::vector<llvm::json::Object>& outCmds,
                            std::string& errMsg);
 
+    /*!
+     * \brief Gets the PAGNode for a specific function argument.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param funcName The name of the function.
+     * \param argIndex The index of the argument (0-based).
+     * \return A const pointer to the PAGNode of the argument, or nullptr if not found.
+     */
+    const PAGNode* getPAGNodeFromArg(SVFIR* pag, const std::string& funcName, int argIndex);
+
+    /*!
+     * \brief Gets the LHS PAGNode from a source location and equation position.
+     * \param icfg Pointer to the ICFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param location A string in "filename:line" format.
+     * \param eqPosition The equation position (column) to match.
+     * \return A const pointer to the LHS PAGNode, or nullptr if not found.
+     */
+    const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition);
+
 } // namespace GraphReaderUtil
 } // namespace SVF
 
