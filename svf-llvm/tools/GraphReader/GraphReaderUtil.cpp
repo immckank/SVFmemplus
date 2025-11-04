@@ -406,54 +406,37 @@ const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const std::string& loc
 }
 
 const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
-    // DEBUG with outputs
-    SVF::SVFUtil::outs() << "\n=== getPAGNodeFromLvarGEP Debug ===\n";
-    SVF::SVFUtil::outs() << "Location: " << location << "\n";
-    SVF::SVFUtil::outs() << "EQ Position: " << eqPosition << "\n\n";
-    
     if (!icfg || !pag) {
         SVF::SVFUtil::errs() << "Error: Invalid ICFG or PAG pointer\n";
         return nullptr;
     }
     
     // Step 1: 根据location找到所有icfg节点
-    SVF::SVFUtil::outs() << "Step 1: Finding all ICFG nodes at location...\n";
     std::vector<const ICFGNode*> allICFGNodes = findAllICFGNodesByLocation(icfg, location);
     if (allICFGNodes.empty()) {
         SVF::SVFUtil::errs() << "Error: No ICFG nodes found at location: " << location << "\n";
         return nullptr;
     }
-    SVF::SVFUtil::outs() << "Found " << allICFGNodes.size() << " ICFG node(s) at this location\n\n";
     
     // Step 2: 找到在赋值操作左侧的icfg节点，根据eqPosition筛选，并找到Store语句的LHS变量
-    SVF::SVFUtil::outs() << "Step 2: Finding Store statement at eq_position " << eqPosition << "...\n";
     const SVFVar* storeLHS = nullptr;
     
     for (size_t i = 0; i < allICFGNodes.size(); i++) {
         const ICFGNode* icfgNode = allICFGNodes[i];
-        SVF::SVFUtil::outs() << "  Checking node " << i << " (ID: " << icfgNode->getId() << ")\n";
         
         if (SVFUtil::isa<IntraICFGNode>(icfgNode)) {
             const std::string sourceLocation = icfgNode->getSourceLoc();
-            SVF::SVFUtil::outs() << "    Source location: " << sourceLocation << "\n";
             
             llvm::json::Object locObj = parseSourceLocation(sourceLocation);
             if (locObj.empty()) {
-                SVF::SVFUtil::outs() << "    (Could not parse source location)\n";
                 continue;
             }
             if (auto cl = locObj.getInteger("cl")) {
-                SVF::SVFUtil::outs() << "    Column: " << *cl << "\n";
                 if (*cl == eqPosition) {
-                    SVF::SVFUtil::outs() << "    ✓ MATCH! This is the Store node.\n";
-                    
                     // 查找Store语句并获取LHS
                     for (const SVFStmt* stmt : icfgNode->getSVFStmts()) {
-                        SVF::SVFUtil::outs() << "      Statement: " << stmt->toString() << "\n";
                         if (const StoreStmt* store = SVFUtil::dyn_cast<StoreStmt>(stmt)) {
                             storeLHS = store->getLHSVar();
-                            SVF::SVFUtil::outs() << "      ✓ Found Store LHS: " << storeLHS->toString() 
-                                                 << " (ID: " << storeLHS->getId() << ")\n";
                             break;
                         }
                     }
@@ -467,10 +450,8 @@ const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& 
         SVF::SVFUtil::errs() << "Error: Could not find Store statement at eq_position " << eqPosition << "\n";
         return nullptr;
     }
-    SVF::SVFUtil::outs() << "\n";
     
     // Step 3: 在所有列号<=eqPosition的节点中查找GEP语句，其LHS与Store的LHS匹配
-    SVF::SVFUtil::outs() << "Step 3: Searching for GEP statement with matching LHS in nodes with cl <= " << eqPosition << "...\n";
     const SVFVar* baseVar = nullptr;
     
     for (size_t i = 0; i < allICFGNodes.size(); i++) {
@@ -483,12 +464,8 @@ const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& 
             if (!locObj.empty()) {
                 if (auto cl = locObj.getInteger("cl")) {
                     if (*cl > eqPosition) {
-                        SVF::SVFUtil::outs() << "  Skipping node " << i << " (ID: " << icfgNode->getId() 
-                                             << ", cl=" << *cl << " > " << eqPosition << ")\n";
                         continue;
                     }
-                    SVF::SVFUtil::outs() << "  Checking node " << i << " (ID: " << icfgNode->getId() 
-                                         << ", cl=" << *cl << ")\n";
                 }
             }
         }
@@ -497,16 +474,10 @@ const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& 
         for (const SVFStmt* stmt : icfgNode->getSVFStmts()) {
             if (const GepStmt* gep = SVFUtil::dyn_cast<GepStmt>(stmt)) {
                 const SVFVar* gepLHS = gep->getLHSVar();
-                SVF::SVFUtil::outs() << "    Found GEP: " << gep->toString() << "\n";
-                SVF::SVFUtil::outs() << "      GEP LHS ID: " << gepLHS->getId() 
-                                     << ", Store LHS ID: " << storeLHS->getId() << "\n";
                 
                 // 检查GEP的LHS是否与Store的LHS匹配
                 if (gepLHS->getId() == storeLHS->getId()) {
-                    SVF::SVFUtil::outs() << "      ✓ MATCH! This GEP produces the address for the Store.\n";
                     baseVar = gep->getRHSVar();
-                    SVF::SVFUtil::outs() << "      GEP RHS (base): " << baseVar->toString() 
-                                         << " (ID: " << baseVar->getId() << ")\n";
                     break;
                 }
             }
@@ -516,31 +487,18 @@ const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& 
     }
     
     if (!baseVar) {
-        SVF::SVFUtil::outs() << "Warning: No GEP statement found, trying to use Store LHS directly\n";
         baseVar = storeLHS;
     }
     
     // Step 4: 如果获取到的是GepValVar，递归获取其最基础的base对象
-    SVF::SVFUtil::outs() << "\nStep 4: Resolving to ultimate base object...\n";
-    int unwrapCount = 0;
     while (baseVar && SVFUtil::isa<GepValVar>(baseVar)) {
         const GepValVar* gepValVar = SVFUtil::dyn_cast<GepValVar>(baseVar);
         baseVar = gepValVar->getBaseNode();
-        unwrapCount++;
-        SVF::SVFUtil::outs() << "  Unwrap " << unwrapCount << ": " << baseVar->toString() 
-                             << " (ID: " << baseVar->getId() << ")\n";
     }
     
-    if (baseVar) {
-        SVF::SVFUtil::outs() << "\n✓ Final base PAGNode: " << baseVar->toString() 
-                             << " (ID: " << baseVar->getId() << ")\n";
-        SVF::SVFUtil::outs() << "  Type: " << (SVFUtil::isa<ValVar>(baseVar) ? "ValVar" : "ObjVar") << "\n";
-        SVF::SVFUtil::outs() << "  Source Location: " << baseVar->getSourceLoc() << "\n";
-    } else {
+    if (!baseVar) {
         SVF::SVFUtil::errs() << "Error: Could not determine base variable\n";
     }
-    
-    SVF::SVFUtil::outs() << "=== End getPAGNodeFromLvarGEP Debug ===\n\n";
     
     return baseVar;
 }

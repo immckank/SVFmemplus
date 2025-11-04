@@ -27,16 +27,21 @@ path
 {"command": "show-code-line", "location": "tif_getimage.c:2863"}
 {"command": "show-code-line", "location": "mem.c:174"}
 {"command": "show-code-line", "location": "mem.c:50"}
+{"command": "show-code-line", "location": "iptcutil:305"}
+{"command": "show-code-line", "location": "tif_dirread.c:1628"}
 
 
 
-{"command": "find-base-lavr-def", "location": "tif_getimage.c:2855", "eq_position": "20"}
-{"command": "find-base-lavr-def", "location": "tif_getimage.c:2861", "eq_position": "3"}
-{"command": "find-base-lavr-def", "location": "tif_getimage.c:2863", "eq_position": "7"}
-{"command": "find-base-lavr-def", "location": "tif_getimage.c:2909", "eq_position": "24"}
-{"command": "find-base-lavr-def", "location": "tif_getimage.c:218", "eq_position": "12"}
+{"command": "find-base-lvar-def", "location": "tif_getimage.c:2855", "eq_position": "20"}
+{"command": "find-base-lvar-def", "location": "tif_getimage.c:2861", "eq_position": "3"}
+{"command": "find-base-lvar-def", "location": "tif_getimage.c:2863", "eq_position": "7"}
+{"command": "find-base-lvar-def", "location": "tif_getimage.c:2909", "eq_position": "24"}
+{"command": "find-base-lvar-def", "location": "tif_getimage.c:218", "eq_position": "12"}
+{"command": "find-base-lvar-def", "location": "tif_dirread.c:1628", "eq_position": "8"}
+{"command": "find-base-lvar-def", "location": "tif_dirread.c:2823", "eq_position": "8"}
+{"command": "find-base-lvar-def", "location": "tif_dirread.c:2762", "eq_position": "8"}
+{"command": "find-base-lvar-def", "location": "tif_getimage.c:370", "eq_position": "18"}
 
-218
 
 check return pointer
 {"command": "check-return-pointer", "location": "tif_dirread.c:4336"}

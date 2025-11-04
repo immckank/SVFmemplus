@@ -465,7 +465,7 @@ int main(int argc, char ** argv) {
                     llvm::json::Object result = SVF::GraphReaderUtil::getStoreClInfoJson(svfg, icfg, loc->str());
                     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 }
-            } else if (cname == "find-base-lavr-def") {
+            } else if (cname == "find-base-lvar-def") {
                 auto loc = cmd.getString("location");
                 auto eqPositionStr = cmd.getString("eq_position");
                 if (!loc || !eqPositionStr) {
