@@ -7,6 +7,9 @@
 
 namespace SVF {
 
+// Forward declaration
+class SVFG;
+
 /*!
  * \class FunctionQuery
  * \brief A class to encapsulate various queries related to functions in the control-flow graph.
@@ -19,9 +22,10 @@ class FunctionQuery {
 private:
     ICFG* icfg;
     SVFIR* pag;
+    SVFG* svfg;
 
 public:
-    FunctionQuery(ICFG* i, SVFIR* p);
+    FunctionQuery(ICFG* i, SVFIR* p, SVFG* s = nullptr);
 
     //! Find all call sites of a given function by its name.
     void findCallSites(const std::string& functionName);
@@ -40,6 +44,12 @@ public:
 
     //! Find all return locations reachable from a given location within a function.
     void findRetLocations(const std::string& functionName, const std::string& location);
+    
+    //! Check if a return location returns a pointer type variable.
+    void checkReturnPointer(const std::string& location);
+    
+    //! Show all return instructions in a function (debug).
+    void showFunctionReturnInfo(const std::string& location);
     
 };
 

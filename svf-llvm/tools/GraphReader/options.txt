@@ -13,13 +13,51 @@ path
 { "command" : "find-cond-path-inside", "start" : "example.c:123", "end" : "example.c:132" }
 { "command" : "find-cond-path", "start" : "example.c:123", "end" : "example.c:345" }
 
+
+{"command": "show-code-line", "location": "tif_getimage.c:369"}
+{"command": "show-code-line", "location": "tif_getimage.c:511"}
+
+{"command": "show-code-line", "location": "tif_getimage.c:492"}
+{"command": "show-code-line", "location": "tif_getimage.c:496"}
+{"command": "show-code-line", "location": "tif_getimage.c:504"}
+{"command": "show-code-line", "location": "tif_dirread.c:4336"}
+{"command": "show-code-line", "location": "tif_getimage.c:249"}
+{"command": "show-code-line", "location": "tif_getimage.c:377"}
+{"command": "show-code-line", "location": "tif_getimage.c:3027"}
+{"command": "show-code-line", "location": "tif_getimage.c:2863"}
+{"command": "show-code-line", "location": "mem.c:174"}
+{"command": "show-code-line", "location": "mem.c:50"}
+
+
+
+{"command": "find-base-lavr-def", "location": "tif_getimage.c:2855", "eq_position": "20"}
+{"command": "find-base-lavr-def", "location": "tif_getimage.c:2861", "eq_position": "3"}
+{"command": "find-base-lavr-def", "location": "tif_getimage.c:2863", "eq_position": "7"}
+{"command": "find-base-lavr-def", "location": "tif_getimage.c:2909", "eq_position": "24"}
+{"command": "find-base-lavr-def", "location": "tif_getimage.c:218", "eq_position": "12"}
+
+218
+
+check return pointer
+{"command": "check-return-pointer", "location": "tif_dirread.c:4336"}
+{"command": "check-return-pointer", "location": "tif_getimage.c:511"}
+{"command": "check-return-pointer", "location": "tif_dirread.c:4338"}
+
+show function return info (debug)
+{"command": "show-function-return-info", "location": "tif_dirread.c:4336"}
+
+{"command": "trace-call-arg-to-return", "location": "tif_getimage.c:378", "arg_index": "0"}
+{"command": "find-call-arg-value-path-inside", "location": "tif_getimage.c:407", "arg_index": "0"}
+
 value path Debug
 { "command" : "show-value-path-inside", "start" : "tif_dirwrite.c:1083", "index" : "1" }
 { "command" : "find-arg-value-path-inside", "function_name" : "TIFFWriteDirectorySec", "index" : "1"}
 { "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:1099", "index" : "-1"}
 { "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:1099", "index" : "0"}
 
-findVarValuePathInsideByLocation
+find-call-arg-value-path-inside
+
+{ "command" : "trace-call-arg" , "location" : "tif_getimage.c:407", "arg_index": "0"}
 
 command
 { "command" : "exit" }

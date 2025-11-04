@@ -130,6 +130,19 @@ public:
      */
     void getValueSensitiveReturnInsidePath(const std::string& startLocation, const PAGNode* targetPAG);
 
+    /*!
+     * \brief Traces a function call argument's value flow to function returns.
+     *
+     * This method combines argument tracing with value flow analysis:
+     * 1. Finds the definition point of the call argument (e.g., where it was allocated/stored)
+     * 2. Traces all execution paths from the call site to function returns
+     * 3. Performs value-sensitive path merging based on the argument's data flow
+     *
+     * \param callLocation Source location of the function call (e.g., "file.c:377").
+     * \param argIndex The argument index (0-based, 0 is first argument).
+     */
+    void traceCallArgToReturn(const std::string& callLocation, int argIndex);
+
 private:
     SVFG* svfg;
     ICFG* icfg;

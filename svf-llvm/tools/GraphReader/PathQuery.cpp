@@ -19,39 +19,6 @@
 
 namespace SVF {
 
-// Helper function to get SVFGNode kind as string
-static std::string getSVFGNodeKindString(const SVFGNode* node) {
-    if (!node) return "Null";
-    switch (node->getNodeKind()) {
-        case SVFValue::Addr: return "Addr";
-        case SVFValue::Copy: return "Copy";
-        case SVFValue::Gep: return "Gep";
-        case SVFValue::Store: return "Store";
-        case SVFValue::Load: return "Load";
-        case SVFValue::Cmp: return "Cmp";
-        case SVFValue::BinaryOp: return "BinaryOp";
-        case SVFValue::UnaryOp: return "UnaryOp";
-        case SVFValue::Branch: return "Branch";
-        case SVFValue::DummyVProp: return "DummyVProp";
-        case SVFValue::NPtr: return "NPtr";
-        case SVFValue::FRet: return "FRet";
-        case SVFValue::ARet: return "ARet";
-        case SVFValue::AParm: return "AParm";
-        case SVFValue::FParm: return "FParm";
-        case SVFValue::TPhi: return "TPhi";
-        case SVFValue::TIntraPhi: return "TIntraPhi";
-        case SVFValue::TInterPhi: return "TInterPhi";
-        case SVFValue::FPIN: return "FPIN";
-        case SVFValue::FPOUT: return "FPOUT";
-        case SVFValue::APIN: return "APIN";
-        case SVFValue::APOUT: return "APOUT";
-        case SVFValue::MPhi: return "MPhi";
-        case SVFValue::MIntraPhi: return "MIntraPhi";
-        case SVFValue::MInterPhi: return "MInterPhi";
-        default: return "Unknown";
-    }
-}
-
 void PathQuery::getValuePath(const SVFGNode* startNode) {
     if (!startNode) {
         GraphReaderUtil::sendJsonError("Error: Start node is null.");
@@ -163,7 +130,7 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
         // Skip nodes without valid location information
         if (locKey.empty()) {
             SVFUtil::errs() << "  [-] Skipping Node " << node->getId()
-                            << " [" << getSVFGNodeKindString(node) << "]"
+                            << " [" << GraphReaderUtil::getSVFGNodeKindString(node) << "]"
                             << " (no location info)\n";
             SVFUtil::errs() << "  Node Info: " << node->toString() << "\n";
             return;
@@ -175,10 +142,10 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
         if (entry.second.empty()) {
             entry.first = locObj;
         }
-        entry.second.push_back({node->getId(), getSVFGNodeKindString(node)});
+        entry.second.push_back({node->getId(), GraphReaderUtil::getSVFGNodeKindString(node)});
 
         SVFUtil::errs() << "  [+] Found Node " << node->getId()
-                        << " [" << getSVFGNodeKindString(node) << "]"
+                        << " [" << GraphReaderUtil::getSVFGNodeKindString(node) << "]"
                         << " at " << locKey << "\n";
     };
 
@@ -249,7 +216,7 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
         for (const SVFGNode* pathNode : pathNodes) {
             llvm::json::Object nodeObj;
             nodeObj["node_id"] = pathNode->getId();
-            nodeObj["node_kind"] = getSVFGNodeKindString(pathNode);
+            nodeObj["node_kind"] = GraphReaderUtil::getSVFGNodeKindString(pathNode);
             singlePath.push_back(std::move(nodeObj));
         }
         
@@ -809,7 +776,7 @@ void PathQuery::findVarValuePathInsideByLocation(const std::string& location, in
             if (svfg->hasDefSVFGNode(pagNode)) {
                 const SVFGNode* defNode = svfg->getDefSVFGNode(pagNode);
                 SVFUtil::outs() << "      ✓ Has def SVFGNode: ID=" << defNode->getId() 
-                                << " [" << getSVFGNodeKindString(defNode) << "]\n";
+                                << " [" << GraphReaderUtil::getSVFGNodeKindString(defNode) << "]\n";
                 SVFUtil::outs() << "      Def Node Location: " << defNode->getSourceLoc() << "\n";
                 
                 // Parse location to check if it's at line 1098
@@ -973,7 +940,7 @@ void PathQuery::findVarValuePathInsideByLocation(const std::string& location, in
     if (svfg->hasDefSVFGNode(targetPAGNode)) {
         defNode = svfg->getDefSVFGNode(targetPAGNode);
         SVFUtil::outs() << "[findVarValuePathInsideByLocation] ✓ Found def SVFGNode ID: " << defNode->getId() << "\n";
-        SVFUtil::outs() << "  Node Kind: " << getSVFGNodeKindString(defNode) << "\n";
+        SVFUtil::outs() << "  Node Kind: " << GraphReaderUtil::getSVFGNodeKindString(defNode) << "\n";
         SVFUtil::outs() << "  Node Info: " << defNode->toString() << "\n";
         SVFUtil::outs() << "  Node Function: " << (defNode->getFun() ? defNode->getFun()->getName() : "<no function>") << "\n";
     } else {
@@ -1003,7 +970,7 @@ void PathQuery::findVarValuePathInsideByLocation(const std::string& location, in
             
             if (matches && foundCount < 5) { // Limit output to first 5 matches
                 SVFUtil::errs() << "  Found in SVFGNode ID=" << node->getId() 
-                                << " [" << getSVFGNodeKindString(node) << "]\n";
+                                << " [" << GraphReaderUtil::getSVFGNodeKindString(node) << "]\n";
                 SVFUtil::errs() << "    " << node->toString() << "\n";
                 foundCount++;
             }
@@ -1412,7 +1379,7 @@ void PathQuery::dfsToReturnLocation(
     // Debug output
     if (currentPath.size() <= 3) {  // Only log first few steps to avoid spam
         SVFUtil::outs() << "    [DFS] Current SVFG Node " << currentNode->getId() 
-                        << " [" << getSVFGNodeKindString(currentNode) << "]";
+                        << " [" << GraphReaderUtil::getSVFGNodeKindString(currentNode) << "]";
         if (curICFG) {
             SVFUtil::outs() << " -> ICFG " << curICFG->getId();
         } else {
@@ -1567,7 +1534,7 @@ void PathQuery::findPathsToFormalOUT(const std::string& location, int eqPosition
         if (svfgNode->getICFGNode() == targetICFGNode) {
             candidateNodes.push_back(svfgNode);
             SVFUtil::outs() << "    Found SVFG Node " << svfgNode->getId() 
-                            << " [" << getSVFGNodeKindString(svfgNode) << "]";
+                            << " [" << GraphReaderUtil::getSVFGNodeKindString(svfgNode) << "]";
             // Verify the association
             const ICFGNode* verifyICFG = svfgNode->getICFGNode();
             if (verifyICFG) {
@@ -1589,7 +1556,7 @@ void PathQuery::findPathsToFormalOUT(const std::string& location, int eqPosition
             SVFUtil::isa<CopySVFGNode>(node) ||
             SVFUtil::isa<ActualParmSVFGNode>(node)) {
             startNode = node;
-            SVFUtil::outs() << "  Prioritizing node type: " << getSVFGNodeKindString(node) << "\n";
+            SVFUtil::outs() << "  Prioritizing node type: " << GraphReaderUtil::getSVFGNodeKindString(node) << "\n";
             break;
         }
     }
@@ -1600,7 +1567,7 @@ void PathQuery::findPathsToFormalOUT(const std::string& location, int eqPosition
     }
 
     SVFUtil::outs() << "  Selected start SVFG Node ID=" << startNode->getId() 
-                    << " [" << getSVFGNodeKindString(startNode) << "]\n";
+                    << " [" << GraphReaderUtil::getSVFGNodeKindString(startNode) << "]\n";
     
     // Verify the start node's ICFG association
     if (const ICFGNode* verifyICFG = startNode->getICFGNode()) {
@@ -1732,7 +1699,7 @@ void PathQuery::findPathsToFormalOUT(const std::string& location, int eqPosition
             for (const SVFGNode* node : path) {
                 llvm::json::Object nodeObj;
                 nodeObj["node_id"] = static_cast<int64_t>(node->getId());
-                nodeObj["node_type"] = getSVFGNodeKindString(node);
+                nodeObj["node_type"] = GraphReaderUtil::getSVFGNodeKindString(node);
                 nodeObj["node_desc"] = node->toString();
                 nodesArray.push_back(std::move(nodeObj));
             }
@@ -1880,7 +1847,7 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
                             pathInfo.nodes.push_back(svfgNode);
                             
                             SVFUtil::outs() << "    + SVFG Node " << svfgNode->getId() 
-                                            << " [" << getSVFGNodeKindString(svfgNode) << "]\n";
+                                            << " [" << GraphReaderUtil::getSVFGNodeKindString(svfgNode) << "]\n";
                         }
                     }
                 }
@@ -1954,7 +1921,7 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
                     
                     const SVFGNode* svfgNode = nodeIdToSVFGNode[nodeId];
                     keyEventObj["node_id"] = static_cast<int64_t>(nodeId);
-                    keyEventObj["node_type"] = getSVFGNodeKindString(svfgNode);
+                    keyEventObj["node_type"] = GraphReaderUtil::getSVFGNodeKindString(svfgNode);
                     // keyEventObj["node_desc"] = svfgNode->toString();
                     
                     // pass: true if this node exists in current path, false otherwise
@@ -2241,6 +2208,21 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
 
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
     llvm::outs().flush();
+}
+
+void PathQuery::traceCallArgToReturn(const std::string& callLocation, int argIndex) {
+    // Step 1: Use traceCallArgumentValueFlow to find the definition point
+    const PAGNode* defPAGNode = GraphReaderUtil::traceCallArgumentValueFlow(svfg, icfg, pag, callLocation, argIndex);
+    
+    if (!defPAGNode) {
+        GraphReaderUtil::sendJsonError("Could not find definition PAGNode for call argument");
+        return;
+    }
+
+    // Step 2: Call getValueSensitiveReturnInsidePath with the definition PAGNode
+    // This will trace all paths from callLocation to function returns,
+    // performing value-sensitive analysis based on defPAGNode
+    getValueSensitiveReturnInsidePath(callLocation, defPAGNode);
 }
 
 }// namespace SVF
