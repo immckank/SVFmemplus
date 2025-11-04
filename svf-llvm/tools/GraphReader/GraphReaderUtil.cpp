@@ -761,8 +761,6 @@ const SVFGNode* findMemoryDefNode(SVFG* svfg, const SVFVar* addressPAG) {
         return nullptr;
     }
 
-    SVF::SVFUtil::outs() << "\n=== Finding Memory Definition for Address PAGNode " << addressPAG->getId() << " ===\n";
-
     // Strategy 1: Use SVFG backward traversal from load to find store via def-use edges
     // First, find the LoadVFGNode that uses this address
     const LoadVFGNode* loadNode = nullptr;
@@ -774,7 +772,6 @@ const SVFGNode* findMemoryDefNode(SVFG* svfg, const SVFVar* addressPAG) {
             const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(pagEdge);
             if (loadStmt && loadStmt->getRHSVar()->getId() == addressPAG->getId()) {
                 loadNode = load;
-                SVF::SVFUtil::outs() << "  Found LoadVFGNode: " << loadNode->getId() << "\n";
                 break;
             }
         }
@@ -782,30 +779,22 @@ const SVFGNode* findMemoryDefNode(SVFG* svfg, const SVFVar* addressPAG) {
     
     if (loadNode) {
         // Traverse backward through SVFG edges to find the store definition
-        SVF::SVFUtil::outs() << "  Tracing backward from LoadVFGNode...\n";
-        
         for (auto it = loadNode->InEdgeBegin(); it != loadNode->InEdgeEnd(); ++it) {
             const SVFGEdge* edge = *it;
             const SVFGNode* srcNode = edge->getSrcNode();
             
-            SVF::SVFUtil::outs() << "    Incoming edge from node " << srcNode->getId() 
-                                 << " (type: " << srcNode->getNodeKind() << ")\n";
-            
             // Check if source is a StoreVFGNode
             if (const auto* storeNode = SVFUtil::dyn_cast<StoreVFGNode>(srcNode)) {
-                SVF::SVFUtil::outs() << "  Found StoreVFGNode via SVFG edge: " << storeNode->getId() << "\n";
                 return storeNode;
             }
             
             // Check if source is an MSSA node (indirect def)
             if (const auto* mssaNode = SVFUtil::dyn_cast<MRSVFGNode>(srcNode)) {
-                SVF::SVFUtil::outs() << "  Found MRSVFGNode (memory region): " << mssaNode->getId() << "\n";
                 // Continue searching through MSSA node's predecessors
                 for (auto it2 = mssaNode->InEdgeBegin(); it2 != mssaNode->InEdgeEnd(); ++it2) {
                     const SVFGEdge* edge2 = *it2;
                     const SVFGNode* srcNode2 = edge2->getSrcNode();
                     if (const auto* storeNode = SVFUtil::dyn_cast<StoreVFGNode>(srcNode2)) {
-                        SVF::SVFUtil::outs() << "  Found StoreVFGNode via MSSA: " << storeNode->getId() << "\n";
                         return storeNode;
                     }
                 }
@@ -814,20 +803,14 @@ const SVFGNode* findMemoryDefNode(SVFG* svfg, const SVFVar* addressPAG) {
     }
     
     // Strategy 2: If SVFG edge traversal fails, try matching by GEP structure
-    SVF::SVFUtil::outs() << "  Falling back to GEP structure matching...\n";
     
     std::vector<const SVFGNode*> candidateStores;
     
     // Extract GEP information from the address
     const GepValVar* addressGep = SVFUtil::dyn_cast<GepValVar>(addressPAG);
     if (!addressGep) {
-        SVF::SVFUtil::outs() << "  Address is not a GEP node, cannot match.\n";
         return nullptr;
     }
-    
-    SVF::SVFUtil::outs() << "  Address GEP info:\n";
-    SVF::SVFUtil::outs() << "    Base: " << addressGep->getBaseNode()->getId() << "\n";
-    SVF::SVFUtil::outs() << "    Offset: " << addressGep->getConstantFieldIdx() << "\n";
     
     // Search for stores with matching GEP structure
     for (auto it = svfg->begin(); it != svfg->end(); ++it) {
@@ -843,10 +826,6 @@ const SVFGNode* findMemoryDefNode(SVFG* svfg, const SVFVar* addressPAG) {
                 if (const auto* storeLHSGep = SVFUtil::dyn_cast<GepValVar>(storeLHS)) {
                     // Compare field index (offset)
                     if (storeLHSGep->getConstantFieldIdx() == addressGep->getConstantFieldIdx()) {
-                        SVF::SVFUtil::outs() << "  Found StoreVFGNode with matching field offset " 
-                                             << storeLHSGep->getConstantFieldIdx() 
-                                             << ": " << storeNode->getId() << "\n";
-                        SVF::SVFUtil::outs() << "    Store location: " << storeNode->getICFGNode()->getSourceLoc() << "\n";
                         candidateStores.push_back(storeNode);
                     }
                 }
@@ -855,12 +834,10 @@ const SVFGNode* findMemoryDefNode(SVFG* svfg, const SVFVar* addressPAG) {
     }
     
     if (candidateStores.empty()) {
-        SVF::SVFUtil::outs() << "  No store nodes found.\n";
         return nullptr;
     }
     
     // Return the first candidate
-    SVF::SVFUtil::outs() << "  Returning StoreVFGNode: " << candidateStores[0]->getId() << "\n";
     return candidateStores[0];
 }
 

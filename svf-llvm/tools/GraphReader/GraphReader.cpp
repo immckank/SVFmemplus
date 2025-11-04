@@ -9,7 +9,7 @@
 #include "Util/Options.h"
 #include "Util/CDGBuilder.h"
 // #include "GraphReader/SVFGChecker.h"
-#include "GraphReaderSVFGBuilder.h"
+#include "SABER/SaberSVFGBuilder.h"
 #include "GraphReaderUtil.h"
 #include "PathQuery.h"
 #include "FunctionQuery.h"
@@ -190,7 +190,7 @@ int main(int argc, char ** argv) {
     AndersenWaveDiff* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
     ICFG* icfg = ander->getICFG();
 
-    auto memSSA = std::make_unique<GraphReaderSVFGBuilder>();
+    auto memSSA = std::make_unique<SaberSVFGBuilder>();
     SVFG* svfg = memSSA->buildFullSVFG(ander);
 
     FunctionQuery fq(icfg, pag, svfg);

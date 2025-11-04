@@ -7,7 +7,7 @@ function
 { "command" : "find-return-locations", "name" : "TIFFReadDirEntryIfd8Array",  "location" : "tif_dirread.c:2797"}
 { "command" : "find-return-locations", "name" : "TIFFReadDirEntryDoubleArray",  "location" : "tif_dirread.c:2568"}
 
-
+{"command": "find-all-function-call-sites", "name": "TIFFWriteBufferSetup"}
 
 path
 { "command" : "find-cond-path-inside", "start" : "example.c:123", "end" : "example.c:132" }
@@ -41,6 +41,7 @@ path
 {"command": "find-base-lvar-def", "location": "tif_dirread.c:2823", "eq_position": "8"}
 {"command": "find-base-lvar-def", "location": "tif_dirread.c:2762", "eq_position": "8"}
 {"command": "find-base-lvar-def", "location": "tif_getimage.c:370", "eq_position": "18"}
+tif_close.c:70
 
 
 check return pointer
