@@ -66,6 +66,7 @@ class SVFG : public VFG
 {
     friend class SVFGBuilder;
     friend class SaberSVFGBuilder;
+    friend class GraphReaderSVFGBuilder;  // GraphReader's specialized builder
     friend class CFLSVFGBuilder;
     friend class TaintSVFGBuilder;
     friend class DDASVFGBuilder;

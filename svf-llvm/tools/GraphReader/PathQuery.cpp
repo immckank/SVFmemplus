@@ -2007,37 +2007,15 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
             if (nextNode->getFun() != function) continue;
             if (keySVFGNodes.find(nextNode) != keySVFGNodes.end()) continue;
             
-            // Filter out pure control-flow nodes that don't affect values/memory
-            bool shouldFilter = false;
+            // IMPORTANT: Do NOT filter ANY nodes during BFS traversal!
+            // All filtering is done at output time (around line 2100) to maintain:
+            // 1. Graph connectivity - ensures all reachable nodes are discovered
+            // 2. Consistency - all node types treated uniformly
+            // 3. Flexibility - output filtering can be easily customized
             
-            if (SVFUtil::isa<BranchVFGNode>(nextNode)) {
-                shouldFilter = true;
-            } else if (SVFUtil::isa<NullPtrSVFGNode>(nextNode)) {
-                shouldFilter = true;
-            } else if (SVFUtil::isa<DummyVersionPropSVFGNode>(nextNode)) {
-                shouldFilter = true;
-            } else if (SVFUtil::isa<BinaryOPVFGNode>(nextNode)) {
-                shouldFilter = true;
-            } else if (SVFUtil::isa<UnaryOPVFGNode>(nextNode)) {
-                shouldFilter = true;
-            } else if (SVFUtil::isa<CmpVFGNode>(nextNode)) {
-                shouldFilter = true;
-            }
-            
-            if (shouldFilter) {
-                // Still traverse through this node to reach other nodes, but don't include it in keySVFGNodes
-                // We need to continue the traversal to find value-affecting nodes beyond control-flow nodes
-                for (const SVFGEdge* nextEdge : nextNode->getOutEdges()) {
-                    const SVFGNode* beyondNode = nextEdge->getDstNode();
-                    if (beyondNode->getFun() == function && keySVFGNodes.find(beyondNode) == keySVFGNodes.end()) {
-                        worklist.push(beyondNode);
-                    }
-                }
-            } else {
-                // This is a value/memory-affecting node - include it
-                keySVFGNodes.insert(nextNode);
-                worklist.push(nextNode);
-            }
+            // Include ALL nodes in keySVFGNodes (filtering happens later at output time)
+            keySVFGNodes.insert(nextNode);
+            worklist.push(nextNode);
         }
     }
     
@@ -2091,8 +2069,37 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
                     if (svfgNode->getICFGNode() == icfgNode) {
                         // Check if this is a keySVFGNode
                         if (keySVFGNodes.count(svfgNode) && !seenInPath.count(svfgNode->getId())) {
-                            keySVFGSequence.push_back(svfgNode->getId());
-                            seenInPath.insert(svfgNode->getId());
+                            // OUTPUT FILTER: Hide certain node types from the final sequence
+                            // All nodes were collected during BFS, now we filter what to display
+                            bool shouldHideInOutput = false;
+                            
+                            // Filter out pure control-flow nodes (don't affect data/memory)
+                            if (SVFUtil::isa<BranchVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<NullPtrSVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<DummyVersionPropSVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<BinaryOPVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<UnaryOPVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<CmpVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            }
+                            
+                            // Optionally filter out IntraMSSAPHI and Load nodes from output
+                            // Uncomment these lines if you want to hide them:
+                            else if (SVFUtil::isa<IntraMSSAPHISVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<LoadVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            }
+                            
+                            if (!shouldHideInOutput) {
+                                keySVFGSequence.push_back(svfgNode->getId());
+                                seenInPath.insert(svfgNode->getId());
+                            }
                         }
                     }
                 }
