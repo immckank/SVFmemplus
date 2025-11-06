@@ -101,25 +101,31 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventSta
             }
         }
 
-        // 当目前的store取的不是指针ptr，从curStoreSet去除将malloc出的指针放入栈的store节点
+        // 当目前的store取的不是指针ptr，从curStoreSet去除将malloc出的指针放入栈的store节点，及直接调用编译器底层_alloca后的store节点
         if((*lit)->toString().find("load ptr") == std::string::npos){
             for (SVFGNodeSetIter sit = curStoreSet.begin(); sit != curStoreSet.end(); ) {
                 const SVFGNode* curStore = *sit;
-                bool storeAlloca = false, storeMalloc = false;
+                bool alloca_called = false, malloc_called = false, _alloca_called = false;
 
                 for(auto edge : curStore->getInEdges()){
                     SVFGNode* pre = edge->getSrcNode();
                     if(pre->getNodeKind()==SVFValue::GNodeK::Addr){
-                        if(pre->toString().find("alloca") != std::string::npos) storeAlloca = true;
-                        else if(pre->toString().find("malloc") != std::string::npos) storeMalloc = true;
+                        if(pre->toString().find("alloca") != std::string::npos){
+                            // 没有行号信息，说明是直接底层调用了_alloca
+                            if(pre->toString().find("\"ln\"") == std::string::npos){
+                                _alloca_called = true;
+                            }
+                            else alloca_called = true;
+                        }
+                        else if(pre->toString().find("malloc") != std::string::npos) malloc_called = true;
                     }
                 }
 
-                if (storeAlloca && storeMalloc) {  
+                if ((alloca_called && malloc_called) || (alloca_called &&_alloca_called)) {  
                     sit = curStoreSet.erase(sit);  // 删除并返回下一个迭代器
                 }
                 else {
-                    ++sit;  
+                    ++sit;  // 继续下一个
                 }
             }
         }
