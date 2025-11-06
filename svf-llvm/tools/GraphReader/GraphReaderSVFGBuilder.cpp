@@ -1,6 +1,8 @@
 #include "GraphReaderSVFGBuilder.h"
 #include "Graphs/SVFG.h"
+#include "Graphs/CallGraph.h"
 #include "MemoryModel/PointerAnalysisImpl.h"
+#include "SABER/SaberCheckerAPI.h"
 #include "Util/Options.h"
 
 using namespace SVF;
@@ -24,16 +26,22 @@ void GraphReaderSVFGBuilder::buildSVFG()
 
 void GraphReaderSVFGBuilder::applySaberOptimizations(BVDataPTAImpl* pta)
 {
-    // Apply safe optimizations that don't require SaberCondAllocator
+    // Apply Saber optimizations (safe subset that doesn't require SaberCondAllocator)
     
     DBOUT(DGENERAL, outs() << pasMsg("\t[GraphReader] Collect Global Variables\n"));
     collectGlobals(pta);
     
-    DBOUT(DGENERAL, outs() << pasMsg("\t[GraphReader] Remove Dereference Direct SVFG Edge\n"));
-    rmDerefDirSVFGEdges(pta);
+    // CRITICAL: DO NOT call rmDerefDirSVFGEdges for GraphReader!
+    // This method removes direct edges from pointer definitions to Load/Store nodes,
+    // which breaks BFS traversal in getValueSensitiveReturnInsidePath.
+    // Result: keySVFGNodes becomes empty, losing all Store/Load/ActualParm nodes.
+    // DBOUT(DGENERAL, outs() << pasMsg("\t[GraphReader] Remove Dereference Direct SVFG Edge\n"));
+    // rmDerefDirSVFGEdges(pta);
     
-    // Note: We skip rmIncomingEdgeForSUStore and AddExtActualParmSVFGNodes
-    // because they require SaberCondAllocator or are specific to memory leak detection
+    // Note: We skip rmIncomingEdgeForSUStore because it requires SaberCondAllocator
+    
+    DBOUT(DGENERAL, outs() << pasMsg("\t[GraphReader] Add Sink SVFG Nodes\n"));
+    AddExtActualParmSVFGNodes(pta->getCallGraph());
 }
 
 void GraphReaderSVFGBuilder::collectGlobals(BVDataPTAImpl* pta)
@@ -101,6 +109,40 @@ void GraphReaderSVFGBuilder::rmDerefDirSVFGEdges(BVDataPTAImpl* pta)
                 if(SVFGEdge* edge = svfg->getIntraVFGEdge(def, stmtNode, SVFGEdge::IntraDirectVF))
                 {
                     svfg->removeSVFGEdge(edge);
+                }
+            }
+        }
+    }
+}
+
+void GraphReaderSVFGBuilder::AddExtActualParmSVFGNodes(CallGraph* callgraph)
+{
+    // Adapted from SaberSVFGBuilder::AddExtActualParmSVFGNodes
+    // Add actual parameter SVFGNode for arguments of deallocation-like external functions
+    // This is CRITICAL for value-flow analysis of free/fclose arguments
+    
+    SVFIR* pag = SVFIR::getPAG();
+    for(SVFIR::CSToArgsListMap::iterator it = pag->getCallSiteArgsMap().begin(),
+            eit = pag->getCallSiteArgsMap().end(); it != eit; ++it)
+    {
+        CallGraph::FunctionSet callees;
+        callgraph->getCallees(it->first, callees);
+        for (CallGraph::FunctionSet::const_iterator cit = callees.begin(),
+                ecit = callees.end(); cit != ecit; cit++)
+        {
+            const FunObjVar* fun = *cit;
+            if (SaberCheckerAPI::getCheckerAPI()->isMemDealloc(fun)
+                    || SaberCheckerAPI::getCheckerAPI()->isFClose(fun))
+            {
+                SVFIR::SVFVarList& arglist = it->second;
+                for(SVFIR::SVFVarList::const_iterator ait = arglist.begin(), aeit = arglist.end(); ait != aeit; ++ait)
+                {
+                    const PAGNode *pagNode = *ait;
+                    if (pagNode->isPointer())
+                    {
+                        addActualParmVFGNode(pagNode, it->first);
+                        svfg->addIntraDirectVFEdge(svfg->getDefSVFGNode(pagNode)->getId(), svfg->getActualParmVFGNode(pagNode, it->first)->getId());
+                    }
                 }
             }
         }

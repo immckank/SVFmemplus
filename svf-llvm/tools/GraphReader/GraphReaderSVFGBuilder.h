@@ -73,6 +73,16 @@ protected:
     /// Collect global variables (adapted from SaberSVFGBuilder)
     void collectGlobals(BVDataPTAImpl* pta);
 
+    /// Add ActualParmVFGNode for deallocation/file-close functions (adapted from SaberSVFGBuilder)
+    /// This is CRITICAL for value-flow analysis of free/fclose arguments
+    void AddExtActualParmSVFGNodes(CallGraph* callgraph);
+
+    /// Helper to add actual parameter node
+    inline void addActualParmVFGNode(const PAGNode* pagNode, const CallICFGNode* cs)
+    {
+        svfg->addActualParmVFGNode(pagNode, cs);
+    }
+
 private:
     /// Flag to control whether to apply Saber-like optimizations
     bool enableSaberOptimizations;
