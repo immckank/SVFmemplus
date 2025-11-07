@@ -125,7 +125,11 @@ namespace GraphReaderUtil {
      * \param argIndex The argument index (0-based).
      * \return A const pointer to the PAGNode of the argument, or nullptr if not found.
      */
-    const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex);
+    const PAGNode* getPAGNodeFromCallArg(ICFG* icfg,
+                                         SVFIR* pag,
+                                         const std::string& location,
+                                         int argIndex,
+                                         const std::string& functionName = "");
 
     /*!
      * \brief Recursively traces the definition chain of a PAGNode to its ultimate source.
@@ -178,7 +182,12 @@ namespace GraphReaderUtil {
      * \param argIndex The argument index (0-based).
      * \return The PAGNode representing the value's definition, or nullptr if not found.
      */
-    const PAGNode* traceCallArgumentValueFlow(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& callLocation, int argIndex);
+    const PAGNode* traceCallArgumentValueFlow(SVFG* svfg,
+                                              ICFG* icfg,
+                                              SVFIR* pag,
+                                              const std::string& callLocation,
+                                              const std::string& functionName,
+                                              int argIndex);
 
 } // namespace GraphReaderUtil
 } // namespace SVF

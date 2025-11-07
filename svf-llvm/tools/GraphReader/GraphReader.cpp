@@ -289,6 +289,7 @@ int main(int argc, char ** argv) {
             } else if (cname == "exit") {
                 shouldExit = true;
             } else if (cname == "show-value-path-inside") {
+                // DEBUG
                 auto s = cmd.getString("start");
                 auto i = cmd.getString("index");
                 int operandIndex = -1;
@@ -413,6 +414,7 @@ int main(int argc, char ** argv) {
                     pq.getConditionReturnInsidePath(loc->str());
                 }
             } else if (cname == "show-code-line") {
+                // DEBUG
                 auto loc = cmd.getString("location");
                 if (!loc) {
                     SVF::GraphReaderUtil::sendJsonError("missing 'location'");
@@ -420,6 +422,7 @@ int main(int argc, char ** argv) {
                     SVF::GraphReaderUtil::showCodeLineDebugInfo(svfg, icfg, loc->str());
                 }
             } else if (cname == "trace-call-arg") {
+                // DEBUG
                 auto loc = cmd.getString("location");
                 auto indexStr = cmd.getString("arg_index");
                 if (!loc || !indexStr) {
@@ -436,9 +439,12 @@ int main(int argc, char ** argv) {
                 }
             } else if (cname == "find-call-arg-value-path-inside") {
                 auto loc = cmd.getString("location");
+                auto funcName = cmd.getString("function_name");
                 auto indexStr = cmd.getString("arg_index");
                 if (!loc || !indexStr) {
                     SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'arg_index'");
+                } else if (!funcName) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'function_name'");
                 } else {
                     int argIndex = -1;
                     try {
@@ -447,7 +453,7 @@ int main(int argc, char ** argv) {
                         SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + indexStr->str());
                         continue;
                     }
-                    pq.traceCallArgToReturn(loc->str(), argIndex);
+                    pq.traceCallArgToReturn(loc->str(), funcName->str(), argIndex);
                 }
             } else if (cname == "check-return-pointer") {
                 auto loc = cmd.getString("location");

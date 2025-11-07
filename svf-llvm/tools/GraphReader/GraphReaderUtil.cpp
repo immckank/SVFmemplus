@@ -8,9 +8,115 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace SVF {
 namespace GraphReaderUtil {
+
+namespace {
+
+static std::string resolveCalleeName(const llvm::CallBase* callInst) {
+    if (!callInst) {
+        return "";
+    }
+
+    if (const llvm::Function* directCallee = callInst->getCalledFunction()) {
+        return directCallee->getName().str();
+    }
+
+    const llvm::Value* calledOperand = callInst->getCalledOperand();
+    if (calledOperand && calledOperand->hasName()) {
+        return calledOperand->getName().str();
+    }
+
+    return "";
+}
+
+static const CallICFGNode* selectCallICFGNode(ICFG* icfg,
+                                              const std::string& location,
+                                              const std::string& functionName,
+                                              std::string& resolvedCalleeName) {
+    resolvedCalleeName.clear();
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Selecting call site at '" << location
+                         << "' with function filter '"
+                         << (functionName.empty() ? std::string("<none>") : functionName)
+                         << "'\n";
+
+    std::vector<const ICFGNode*> allNodes = findAllICFGNodesByLocation(icfg, location);
+    if (allNodes.empty()) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] No ICFG nodes found at location '"
+                             << location << "'\n";
+        return nullptr;
+    }
+
+    struct CandidateInfo {
+        const CallICFGNode* callNode;
+        std::string calleeName;
+        std::string sourceLoc;
+    };
+
+    std::vector<CandidateInfo> candidates;
+    for (const ICFGNode* node : allNodes) {
+        if (const auto* callNode = SVFUtil::dyn_cast<CallICFGNode>(node)) {
+            const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
+            const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
+            std::string calleeName = resolveCalleeName(callInst);
+            candidates.push_back({callNode, calleeName, callNode->getSourceLoc()});
+        }
+    }
+
+    if (candidates.empty()) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] No CallICFGNode found at location '"
+                             << location << "'\n";
+        return nullptr;
+    }
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Found " << candidates.size()
+                         << " call candidate(s) at location '" << location << "'\n";
+    for (size_t idx = 0; idx < candidates.size(); ++idx) {
+        SVF::SVFUtil::outs() << "  Candidate #" << idx
+                             << ": ICFG ID=" << candidates[idx].callNode->getId()
+                             << ", Callee='" << (candidates[idx].calleeName.empty() ? std::string("<unknown>") : candidates[idx].calleeName)
+                             << "', SourceLoc=" << candidates[idx].sourceLoc << "\n";
+    }
+
+    if (functionName.empty()) {
+        if (candidates.size() == 1) {
+            resolvedCalleeName = candidates.front().calleeName;
+            return candidates.front().callNode;
+        }
+
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Multiple call sites found at '" << location
+                             << "'. Please provide 'function_name' to disambiguate.\n";
+        return nullptr;
+    }
+
+    const CallICFGNode* matchedNode = nullptr;
+    for (const auto& candidate : candidates) {
+        if (!candidate.calleeName.empty() && candidate.calleeName == functionName) {
+            matchedNode = candidate.callNode;
+            resolvedCalleeName = candidate.calleeName;
+            break;
+        }
+    }
+
+    if (!matchedNode) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not find call to '" << functionName
+                             << "' at location '" << location << "'. Available callees:";
+        for (const auto& candidate : candidates) {
+            SVF::SVFUtil::errs() << " '"
+                                 << (candidate.calleeName.empty() ? std::string("<unknown>") : candidate.calleeName)
+                                 << "'";
+        }
+        SVF::SVFUtil::errs() << "\n";
+        return nullptr;
+    }
+
+    return matchedNode;
+}
+
+} // anonymous namespace
 
 bool parseCommandsLine(const std::string& jsonStr,
                        std::vector<llvm::json::Object>& outCmds,
@@ -503,52 +609,66 @@ const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& 
     return baseVar;
 }
 
-const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex) {
+const PAGNode* getPAGNodeFromCallArg(ICFG* icfg,
+                                     SVFIR* pag,
+                                     const std::string& location,
+                                     int argIndex,
+                                     const std::string& functionName) {
     if (!icfg || !pag) {
-        return nullptr;
-    }
-    
-    // Find all ICFG nodes at this location
-    std::vector<const ICFGNode*> allICFGNodes = findAllICFGNodesByLocation(icfg, location);
-    if (allICFGNodes.empty()) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Invalid null icfg or pag pointer when resolving call arg at "
+                             << location << "\n";
         return nullptr;
     }
 
-    // Find the CallICFGNode
-    const CallICFGNode* callNode = nullptr;
-    for (const ICFGNode* node : allICFGNodes) {
-        if (auto cn = SVFUtil::dyn_cast<CallICFGNode>(node)) {
-            callNode = cn;
-            break;
-        }
-    }
-
+    std::string resolvedCallee;
+    const CallICFGNode* callNode = selectCallICFGNode(icfg, location, functionName, resolvedCallee);
     if (!callNode) {
         return nullptr;
     }
 
-    // Get the llvm::CallInst to determine argument order
     const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
     const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
-    
     if (!callInst) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Failed to obtain CallBase from CallICFGNode at "
+                             << location << "\n";
         return nullptr;
     }
+
+    std::string callInstStr;
+    llvm::raw_string_ostream callInstStream(callInstStr);
+    callInst->print(callInstStream);
+    callInstStream.flush();
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Resolved call instruction: '"
+                         << callInstStr << "' (callee='"
+                         << (resolvedCallee.empty() ? std::string("<unknown>") : resolvedCallee)
+                         << "', total args=" << callInst->arg_size() << ")\n";
 
     if (argIndex < 0 || argIndex >= static_cast<int>(callInst->arg_size())) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument index " << argIndex
+                             << " out of range for call at " << location
+                             << " (argument count=" << callInst->arg_size() << ")\n";
         return nullptr;
     }
 
-    // Get the target argument llvm::Value
     const llvm::Value* targetArgVal = callInst->getArgOperand(argIndex);
-    
-    // Find the corresponding PAGNode for this argument
-    NodeID argNodeID = LLVMModuleSet::getLLVMModuleSet()->getValueNode(targetArgVal);
-    if (argNodeID != UINT_MAX && pag->hasGNode(argNodeID)) {
-        return pag->getGNode(argNodeID);
+    if (!targetArgVal) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Call argument operand is null at index "
+                             << argIndex << " for location '" << location << "'\n";
+        return nullptr;
     }
-    
-    return nullptr;
+
+    NodeID argNodeID = LLVMModuleSet::getLLVMModuleSet()->getValueNode(targetArgVal);
+    if (argNodeID == UINT_MAX || !pag->hasGNode(argNodeID)) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not find PAG node for argument index "
+                             << argIndex << " at location '" << location << "'\n";
+        return nullptr;
+    }
+
+    const PAGNode* targetNode = pag->getGNode(argNodeID);
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Mapped call argument index " << argIndex
+                         << " to PAGNode ID=" << targetNode->getId() << "\n";
+    return targetNode;
 }
 
 // Helper function to determine SVFG node kind
@@ -1076,26 +1196,27 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
 }
 
-const PAGNode* traceCallArgumentValueFlow(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& callLocation, int argIndex) {
-    // Step 1: Find the CallICFGNode at the call location
-    std::vector<const ICFGNode*> allICFGNodes = findAllICFGNodesByLocation(icfg, callLocation);
-    if (allICFGNodes.empty()) {
-        SVF::SVFUtil::errs() << "Error: No ICFG nodes found at location: " << callLocation << "\n";
-        return nullptr;
-    }
+const PAGNode* traceCallArgumentValueFlow(SVFG* svfg,
+                                          ICFG* icfg,
+                                          SVFIR* pag,
+                                          const std::string& callLocation,
+                                          const std::string& functionName,
+                                          int argIndex) {
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] traceCallArgumentValueFlow start. Location='"
+                         << callLocation << "', function filter='"
+                         << (functionName.empty() ? std::string("<none>") : functionName)
+                         << "', arg_index=" << argIndex << "\n";
 
-    const CallICFGNode* callNode = nullptr;
-    for (const ICFGNode* node : allICFGNodes) {
-        if (auto cn = SVFUtil::dyn_cast<CallICFGNode>(node)) {
-            callNode = cn;
-            break;
-        }
-    }
-
+    std::string resolvedCallee;
+    const CallICFGNode* callNode = selectCallICFGNode(icfg, callLocation, functionName, resolvedCallee);
     if (!callNode) {
-        SVF::SVFUtil::errs() << "Error: No CallICFGNode found at location: " << callLocation << "\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Unable to resolve call node for traceCallArgumentValueFlow.\n";
         return nullptr;
     }
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Using CallICFGNode ID=" << callNode->getId()
+                         << ", Callee='" << (resolvedCallee.empty() ? std::string("<unknown>") : resolvedCallee)
+                         << "'\n";
 
     // Step 2: Find ActualParmVFGNode for the specified argument
     std::vector<const ActualParmVFGNode*> actualParmNodes;
@@ -1108,28 +1229,37 @@ const PAGNode* traceCallArgumentValueFlow(SVFG* svfg, ICFG* icfg, SVFIR* pag, co
         }
     }
 
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Found " << actualParmNodes.size()
+                         << " ActualParmVFGNode candidate(s) at this call site.\n";
+
     if (actualParmNodes.empty()) {
-        SVF::SVFUtil::errs() << "Error: No ActualParmVFGNode found for this call\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] No ActualParmVFGNode found for this call.\n";
         return nullptr;
     }
 
-    // Get the llvm::CallInst to determine argument order
     const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
     const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
-    
+
     if (!callInst) {
-        SVF::SVFUtil::errs() << "Error: Could not get CallBase from CallICFGNode\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not obtain CallBase from CallICFGNode.\n";
         return nullptr;
     }
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Call has " << callInst->arg_size() << " argument(s).\n";
 
     if (argIndex < 0 || argIndex >= static_cast<int>(callInst->arg_size())) {
-        SVF::SVFUtil::errs() << "Error: Invalid argument index " << argIndex << "\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument index " << argIndex
+                             << " is invalid for call at '" << callLocation << "'.\n";
         return nullptr;
     }
 
-    // Get the target argument llvm::Value
     const llvm::Value* targetArgVal = callInst->getArgOperand(argIndex);
-    
+    if (!targetArgVal) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Target argument value is null at index "
+                             << argIndex << ".\n";
+        return nullptr;
+    }
+
     // Find the ActualParmVFGNode that corresponds to this argument
     const ActualParmVFGNode* targetParam = nullptr;
     for (const ActualParmVFGNode* apNode : actualParmNodes) {
@@ -1139,54 +1269,68 @@ const PAGNode* traceCallArgumentValueFlow(SVFG* svfg, ICFG* icfg, SVFIR* pag, co
             break;
         }
     }
-    
+
     if (!targetParam) {
-        SVF::SVFUtil::errs() << "Error: Could not find ActualParmVFGNode for argument " << argIndex << "\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not map LLVM argument to ActualParmVFGNode.\n";
         return nullptr;
     }
-    
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Matched ActualParmVFGNode ID=" << targetParam->getId()
+                         << " for argument index " << argIndex << "\n";
+
     // Step 3: Get the PAGNode from the ActualParmVFGNode
     const SVFVar* paramPAG = targetParam->getParam();
+    if (!paramPAG) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Actual parameter node has null PAG reference.\n";
+        return nullptr;
+    }
 
-    // Step 4: Check if this is a load instruction
     const llvm::Value* paramLLVMVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(paramPAG);
     if (!paramLLVMVal) {
+        SVF::SVFUtil::outs() << "[GraphReaderUtil] Actual parameter is not backed by an LLVM value; returning param PAG node.\n";
         return paramPAG;
     }
 
     const llvm::LoadInst* loadInst = SVFUtil::dyn_cast<llvm::LoadInst>(paramLLVMVal);
     if (!loadInst) {
+        SVF::SVFUtil::outs() << "[GraphReaderUtil] Argument is not a load instruction; returning parameter PAG node.\n";
         return paramPAG;
     }
-    
-    // Step 5: Get the address being loaded from (typically a GEP result)
+
     const llvm::Value* ptrOperand = loadInst->getPointerOperand();
     NodeID ptrNodeID = LLVMModuleSet::getLLVMModuleSet()->getValueNode(ptrOperand);
-    
+
     if (ptrNodeID == UINT_MAX || !pag->hasGNode(ptrNodeID)) {
-        SVF::SVFUtil::errs() << "Error: Could not find PAGNode for load pointer operand\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not find PAG node for pointer operand of load instruction.\n";
         return nullptr;
     }
 
     const SVFVar* addressPAG = pag->getGNode(ptrNodeID);
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Tracing memory definition for address PAGNode ID="
+                         << addressPAG->getId() << "\n";
 
-    // Step 6: Find the store definition for this address
     const SVFGNode* storeNode = findMemoryDefNode(svfg, addressPAG);
-    
+
     if (!storeNode) {
-        SVF::SVFUtil::errs() << "Warning: Could not find store definition for this address\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Warning: Could not locate store definition for address PAG node." << "\n";
         return nullptr;
     }
 
-    // Step 7: Extract the stored value from the store node
     const PAGNode* storedValuePAG = nullptr;
-    
+
     if (const auto* storeVFGNode = SVFUtil::dyn_cast<StoreVFGNode>(storeNode)) {
         const SVFStmt* pagEdge = storeVFGNode->getPAGEdge();
         const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(pagEdge);
         if (storeStmt) {
             storedValuePAG = storeStmt->getRHSVar();
         }
+    }
+
+    if (storedValuePAG) {
+        SVF::SVFUtil::outs() << "[GraphReaderUtil] Located stored value PAGNode ID="
+                             << storedValuePAG->getId() << " as definition source.\n";
+    } else {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Warning: Store definition found but RHS PAG node is null.\n";
     }
 
     return storedValuePAG;

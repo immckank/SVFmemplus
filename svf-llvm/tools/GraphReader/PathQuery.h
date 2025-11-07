@@ -141,7 +141,9 @@ public:
      * \param callLocation Source location of the function call (e.g., "file.c:377").
      * \param argIndex The argument index (0-based, 0 is first argument).
      */
-    void traceCallArgToReturn(const std::string& callLocation, int argIndex);
+    void traceCallArgToReturn(const std::string& callLocation,
+                              const std::string& functionName,
+                              int argIndex);
 
 private:
     SVFG* svfg;

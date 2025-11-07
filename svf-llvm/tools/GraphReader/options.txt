@@ -7,6 +7,39 @@ function
 { "command" : "find-return-locations", "name" : "TIFFReadDirEntryIfd8Array",  "location" : "tif_dirread.c:2797"}
 { "command" : "find-return-locations", "name" : "TIFFReadDirEntryDoubleArray",  "location" : "tif_dirread.c:2568"}
 
+
+void function
+1 return
+{ "command" : "find-icfg-return-paths", "name" : "TIFFRGBAImageEnd",  "location" : "tif_getimage.c:214"}
+2 return 
+{ "command" : "find-icfg-return-paths", "name" : "TIFFReadDirectoryFindFieldInfo",  "location" : "tif_dirread.c:4342"}
+6 return
+{ "command" : "find-icfg-return-paths", "name" : "ChopUpSingleUncompressedStrip",  "location" : "tif_dirread.c:5781"}
+8 return
+{ "command" : "find-icfg-return-paths", "name" : "TryChopUpUncompressedBigTiff",  "location" : "tif_dirread.c:5851"}
+
+branch not void
+3 return
+{ "command" : "find-icfg-return-paths", "name" : "TIFFRGBAImageGet",  "location" : "tif_getimage.c:500"}
+17 renturn int
+{ "command" : "find-icfg-return-paths", "name" : "setorientation",  "location" : "tif_getimage.c:553"}
+2 return enum
+{ "command" : "find-icfg-return-paths", "name" : "TIFFReadDirEntryErr",  "location" : "tif_dirread.c:3356"}
+2 return ptrobj
+{ "command" : "find-icfg-return-paths", "name" : "TIFFReadDirectoryFindEntry",  "location" : "tif_dirread.c:4328"}
+
+no branch not void
+1 return
+{ "command" : "find-icfg-return-paths", "name" : "_TIFFFillStriles",  "location" : "tif_dirread.c:5941"}
+1 return
+{ "command" : "find-icfg-return-paths", "name" : "isCCITTCompression",  "location" : "tif_getimage.c:254"}
+
+
+
+isCCITTCompression
+
+TIFFRGBAImageEnd
+
 {"command": "find-all-function-call-sites", "name": "TIFFWriteBufferSetup"}
 
 path
@@ -32,8 +65,13 @@ path
 {"command": "show-code-line", "location": "tif_dirwrite.c:412"}
 {"command": "show-code-line", "location": "tif_dirwrite.c:413"}
 {"command": "show-code-line", "location": "tif_dirwrite.c:411"}
-
-
+{"command": "show-code-line", "location": "tif_getimage.c:258"}
+{"command": "show-code-line", "location": "tif_getimage.c:463"}
+{"command": "show-code-line", "location": "tif_getimage.c:492"}
+{"command": "show-code-line", "location": "tif_getimage.c:504"}
+{"command": "show-code-line", "location": "tif_getimage.c:509"}
+{"command": "show-code-line", "location": "tif_getimage.c:511"}
+{"command": "show-code-line", "location": "tif_getimage.c:512"}
 
 {"command": "find-base-lvar-def", "location": "tif_getimage.c:2855", "eq_position": "20"}
 {"command": "find-base-lvar-def", "location": "tif_getimage.c:2861", "eq_position": "3"}
@@ -56,6 +94,7 @@ show function return info (debug)
 {"command": "show-function-return-info", "location": "tif_dirread.c:4336"}
 
 {"command": "trace-call-arg-to-return", "location": "tif_getimage.c:378", "arg_index": "0"}
+无function name的版本可能导致无法确定pag
 {"command": "find-call-arg-value-path-inside", "location": "tif_getimage.c:407", "arg_index": "0"}
 
 value path Debug
@@ -143,3 +182,5 @@ ValVar ID: 51774
    %108 = getelementptr inbounds %struct.tiff, ptr %107, i32 0, i32 50, !dbg !12238 { "ln": 413, "cl": 9, "fl": "tif_dirwrite.c" }
     Incoming Edges: 1
     Outgoing Edges: 1
+
+    

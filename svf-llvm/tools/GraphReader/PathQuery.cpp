@@ -7,6 +7,10 @@
 #include "Graphs/SVFG.h"
 #include "Util/SVFUtil.h"
 #include "SVF-LLVM/LLVMModule.h"
+#include "SVFIR/SVFStatements.h"
+#include "SVFIR/SVFVariables.h"
+#include <llvm/IR/DebugInfoMetadata.h>
+#include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/FormatVariadic.h>
@@ -1138,63 +1142,98 @@ void PathQuery::findLVarPathInsideByLocation(const std::string& location, int eq
 std::vector<const ICFGNode*> findActualReturnICFGNodes(ICFG* icfg, const FunObjVar* function) {
     std::vector<const ICFGNode*> actualReturnNodes;
     
-    Set<NodeID> coreExitNodes;  // isRetInst=1 and FunExitICFGNode (wrapper nodes)
-    Set<NodeID> exitNodeIDs;    // includes core and nodes pointing to them
-    
-    // Step 1: Find all core exit nodes (wrappers)
+    Set<NodeID> recordedReturnIDs;
+
+    std::vector<const ICFGNode*> isRetInstNodes;
     for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
         const ICFGNode* node = it->second;
         if (node->getFun() == function) {
             if (const IntraICFGNode* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(node)) {
                 if (intraNode->isRetInst()) {
-                    coreExitNodes.insert(node->getId());
-                    exitNodeIDs.insert(node->getId());
-                }
-            }
-            if (SVFUtil::isa<FunExitICFGNode>(node)) {
-                coreExitNodes.insert(node->getId());
-                exitNodeIDs.insert(node->getId());
-            }
-        }
-    }
-    
-    // Step 2: Find nodes that point to core exit nodes
-    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
-        const ICFGNode* node = it->second;
-        if (node->getFun() == function) {
-            for (const ICFGEdge* edge : node->getOutEdges()) {
-                if (coreExitNodes.count(edge->getDstID())) {
-                    exitNodeIDs.insert(node->getId());
+                    isRetInstNodes.push_back(node);
                 }
             }
         }
     }
-    
-    // Step 3: Collect actual return nodes (point to exit but not directly to core)
-    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
-        const ICFGNode* node = it->second;
-        if (node->getFun() == function) {
-            bool pointsToExitNode = false;
-            bool pointsToCoreExitNode = false;
-            
-            for (const ICFGEdge* edge : node->getOutEdges()) {
-                NodeID dstID = edge->getDstID();
-                if (coreExitNodes.count(dstID)) {
-                    pointsToCoreExitNode = true;
+    std::vector<const ICFGNode*> srcNodes;
+    for (const ICFGNode* node : isRetInstNodes) {
+        for (const ICFGEdge* edge : node->getInEdges()) {
+            srcNodes.push_back(edge->getSrcNode());
+        }
+    }
+
+    bool isVoidFunction = false;
+    if (function) {
+        if (const llvm::Value* funVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(function)) {
+            if (const auto* llvmFunc = llvm::dyn_cast<llvm::Function>(funVal)) {
+                isVoidFunction = llvmFunc->getReturnType()->isVoidTy();
+            }
+        }
+    }
+
+    if (isVoidFunction) {
+        for (const ICFGNode* node : srcNodes) {
+            const auto* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(node);
+            if (!intraNode) {
+                continue;
+            }
+            for (const SVFStmt* stmt : intraNode->getSVFStmts()) {
+                if (const auto* branchStmt = SVFUtil::dyn_cast<BranchStmt>(stmt)) {
+                    if (branchStmt->isUnconditional()) {
+                        if (recordedReturnIDs.insert(intraNode->getId()).second) {
+                            actualReturnNodes.push_back(intraNode);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!actualReturnNodes.empty()) {
+            return actualReturnNodes;
+        }
+
+    }
+    // 对于这些src节点 如果srcnode的类型是LoadStmt 则在向前寻找一步 展示指向这些load icfg节点的edge的src
+    std::vector<const IntraICFGNode*> loadNodes;
+    for (const ICFGNode* node : srcNodes) {
+        if (const auto* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(node)) {
+            for (const SVFStmt* stmt : intraNode->getSVFStmts()) {
+                if (SVFUtil::isa<LoadStmt>(stmt)) {
+                    loadNodes.push_back(intraNode);
                     break;
                 }
-                if (exitNodeIDs.count(dstID)) {
-                    pointsToExitNode = true;
-                }
-            }
-            
-            // Actual return locations: point to exit but not directly to core
-            if (pointsToExitNode && !pointsToCoreExitNode) {
-                actualReturnNodes.push_back(node);
             }
         }
     }
-    
+    std::vector<const IntraICFGNode*> loadSrcNodes;
+    for (const IntraICFGNode* node : loadNodes) {
+        for (const ICFGEdge* edge : node->getInEdges()) {
+            if (const auto* srcIntraNode = SVFUtil::dyn_cast<IntraICFGNode>(edge->getSrcNode())) {
+                loadSrcNodes.push_back(srcIntraNode);
+            }
+        }
+    }   
+
+    // 对于loadSrcNodes 如果包含无条件跳转的branchstmt 则认为该节点是返回节点
+
+    for (const IntraICFGNode* node : loadSrcNodes) {
+        for (const SVFStmt* stmt : node->getSVFStmts()) {
+            if (const BranchStmt* branchStmt = SVFUtil::dyn_cast<BranchStmt>(stmt)) {
+                if (branchStmt->isUnconditional()) {
+                    actualReturnNodes.push_back(node);
+                }
+            }
+        }
+    }
+    // 如果actualReturnNodes不为空 则所有的返回节点都找到了 直接返回
+    if (!actualReturnNodes.empty()) {
+        return actualReturnNodes;
+    }
+    // 如果为空则其实最初的isRetInstNodes都是返回节点
+    for (const ICFGNode* node : isRetInstNodes) {
+        actualReturnNodes.push_back(node);
+    }
     return actualReturnNodes;
 }
 
@@ -1765,7 +1804,67 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
     SVFUtil::outs() << "\n[Step 2] Found " << returnLocations.size() << " actual return location(s)\n";
     
     for (const ICFGNode* retLoc : returnLocations) {
-        SVFUtil::outs() << "  - " << retLoc->getSourceLoc() << " (ICFG ID: " << retLoc->getId() << ")\n";
+        std::string retSourceLoc = retLoc->getSourceLoc();
+        if (retSourceLoc.empty()) {
+            SVFUtil::outs() << "  - <no source location> (ICFG ID: " << retLoc->getId() << ")\n";
+        } else {
+            SVFUtil::outs() << "  - " << retSourceLoc << " (ICFG ID: " << retLoc->getId() << ")\n";
+        }
+
+        // Provide additional debug context for each return node
+        std::string nodeType = "Unknown";
+        if (SVFUtil::isa<IntraICFGNode>(retLoc)) {
+            nodeType = "IntraICFGNode";
+        } else if (SVFUtil::isa<CallICFGNode>(retLoc)) {
+            nodeType = "CallICFGNode";
+        } else if (SVFUtil::isa<RetICFGNode>(retLoc)) {
+            nodeType = "RetICFGNode";
+        } else if (SVFUtil::isa<FunExitICFGNode>(retLoc)) {
+            nodeType = "FunExitICFGNode";
+        } else if (SVFUtil::isa<FunEntryICFGNode>(retLoc)) {
+            nodeType = "FunEntryICFGNode";
+        } else if (SVFUtil::isa<GlobalICFGNode>(retLoc)) {
+            nodeType = "GlobalICFGNode";
+        }
+        SVFUtil::outs() << "      Node Type: " << nodeType << "\n";
+
+        llvm::json::Object parsedLoc = GraphReaderUtil::parseSourceLocation(retSourceLoc);
+        if (!parsedLoc.empty()) {
+            if (auto file = parsedLoc.getString("fl")) {
+                SVFUtil::outs() << "      File: " << file->str() << "\n";
+            }
+            if (auto line = parsedLoc.getInteger("ln")) {
+                SVFUtil::outs() << "      Line: " << *line << "\n";
+            }
+            if (auto col = parsedLoc.getInteger("cl")) {
+                SVFUtil::outs() << "      Column: " << *col << "\n";
+            }
+        } else {
+            SVFUtil::outs() << "      Parsed location is empty. Attempting to recover via LLVM debug info...\n";
+        }
+
+        if (const IntraICFGNode* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(retLoc)) {
+            LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
+            const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(intraNode);
+            if (const llvm::Instruction* inst = llvm::dyn_cast_or_null<llvm::Instruction>(llvmVal)) {
+                SVFUtil::outs() << "      LLVM Opcode: " << inst->getOpcodeName() << "\n";
+                const llvm::DebugLoc& debugLoc = inst->getDebugLoc();
+                if (debugLoc) {
+                    const llvm::DILocation* diLoc = debugLoc.get();
+                    SVFUtil::outs() << "      DebugLoc: "
+                                     << (diLoc ? diLoc->getFilename().str() : std::string("<unknown>"))
+                                     << ":" << debugLoc.getLine()
+                                     << ":" << debugLoc.getCol() << "\n";
+                } else {
+                    SVFUtil::outs() << "      DebugLoc: <none>\n";
+                }
+            } else {
+                SVFUtil::outs() << "      LLVM Instruction: <none>\n";
+            }
+        }
+
+        SVFUtil::outs() << "      Outgoing Edges: " << retLoc->getOutEdges().size() << "\n";
+        SVFUtil::outs() << "      Incoming Edges: " << retLoc->getInEdges().size() << "\n";
     }
 
     if (returnLocations.empty()) {
@@ -2217,19 +2316,38 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
     llvm::outs().flush();
 }
 
-void PathQuery::traceCallArgToReturn(const std::string& callLocation, int argIndex) {
+void PathQuery::traceCallArgToReturn(const std::string& callLocation,
+                                     const std::string& functionName,
+                                     int argIndex) {
+    SVFUtil::outs() << "\n========================================\n";
+    SVFUtil::outs() << "[traceCallArgToReturn] Location: " << callLocation
+                    << ", Function: " << functionName
+                    << ", Arg Index: " << argIndex << "\n";
+    SVFUtil::outs() << "========================================\n";
+
     // Step 1: Use traceCallArgumentValueFlow to find the definition point
-    const PAGNode* defPAGNode = GraphReaderUtil::traceCallArgumentValueFlow(svfg, icfg, pag, callLocation, argIndex);
+    const PAGNode* defPAGNode = GraphReaderUtil::traceCallArgumentValueFlow(
+        svfg, icfg, pag, callLocation, functionName, argIndex);
     
     if (!defPAGNode) {
         GraphReaderUtil::sendJsonError("Could not find definition PAGNode for call argument");
+        SVFUtil::errs() << "[traceCallArgToReturn] Failed to resolve definition PAG node."
+                        << " Location: " << callLocation
+                        << ", Function: " << functionName
+                        << ", Arg Index: " << argIndex << "\n";
         return;
     }
+
+    SVFUtil::outs() << "[traceCallArgToReturn] Resolved definition PAGNode ID: "
+                    << defPAGNode->getId() << ", Desc: " << defPAGNode->toString() << "\n";
 
     // Step 2: Call getValueSensitiveReturnInsidePath with the definition PAGNode
     // This will trace all paths from callLocation to function returns,
     // performing value-sensitive analysis based on defPAGNode
     getValueSensitiveReturnInsidePath(callLocation, defPAGNode);
+
+    SVFUtil::outs() << "[traceCallArgToReturn] Completed value-sensitive tracing for call at "
+                    << callLocation << "\n";
 }
 
 }// namespace SVF
