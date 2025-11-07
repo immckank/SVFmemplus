@@ -1141,99 +1141,106 @@ void PathQuery::findLVarPathInsideByLocation(const std::string& location, int eq
 // Helper function to find actual return statement ICFG nodes (not wrapper nodes)
 std::vector<const ICFGNode*> findActualReturnICFGNodes(ICFG* icfg, const FunObjVar* function) {
     std::vector<const ICFGNode*> actualReturnNodes;
-    
-    Set<NodeID> recordedReturnIDs;
+    if (!icfg) {
+        return actualReturnNodes;
+    }
 
-    std::vector<const ICFGNode*> isRetInstNodes;
+    std::vector<const IntraICFGNode*> retInstNodes;
     for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
         const ICFGNode* node = it->second;
-        if (node->getFun() == function) {
-            if (const IntraICFGNode* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(node)) {
-                if (intraNode->isRetInst()) {
-                    isRetInstNodes.push_back(node);
+        if (node->getFun() != function) {
+            continue;
+        }
+        if (const auto* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(node)) {
+            if (intraNode->isRetInst()) {
+                retInstNodes.push_back(intraNode);
+            }
+        }
+    }
+
+    if (retInstNodes.empty()) {
+        return actualReturnNodes;
+    }
+
+    auto collectPredecessors = [](const std::vector<const IntraICFGNode*>& nodes) {
+        std::vector<const IntraICFGNode*> predecessors;
+        for (const auto* node : nodes) {
+            for (const ICFGEdge* edge : node->getInEdges()) {
+                if (const auto* src = SVFUtil::dyn_cast<IntraICFGNode>(edge->getSrcNode())) {
+                    predecessors.push_back(src);
                 }
             }
         }
-    }
-    std::vector<const ICFGNode*> srcNodes;
-    for (const ICFGNode* node : isRetInstNodes) {
-        for (const ICFGEdge* edge : node->getInEdges()) {
-            srcNodes.push_back(edge->getSrcNode());
-        }
-    }
+        return predecessors;
+    };
 
-    bool isVoidFunction = false;
-    if (function) {
-        if (const llvm::Value* funVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(function)) {
-            if (const auto* llvmFunc = llvm::dyn_cast<llvm::Function>(funVal)) {
-                isVoidFunction = llvmFunc->getReturnType()->isVoidTy();
-            }
-        }
-    }
-
-    if (isVoidFunction) {
-        for (const ICFGNode* node : srcNodes) {
-            const auto* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(node);
-            if (!intraNode) {
-                continue;
-            }
-            for (const SVFStmt* stmt : intraNode->getSVFStmts()) {
+    auto collectUnconditionalBranches = [](const std::vector<const IntraICFGNode*>& nodes) {
+        std::vector<const IntraICFGNode*> branchNodes;
+        for (const auto* node : nodes) {
+            for (const SVFStmt* stmt : node->getSVFStmts()) {
                 if (const auto* branchStmt = SVFUtil::dyn_cast<BranchStmt>(stmt)) {
                     if (branchStmt->isUnconditional()) {
-                        if (recordedReturnIDs.insert(intraNode->getId()).second) {
-                            actualReturnNodes.push_back(intraNode);
-                        }
+                        branchNodes.push_back(node);
                         break;
                     }
                 }
             }
         }
+        return branchNodes;
+    };
 
-        if (!actualReturnNodes.empty()) {
-            return actualReturnNodes;
-        }
-
-    }
-    // 对于这些src节点 如果srcnode的类型是LoadStmt 则在向前寻找一步 展示指向这些load icfg节点的edge的src
-    std::vector<const IntraICFGNode*> loadNodes;
-    for (const ICFGNode* node : srcNodes) {
-        if (const auto* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(node)) {
-            for (const SVFStmt* stmt : intraNode->getSVFStmts()) {
+    auto collectLoadNodes = [](const std::vector<const IntraICFGNode*>& nodes) {
+        std::vector<const IntraICFGNode*> loadNodes;
+        for (const auto* node : nodes) {
+            for (const SVFStmt* stmt : node->getSVFStmts()) {
                 if (SVFUtil::isa<LoadStmt>(stmt)) {
-                    loadNodes.push_back(intraNode);
+                    loadNodes.push_back(node);
                     break;
                 }
             }
         }
-    }
-    std::vector<const IntraICFGNode*> loadSrcNodes;
-    for (const IntraICFGNode* node : loadNodes) {
-        for (const ICFGEdge* edge : node->getInEdges()) {
-            if (const auto* srcIntraNode = SVFUtil::dyn_cast<IntraICFGNode>(edge->getSrcNode())) {
-                loadSrcNodes.push_back(srcIntraNode);
+        return loadNodes;
+    };
+
+    Set<NodeID> seenReturnIds;
+    auto appendUnique = [&](const std::vector<const IntraICFGNode*>& nodes) {
+        for (const auto* node : nodes) {
+            if (node && seenReturnIds.insert(node->getId()).second) {
+                actualReturnNodes.push_back(node);
             }
         }
-    }   
+    };
 
-    // 对于loadSrcNodes 如果包含无条件跳转的branchstmt 则认为该节点是返回节点
-
-    for (const IntraICFGNode* node : loadSrcNodes) {
-        for (const SVFStmt* stmt : node->getSVFStmts()) {
-            if (const BranchStmt* branchStmt = SVFUtil::dyn_cast<BranchStmt>(stmt)) {
-                if (branchStmt->isUnconditional()) {
-                    actualReturnNodes.push_back(node);
-                }
+    const bool isVoidFunction = [&]() {
+        if (!function) {
+            return false;
+        }
+        if (const llvm::Value* funVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(function)) {
+            if (const auto* llvmFunc = llvm::dyn_cast<llvm::Function>(funVal)) {
+                return llvmFunc->getReturnType()->isVoidTy();
             }
         }
+        return false;
+    }();
+
+    const auto srcNodes = collectPredecessors(retInstNodes);
+    if (isVoidFunction) {
+        const auto branchNodes = collectUnconditionalBranches(srcNodes);
+        if (!branchNodes.empty()) {
+            appendUnique(branchNodes);
+            return actualReturnNodes;
+        }
     }
-    // 如果actualReturnNodes不为空 则所有的返回节点都找到了 直接返回
-    if (!actualReturnNodes.empty()) {
+
+    const auto loadNodes = collectLoadNodes(srcNodes);
+    const auto loadSrcNodes = collectPredecessors(loadNodes);
+    const auto branchNodes = collectUnconditionalBranches(loadSrcNodes);
+    if (!branchNodes.empty()) {
+        appendUnique(branchNodes);
         return actualReturnNodes;
     }
-    // 如果为空则其实最初的isRetInstNodes都是返回节点
-    for (const ICFGNode* node : isRetInstNodes) {
-        actualReturnNodes.push_back(node);
-    }
+
+    appendUnique(retInstNodes);
     return actualReturnNodes;
 }
 
