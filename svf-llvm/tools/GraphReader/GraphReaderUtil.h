@@ -7,6 +7,7 @@
 #include "SVFIR/SVFValue.h"
 #include "Graphs/SVFG.h"
 #include "Graphs/SVFGNode.h"
+#include <llvm/ADT/StringRef.h>
 #include <llvm/IR/Function.h>
 #include <llvm/Support/JSON.h>
 #include <string>
@@ -86,6 +87,8 @@ namespace GraphReaderUtil {
                            std::vector<llvm::json::Object>& outCmds,
                            std::string& errMsg);
 
+
+    const SVFGNode* getDefSVFGNodeFromArg(SVFG* svfg, SVFIR* pag, const std::string& funcName, int argIndex);
     /*!
      * \brief Gets the PAGNode for a specific function argument.
      * \param pag Pointer to the SVFIR/PAG.
@@ -130,6 +133,22 @@ namespace GraphReaderUtil {
                                          const std::string& location,
                                          int argIndex,
                                          const std::string& functionName = "");
+
+
+    const SVFGNode* getSVFGNodeFromActualINArg(SVFG* svfg,
+                                            ICFG* icfg,
+                                            SVFIR* pag,
+                                            const std::string& location,
+                                            int argIndex,
+                                            const std::string& functionName = "");
+
+    bool parseIndexField(const llvm::json::Object& obj,
+                         llvm::StringRef fieldName,
+                         const std::string& missingFieldName,
+                         const std::string& invalidFieldLabel,
+                         int& outValue);
+
+    bool fetchFunctionStartLocation(SVFIR* pag, const std::string& funcName, std::string& startLocation);
 
     /*!
      * \brief Recursively traces the definition chain of a PAGNode to its ultimate source.

@@ -128,6 +128,9 @@ public:
      * \param startLocation Source code location string (e.g., "file.c:123").
      * \param targetPAG The PAG node representing the variable of interest.
      */
+    void getValueSensitiveReturnInsidePath(const std::string& startLocation, const SVFGNode* startSVFGNode);
+    void getValueSensitiveReturnInsidePath(const std::string& startLocation,
+                                           const std::vector<const SVFGNode*>& startSVFGNodes);
     void getValueSensitiveReturnInsidePath(const std::string& startLocation, const PAGNode* targetPAG);
 
     /*!
@@ -153,6 +156,9 @@ private:
 
     void dfsVisit(const SVFGNode* currentNode, SVFGPath& currentPath, std::set<const SVFGNode*>& visited);
     void printPath(const SVFGPath& path, bool isFreed);
+    void getValueSensitiveReturnInsidePathImpl(const std::string& startLocation,
+                                               const std::vector<const SVFGNode*>& startSVFGNodes,
+                                               const PAGNode* targetPAG);
 
     /*!
      * \brief DFS helper to find paths from current node to a specific return location.

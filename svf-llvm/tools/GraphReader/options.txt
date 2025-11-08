@@ -27,6 +27,11 @@ branch not void
 { "command" : "find-icfg-return-paths", "name" : "TIFFReadDirEntryErr",  "location" : "tif_dirread.c:3356"}
 2 return ptrobj
 { "command" : "find-icfg-return-paths", "name" : "TIFFReadDirectoryFindEntry",  "location" : "tif_dirread.c:4328"}
+1 return [!BUG!][fixed]
+{ "command" : "find-icfg-return-paths", "name" : "TIFFReadRGBAImageOriented ",  "location" : "tif_getimage.c:519"}
+special 2 return
+{ "command" : "find-icfg-return-paths", "name" : "gtTileSeparate",  "location" : "tif_getimage.c:733"}
+
 
 no branch not void
 1 return
@@ -95,7 +100,21 @@ show function return info (debug)
 
 {"command": "trace-call-arg-to-return", "location": "tif_getimage.c:378", "arg_index": "0"}
 无function name的版本可能导致无法确定pag
-{"command": "find-call-arg-value-path-inside", "location": "tif_getimage.c:407", "arg_index": "0"}
+{"command": "find-call-arg-value-path-inside", "location": "tif_getimage.c:407", "arg_index": "0", "callee_function_name" : "TIFFSetField"}
+{"command": "find-call-arg-value-path-inside", "location": "tif_getimage.c:527", "arg_index": "0", "callee_function_name" : "TIFFRGBAImageBegin"}
+{"command": "find-call-arg-value-path-inside-with-get-pag", "location": "tif_getimage.c:527", "arg_index": "0", "callee_function_name" : "TIFFRGBAImageBegin"}
+{"command": "find-call-arg-value-path-inside-with-get-svfg", "location": "tif_getimage.c:527", "arg_index": "0", "callee_function_name" : "TIFFRGBAImageBegin"}
+{"command": "find-call-arg-value-path-inside", "location": "tif_getimage.c:295", "arg_index": "0", "callee_function_name" : "TIFFGetFieldDefaulted"}
+{"command": "find-call-arg-value-path-inside-with-get-pag", "location": "tif_getimage.c:295", "arg_index": "0", "callee_function_name" : "TIFFGetFieldDefaulted"}
+{"command": "find-call-arg-value-path-inside-with-get-svfg", "location": "tif_getimage.c:295", "arg_index": "0", "callee_function_name" : "TIFFGetFieldDefaulted"}
+
+// 直接使用pag get和使用trace到定义点到pag好像没什么差别 错误❌
+// 差别很大 必须使用trace之后的pag节点 其他pag是不是也要考虑变化一下？
+// 这个应该涉及我之前思考的如何收集distinguished svfgnode的问题 在面对gep时尤其离谱 后两个例子很好 
+// 另外 我需要一并添加不可达的return location 因为可能只是遍历出现了问题！
+
+
+527 0 TIFFRGBAImageBegin
 
 value path Debug
 { "command" : "show-value-path-inside", "start" : "tif_dirwrite.c:1083", "index" : "1" }

@@ -24,6 +24,8 @@
 namespace SVF {
 
 void PathQuery::getValuePath(const SVFGNode* startNode) {
+    // DEBUG
+    // old implementation
     if (!startNode) {
         GraphReaderUtil::sendJsonError("Error: Start node is null.");
         return;
@@ -264,6 +266,7 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
 
 
 void PathQuery::dfsVisit(const SVFGNode* currentNode, SVFGPath& currentPath, std::set<const SVFGNode*>& visited) {
+    // DEBUG
     // Add current node to path and visited set
     currentPath.push_back(currentNode);
     visited.insert(currentNode);
@@ -336,6 +339,8 @@ void PathQuery::printPath(const SVFGPath& path, bool isFreed) {
 
 void PathQuery::getConditionPath(const std::string& startLocation, const std::string& targetLocation)
 {
+    // TOOL FUNCTION
+    // old implementation
     llvm::json::Object result;
     llvm::json::Array pathsArray;
 
@@ -434,6 +439,8 @@ void PathQuery::getConditionPath(const std::string& startLocation, const std::st
 
 void PathQuery::getConditionInsidePath(const std::string& startLocation, const std::string& targetLocation)
 {
+    // TOOL FUNCTION
+    // old implementation
     llvm::json::Object result;
     llvm::json::Array pathsArray;
 
@@ -517,6 +524,8 @@ void PathQuery::getConditionInsidePath(const std::string& startLocation, const s
 }
 
 void PathQuery::getConstrain(const std::string& location) {
+    // DEBUG
+    // maybe useful
     const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
     if (!startNode) {
         GraphReaderUtil::sendJsonError("Invalid location: " + location);
@@ -567,6 +576,7 @@ void PathQuery::getConstrain(const std::string& location) {
 }
 
 void PathQuery::findFunArgValuePathInside(const std::string& funcName, int argIndex) {
+    // DEBUG
     SVFUtil::outs() << "[findFunArgValuePathInside] Function name: " << funcName << ", Arg index: " << argIndex << "\n";
     if (!pag) {
         SVFUtil::errs() << "[findFunArgValuePathInside] PAG is null!\n";
@@ -627,6 +637,7 @@ void PathQuery::findFunArgValuePathInside(const std::string& funcName, int argIn
 }
 
 void PathQuery::findVarValuePathInsideByLocation(const std::string& location, int operandIndex) {
+    // DEBUG
     SVFUtil::outs() << "\n========================================\n";
     SVFUtil::outs() << "[findVarValuePathInsideByLocation] Location: " << location 
                     << ", Operand index: " << operandIndex << "\n";
@@ -999,6 +1010,7 @@ void PathQuery::findVarValuePathInsideByLocation(const std::string& location, in
 }
 
 void PathQuery::findLVarPathInsideByLocation(const std::string& location, int eqPosition) {
+    // DEBUG
     SVFUtil::outs() << "\n========================================\n";
     SVFUtil::outs() << "[findLVarPathInsideByLocation] Location: " << location 
                     << ", Eq position: " << eqPosition << "\n";
@@ -1140,6 +1152,7 @@ void PathQuery::findLVarPathInsideByLocation(const std::string& location, int eq
 
 // Helper function to find actual return statement ICFG nodes (not wrapper nodes)
 std::vector<const ICFGNode*> findActualReturnICFGNodes(ICFG* icfg, const FunObjVar* function) {
+    // TOOL FUNCTION
     std::vector<const ICFGNode*> actualReturnNodes;
     if (!icfg) {
         return actualReturnNodes;
@@ -1236,6 +1249,13 @@ std::vector<const ICFGNode*> findActualReturnICFGNodes(ICFG* icfg, const FunObjV
     const auto loadSrcNodes = collectPredecessors(loadNodes);
     const auto branchNodes = collectUnconditionalBranches(loadSrcNodes);
     if (!branchNodes.empty()) {
+        // 在这里先检查一下所有branchNodes是否都具有location信息 只有有任何一个没有 也要使用retInstNodes
+        for (const auto* node : branchNodes) {
+            if (node->getSourceLoc().empty()) {
+                appendUnique(retInstNodes);
+                return actualReturnNodes;
+            }
+        }
         appendUnique(branchNodes);
         return actualReturnNodes;
     }
@@ -1246,6 +1266,7 @@ std::vector<const ICFGNode*> findActualReturnICFGNodes(ICFG* icfg, const FunObjV
 
 // Helper function to check if an ICFG node can reach target return location
 bool canICFGReach(const ICFGNode* from, const ICFGNode* target, const FunObjVar* function, bool debug = false) {
+    // DEBUG
     if (!from || !target) return false;
     if (from == target) return true;
     
@@ -1321,6 +1342,7 @@ void findICFGPaths(
     const FunObjVar* function,
     std::vector<std::vector<const ICFGNode*>>& allICFGPaths
 ) {
+    // TOOL FUNCTION
     // Use BFS to find paths (prioritizes shorter paths over DFS)
     std::deque<std::tuple<const ICFGNode*, std::vector<const ICFGNode*>, Set<const ICFGNode*>>> worklist;
     std::vector<const ICFGNode*> initialPath;
@@ -1419,6 +1441,7 @@ void PathQuery::dfsToReturnLocation(
     std::set<const SVFGNode*>& visited,
     std::vector<std::vector<const SVFGNode*>>& allPaths
 ) {
+    // DEBUG
     // Check if current SVFG node's ICFG node can reach the target return location
     const ICFGNode* curICFG = currentNode->getICFGNode();
     
@@ -1494,6 +1517,7 @@ void PathQuery::dfsToReturnLocation(
 }
 
 void PathQuery::findPathsToFormalOUT(const std::string& location, int eqPosition) {
+    // DEBUG
     SVFUtil::outs() << "\n========================================\n";
     SVFUtil::outs() << "[findPathsToFormalOUT] Location: " << location 
                     << ", Eq position: " << eqPosition << "\n";
@@ -1780,6 +1804,7 @@ void PathQuery::findPathsToFormalOUT(const std::string& location, int eqPosition
 }
 
 void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
+    // DEBUG
     SVFUtil::outs() << "\n========================================\n";
     SVFUtil::outs() << "[getConditionReturnInsidePath] Start Location: " << startLocation << "\n";
     SVFUtil::outs() << "========================================\n\n";
@@ -2066,10 +2091,17 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
     SVFUtil::outs() << "========================================\n\n";
 }
 
-void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocation, const PAGNode* targetPAG) {
-    // Step A: Validate inputs and get starting ICFG node
-    if (!icfg || !svfg || !pag || !targetPAG) {
-        GraphReaderUtil::sendJsonError("ICFG, SVFG, PAG, or targetPAG is null!");
+void PathQuery::getValueSensitiveReturnInsidePathImpl(
+    const std::string& startLocation,
+    const std::vector<const SVFGNode*>& startSVFGNodes,
+    const PAGNode* targetPAG) {
+    if (!icfg || !svfg || !pag) {
+        GraphReaderUtil::sendJsonError("ICFG, SVFG, or PAG is null for value-sensitive analysis!");
+        return;
+    }
+
+    if (startSVFGNodes.empty()) {
+        GraphReaderUtil::sendJsonError("No SVFG start nodes provided for value-sensitive analysis.");
         return;
     }
 
@@ -2078,64 +2110,70 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
         GraphReaderUtil::sendJsonError("Cannot find ICFGNode for location: " + startLocation);
         return;
     }
-    
+
     const FunObjVar* function = startNode->getFun();
     if (!function) {
         GraphReaderUtil::sendJsonError("Start location is not inside any function");
         return;
     }
 
-    // Step B: Get def SVFGNode from PAGNode*
-    const SVFGNode* defNode = nullptr;
-    if (svfg->hasDefSVFGNode(targetPAG)) {
-        defNode = svfg->getDefSVFGNode(targetPAG);
-    } else {
-        GraphReaderUtil::sendJsonError("No def SVFGNode found for the target PAG node");
+    // Step C: Find all reachable SVFGNodes from provided start nodes (keySVFGNodes)
+    Set<const SVFGNode*> keySVFGNodes;
+    std::queue<const SVFGNode*> worklist;
+    std::vector<const SVFGNode*> validStartNodes;
+
+    auto enqueueStartNode = [&](const SVFGNode* node) {
+        if (!node) {
+            return;
+        }
+        if (node->getFun() != function) {
+            SVFUtil::errs() << "[getValueSensitiveReturnInsidePath] Ignoring start SVFGNode "
+                            << node->getId() << " because it belongs to function '"
+                            << (node->getFun() ? node->getFun()->getName() : "unknown")
+                            << "' instead of '" << function->getName() << "'.\n";
+            return;
+        }
+        if (keySVFGNodes.insert(node).second) {
+            worklist.push(node);
+            validStartNodes.push_back(node);
+        }
+    };
+
+    for (const SVFGNode* startNodeCandidate : startSVFGNodes) {
+        enqueueStartNode(startNodeCandidate);
+    }
+
+    if (validStartNodes.empty()) {
+        GraphReaderUtil::sendJsonError("No valid SVFG start nodes belong to function '" + function->getName() + "'.");
         return;
     }
 
-    // Step C: Find all reachable SVFGNodes from defNode (keySVFGNodes)
-    Set<const SVFGNode*> keySVFGNodes;
-    std::queue<const SVFGNode*> worklist;
-    
-    worklist.push(defNode);
-    keySVFGNodes.insert(defNode);
-    
-    // BFS traversal to find all reachable SVFG nodes within the same function
     while (!worklist.empty()) {
         const SVFGNode* currentNode = worklist.front();
         worklist.pop();
-        
+
         for (const SVFGEdge* edge : currentNode->getOutEdges()) {
             const SVFGNode* nextNode = edge->getDstNode();
-            
-            // Only traverse within the same function as the def node
-            if (nextNode->getFun() != function) continue;
-            if (keySVFGNodes.find(nextNode) != keySVFGNodes.end()) continue;
-            
-            // IMPORTANT: Do NOT filter ANY nodes during BFS traversal!
-            // All filtering is done at output time (around line 2100) to maintain:
-            // 1. Graph connectivity - ensures all reachable nodes are discovered
-            // 2. Consistency - all node types treated uniformly
-            // 3. Flexibility - output filtering can be easily customized
-            
-            // Include ALL nodes in keySVFGNodes (filtering happens later at output time)
-            keySVFGNodes.insert(nextNode);
-            worklist.push(nextNode);
+            if (nextNode->getFun() != function) {
+                continue;
+            }
+            if (keySVFGNodes.insert(nextNode).second) {
+                worklist.push(nextNode);
+            }
         }
     }
-    
+
     // Step D: Find all ICFG paths to return locations
     std::vector<const ICFGNode*> returnLocations = findActualReturnICFGNodes(icfg, function);
 
     if (returnLocations.empty()) {
         llvm::json::Object result;
         result["start_location"] = startLocation;
-        result["target_pag_node"] = static_cast<int64_t>(targetPAG->getId());
         result["function"] = function->getName();
         result["return_locations"] = llvm::json::Array{};
         result["total_paths"] = 0;
         result["error"] = false;
+        result["key_svfg_nodes_count"] = static_cast<int64_t>(keySVFGNodes.size());
         llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
         llvm::outs().flush();
         return;
@@ -2310,7 +2348,6 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
     // Build final result
     llvm::json::Object result;
     result["start_location"] = startLocation;
-    result["target_pag_node"] = static_cast<int64_t>(targetPAG->getId());
     result["function"] = function->getName();
     result["key_svfg_nodes_count"] = static_cast<int64_t>(keySVFGNodes.size());
     result["return_locations"] = std::move(returnLocationsArray);
@@ -2321,6 +2358,43 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
 
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
     llvm::outs().flush();
+}
+
+void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocation, const SVFGNode* startSVFGNode) {
+    std::vector<const SVFGNode*> startNodes;
+    if (startSVFGNode) {
+        startNodes.push_back(startSVFGNode);
+    }
+    getValueSensitiveReturnInsidePathImpl(startLocation, startNodes, nullptr);
+}
+
+void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocation,
+                                                  const std::vector<const SVFGNode*>& startSVFGNodes) {
+    getValueSensitiveReturnInsidePathImpl(startLocation, startSVFGNodes, nullptr);
+}
+
+void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocation, const PAGNode* targetPAG) {
+    if (!targetPAG) {
+        GraphReaderUtil::sendJsonError("Target PAG node is null for value-sensitive analysis.");
+        return;
+    }
+
+    if (!svfg) {
+        GraphReaderUtil::sendJsonError("SVFG is null; cannot resolve start SVFG nodes from PAG node.");
+        return;
+    }
+
+    std::vector<const SVFGNode*> startNodes;
+    if (svfg->hasDefSVFGNode(targetPAG)) {
+        startNodes.push_back(svfg->getDefSVFGNode(targetPAG));
+    }
+
+    if (startNodes.empty()) {
+        GraphReaderUtil::sendJsonError("Cannot find any SVFG definition node for PAG node " + std::to_string(targetPAG->getId()));
+        return;
+    }
+
+    getValueSensitiveReturnInsidePathImpl(startLocation, startNodes, targetPAG);
 }
 
 void PathQuery::traceCallArgToReturn(const std::string& callLocation,

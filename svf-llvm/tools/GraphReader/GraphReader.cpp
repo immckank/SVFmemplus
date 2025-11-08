@@ -171,6 +171,70 @@ const SVFGNode* showSVFGNodeByLocation(SVFG* svfg, ICFG* icfg, const std::string
     return nullptr;
 }
 
+static bool handleValueSensitiveReturnCommand(const std::string& cname,
+                                              llvm::json::Object& cmd,
+                                              PathQuery& pq,
+                                              ICFG* icfg,
+                                              PAG* pag) {
+    if (cname == "find-arg-value-path-inside") {
+        auto funcNameField = cmd.getString("function_name");
+        if (!funcNameField) {
+            SVF::GraphReaderUtil::sendJsonError("missing 'function_name'");
+            return true;
+        }
+        int argIndex = -1;
+        if (!SVF::GraphReaderUtil::parseIndexField(cmd, "index", "index", "index", argIndex)) {
+            return true;
+        }
+        const std::string functionNameStr = funcNameField->str();
+        const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromArg(pag, functionNameStr, argIndex);
+        if (!targetPAG) {
+            return true;
+        }
+        std::string startLocation;
+        if (!SVF::GraphReaderUtil::fetchFunctionStartLocation(pag, functionNameStr, startLocation)) {
+            return true;
+        }
+        pq.getValueSensitiveReturnInsidePath(startLocation, targetPAG);
+        return true;
+    }
+
+    if (cname == "find-lvalue-path-inside") {
+        auto loc = cmd.getString("location");
+        if (!loc) {
+            SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+            return true;
+        }
+        int eqPosition = -1;
+        if (!SVF::GraphReaderUtil::parseIndexField(cmd, "eq_position", "eq_position", "eqPosition", eqPosition)) {
+            return true;
+        }
+        const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
+        if (!targetPAG) {
+            return true;
+        }
+        pq.getValueSensitiveReturnInsidePath(loc->str(), targetPAG);
+        return true;
+    }
+
+    if (cname == "find-call-arg-value-path-inside") {
+        auto loc = cmd.getString("location");
+        auto calleeFuncName = cmd.getString("callee_function_name");
+        if (!loc || !calleeFuncName) {
+            SVF::GraphReaderUtil::sendJsonError("missing 'callee_function_name' or 'location'");
+            return true;
+        }
+        int argIndex = -1;
+        if (!SVF::GraphReaderUtil::parseIndexField(cmd, "arg_index", "arg_index", "arg_index", argIndex)) {
+            return true;
+        }
+        pq.traceCallArgToReturn(loc->str(), calleeFuncName->str(), argIndex);
+        return true;
+    }
+
+    return false;
+}
+
 
 /*!
  * GraphReader: A tool to read and analyze SVF graphs.
@@ -312,47 +376,62 @@ int main(int argc, char ** argv) {
                         SVF::SVFUtil::errs() << operandIndex << " Warning: Operand index '" << (i ? i->str() : std::string("")) << "' for intra-procedural value path is out of range. Using default -1.\n";
                     }
                 }
-            } else if (cname == "find-arg-value-path-inside") {
-                auto funcName = cmd.getString("function_name");
-                auto indexStr = cmd.getString("index");
-                if (!funcName || !indexStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'function_name' or 'index'");
-                } else {
-                    int argIndex = -1;
-                    try {
-                        argIndex = std::stoi(indexStr->str());
-                    } catch (...) {
-                        SVF::GraphReaderUtil::sendJsonError("invalid 'index' value: " + indexStr->str());
-                        continue;
-                    }
-                    const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromArg(pag, funcName->str(), argIndex);
-                    if (!targetPAG) {
-                        SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for function '" + funcName->str() + "' argument " + std::to_string(argIndex));
-                    } else {
-                        // Get function start location automatically
-                        const FunObjVar* funObj = pag->getFunObjVar(funcName->str());
-                        if (!funObj) {
-                            SVF::GraphReaderUtil::sendJsonError("Cannot find function '" + funcName->str() + "'");
-                        } else {
-                            const llvm::Value* funVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(funObj);
-                            const llvm::Function* llvmFun = SVF::SVFUtil::dyn_cast<llvm::Function>(funVal);
-                            if (!llvmFun) {
-                                SVF::GraphReaderUtil::sendJsonError("Cannot get LLVM function for '" + funcName->str() + "'");
-                            } else {
-                                llvm::json::Object funcInfo = SVF::GraphReaderUtil::getFunctionInfoJson(llvmFun);
-                                auto filenameOpt = funcInfo["filename"].getAsString();
-                                std::string filename = filenameOpt ? filenameOpt->str() : "";
-                                if (filename.empty()) {
-                                    SVF::GraphReaderUtil::sendJsonError("Cannot get source location for function '" + funcName->str() + "'");
-                                } else {
-                                    int64_t startLine = funcInfo["start_line"].getAsInteger().value_or(0);
-                                    std::string startLocation = filename + ":" + std::to_string(startLine);
-                                    pq.getValueSensitiveReturnInsidePath(startLocation, targetPAG);
-                                }
-                            }
-                        }
-                    }
+            } else if (cname == "find-call-arg-value-path-inside-with-get-svfg") {
+                // DEBUG
+                auto loc = cmd.getString("location");
+                auto calleeFuncName = cmd.getString("callee_function_name");
+                auto argIndexStr = cmd.getString("arg_index");
+                if (!loc || !argIndexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'arg_index'");
+                    continue;
                 }
+                int argIndex = -1;
+                try {
+                    argIndex = std::stoi(argIndexStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + argIndexStr->str());
+                    continue;
+                }
+                const std::string calleeName = calleeFuncName ? calleeFuncName->str() : "";
+                const SVFGNode* startSVFGNode = SVF::GraphReaderUtil::getSVFGNodeFromActualINArg(svfg, icfg, pag, loc->str(), argIndex, calleeName);
+                // SVFG vector
+                std::vector<const SVFGNode*> startSVFGNodes;
+                if (startSVFGNode) {
+                    startSVFGNodes.push_back(startSVFGNode);
+                }
+                if (startSVFGNodes.empty()) {
+                    SVF::GraphReaderUtil::sendJsonError("Cannot find SVFGNode for call argument at location '" + loc->str() + "' with index " + argIndexStr->str());
+                } else {
+                    pq.getValueSensitiveReturnInsidePath(loc->str(), startSVFGNodes);
+                }
+            } else if (cname == "find-arg-value-path-inside") {
+                auto functionName = cmd.getString("function_name");
+                auto argIndexStr = cmd.getString("arg_index");
+                if (!functionName || !argIndexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'function_name' or 'arg_index'");
+                    continue;
+                }
+                int argIndex = -1;
+                std::string functionNameStr = functionName ? functionName->str() : "";
+                std::string startLocation;
+                if (!SVF::GraphReaderUtil::fetchFunctionStartLocation(pag, functionNameStr, startLocation)) {
+                    //send json error
+                    SVF::GraphReaderUtil::sendJsonError("Cannot find start location for function '" + functionNameStr + "'");
+                    continue;
+                }
+                try {
+                    argIndex = std::stoi(argIndexStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + argIndexStr->str());
+                    continue;
+                }
+                const SVFGNode* startSVFGNode = SVF::GraphReaderUtil::getDefSVFGNodeFromArg(svfg, pag, functionNameStr, argIndex);
+                if (!startSVFGNode) {
+                    SVF::GraphReaderUtil::sendJsonError("Cannot find SVFGNode for function '" + functionNameStr + "' argument " + std::to_string(argIndex));
+                } else {
+                    pq.getValueSensitiveReturnInsidePath(startLocation, startSVFGNode);
+                }
+
             } else if (cname == "find-var-value-path-inside") {
                 // DEBUG
                 auto loc = cmd.getString("location");
@@ -369,42 +448,16 @@ int main(int argc, char ** argv) {
                     }
                     pq.findVarValuePathInsideByLocation(loc->str(), operandIndex);
                 }
-            } else if (cname == "find-lvalue-path-inside") {
-                auto loc = cmd.getString("location");
-                auto eqPositionStr = cmd.getString("eq_position");
-                if (!loc || !eqPositionStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
-                } else {
-                    int eqPosition = -1;
-                    try {
-                        eqPosition = std::stoi(eqPositionStr->str());
-                    } catch (...) {
-                        SVF::GraphReaderUtil::sendJsonError("invalid 'eqPosition' value: " + eqPositionStr->str());
-                        continue;
-                    }
-                    const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
-                    if (!targetPAG) {
-                        SVF::GraphReaderUtil::sendJsonError("Cannot find LHS PAGNode at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
-                    } else {
-                        pq.getValueSensitiveReturnInsidePath(loc->str(), targetPAG);
-                    }
-                }
-            } else if (cname == "find-lvalue-memory-path-inside") {
-                // DEBUG
-                auto loc = cmd.getString("location");
-                auto eqPositionStr = cmd.getString("eq_position");
-                if (!loc || !eqPositionStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
-                } else {
-                    int eqPosition = -1;
-                    try {
-                        eqPosition = std::stoi(eqPositionStr->str());
-                    } catch (...) {
-                        SVF::GraphReaderUtil::sendJsonError("invalid 'eqPosition' value: " + eqPositionStr->str());
-                        continue;
-                    }
-                    pq.findPathsToFormalOUT(loc->str(), eqPosition);
-                }
+            } else if (cname == "find-gep-lvalue-path-inside") {
+                // TODO
+                // 我们收集startSVFG是不是可以有多个 如果有gep？
+                // 比如这个场景下 赋值 store的左值又多次取gep的操作 
+                // 每脱去一层解引用 就会多出一个需要复杂追溯到base obj的定义svfg节点
+                // 我们把所有base obj定义位置的svfg节点都收集起来 然后所有节点的可达节点都需要作为特殊值流操作节点
+                // out todo
+                continue;
+            } else if (handleValueSensitiveReturnCommand(cname, cmd, pq, icfg, pag)) {
+                // handled inside helper
             } else if (cname == "find-icfg-return-paths") {
                 // DEBUG
                 auto loc = cmd.getString("location");
@@ -436,24 +489,6 @@ int main(int argc, char ** argv) {
                         continue;
                     }
                     SVF::GraphReaderUtil::traceCallArgumentToPAGNode(svfg, icfg, pag, loc->str(), argIndex);
-                }
-            } else if (cname == "find-call-arg-value-path-inside") {
-                auto loc = cmd.getString("location");
-                auto funcName = cmd.getString("function_name");
-                auto indexStr = cmd.getString("arg_index");
-                if (!loc || !indexStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'arg_index'");
-                } else if (!funcName) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'function_name'");
-                } else {
-                    int argIndex = -1;
-                    try {
-                        argIndex = std::stoi(indexStr->str());
-                    } catch (...) {
-                        SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + indexStr->str());
-                        continue;
-                    }
-                    pq.traceCallArgToReturn(loc->str(), funcName->str(), argIndex);
                 }
             } else if (cname == "check-return-pointer") {
                 auto loc = cmd.getString("location");
@@ -499,7 +534,39 @@ int main(int argc, char ** argv) {
                         SVF::GraphReaderUtil::tracePAGStore(svfg, pag, targetPAG);
                     }
                 }
-            } else {
+            } else if (cname == "find-call-arg-value-path-inside-with-get-pag") {
+                // DEBUG
+                // 这个为什么不行：pag节点获取的是被load到实参当中的那个变量 这样得到的svfg节点只有那一个load语句 遍历所能抵达的svfg节点也有限 无法筛选想要的值流操作
+                auto loc = cmd.getString("location");
+                auto calleeFuncName = cmd.getString("callee_function_name");
+                auto argIndexStr = cmd.getString("arg_index");
+                if (!loc || !argIndexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'arg_index'");
+                    continue;
+                }
+
+                int argIndex = 0;
+                try {
+                    argIndex = std::stoi(argIndexStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + argIndexStr->str());
+                    continue;
+                }
+
+                const std::string calleeName = calleeFuncName ? calleeFuncName->str() : "";
+                const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromCallArg(
+                    icfg,
+                    pag,
+                    loc->str(),
+                    argIndex,
+                    calleeName);
+                if (!targetPAG) {
+                    SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for call argument at location '" + loc->str() + "' with index " + argIndexStr->str());
+                } else {
+                    pq.getValueSensitiveReturnInsidePath(loc->str(), targetPAG);
+                }
+            }
+            else {
                 SVF::GraphReaderUtil::sendJsonError("unknown command: " + cname);
             }
         }

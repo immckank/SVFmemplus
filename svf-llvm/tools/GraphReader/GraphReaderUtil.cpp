@@ -9,6 +9,8 @@
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
+#include "MemoryModel/PointerAnalysis.h"
+#include <limits>
 
 namespace SVF {
 namespace GraphReaderUtil {
@@ -32,10 +34,7 @@ static std::string resolveCalleeName(const llvm::CallBase* callInst) {
     return "";
 }
 
-static const CallICFGNode* selectCallICFGNode(ICFG* icfg,
-                                              const std::string& location,
-                                              const std::string& functionName,
-                                              std::string& resolvedCalleeName) {
+static const CallICFGNode* selectCallICFGNode(ICFG* icfg, const std::string& location,  const std::string& functionName,  std::string& resolvedCalleeName) {
     resolvedCalleeName.clear();
 
     SVF::SVFUtil::outs() << "[GraphReaderUtil] Selecting call site at '" << location
@@ -437,7 +436,7 @@ std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const 
     return results;
 }
 
-const PAGNode* getPAGNodeFromArg(SVFIR* pag, const std::string& funcName, int argIndex) {
+const SVFGNode* getDefSVFGNodeFromArg(SVFG* svfg, SVFIR* pag, const std::string& funcName, int argIndex) {
     if (!pag) {
         return nullptr;
     }
@@ -451,8 +450,36 @@ const PAGNode* getPAGNodeFromArg(SVFIR* pag, const std::string& funcName, int ar
     if (argIndex < 0 || static_cast<size_t>(argIndex) >= args.size()) {
         return nullptr;
     }
+    const SVFVar* arg = args[argIndex];
+    if (!arg) {
+        return nullptr;
+    }
     
-    return args[argIndex];
+    const SVFGNode* defNode = svfg->getDefSVFGNode(arg);
+    if (!defNode) {
+        return nullptr;
+    }
+    
+    return defNode;
+}
+
+const PAGNode* getPAGNodeFromArg(SVFIR* pag, const std::string& funcName, int argIndex) {
+    if (!pag) {
+        return nullptr;
+    }
+    const FunObjVar* fun = pag->getFunObjVar(funcName);
+    if (!fun) {
+        return nullptr;
+    }
+    const SVFIR::SVFVarList& args = pag->getFunArgsList(fun);
+    if (argIndex < 0 || static_cast<size_t>(argIndex) >= args.size()) {
+        return nullptr;
+    }
+    const SVFVar* arg = args[argIndex];
+    if (!arg) {
+        return nullptr;
+    }
+    return pag->getGNode(arg->getId());
 }
 
 const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
@@ -513,6 +540,7 @@ const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const std::string& loc
 
 const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
     if (!icfg || !pag) {
+        // actually impossible
         SVF::SVFUtil::errs() << "Error: Invalid ICFG or PAG pointer\n";
         return nullptr;
     }
@@ -609,20 +637,16 @@ const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& 
     return baseVar;
 }
 
-const PAGNode* getPAGNodeFromCallArg(ICFG* icfg,
-                                     SVFIR* pag,
-                                     const std::string& location,
-                                     int argIndex,
-                                     const std::string& functionName) {
+const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex, const std::string& functionName) {
     if (!icfg || !pag) {
-        SVF::SVFUtil::errs() << "[GraphReaderUtil] Invalid null icfg or pag pointer when resolving call arg at "
-                             << location << "\n";
+        SVF::SVFUtil::errs() << "Error: Invalid ICFG or PAG pointer\n";
         return nullptr;
     }
 
     std::string resolvedCallee;
     const CallICFGNode* callNode = selectCallICFGNode(icfg, location, functionName, resolvedCallee);
     if (!callNode) {
+        SVF::SVFUtil::errs() << "Error: No CallICFGNode found at location: " << location << "\n";
         return nullptr;
     }
 
@@ -634,18 +658,8 @@ const PAGNode* getPAGNodeFromCallArg(ICFG* icfg,
         return nullptr;
     }
 
-    std::string callInstStr;
-    llvm::raw_string_ostream callInstStream(callInstStr);
-    callInst->print(callInstStream);
-    callInstStream.flush();
-
-    SVF::SVFUtil::outs() << "[GraphReaderUtil] Resolved call instruction: '"
-                         << callInstStr << "' (callee='"
-                         << (resolvedCallee.empty() ? std::string("<unknown>") : resolvedCallee)
-                         << "', total args=" << callInst->arg_size() << ")\n";
-
     if (argIndex < 0 || argIndex >= static_cast<int>(callInst->arg_size())) {
-        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument index " << argIndex
+        SVF::SVFUtil::errs() << "Error: Argument index " << argIndex
                              << " out of range for call at " << location
                              << " (argument count=" << callInst->arg_size() << ")\n";
         return nullptr;
@@ -671,6 +685,183 @@ const PAGNode* getPAGNodeFromCallArg(ICFG* icfg,
     return targetNode;
 }
 
+const SVFGNode* getSVFGNodeFromActualINArg(SVFG* svfg,
+                                           ICFG* icfg,
+                                           SVFIR* pag,
+                                           const std::string& location,
+                                           int argIndex,
+                                           const std::string& functionName) {
+    if (!svfg || !icfg || !pag) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Invalid SVFG/ICFG/PAG pointer\n";
+        return nullptr;
+    }
+    if (argIndex < 0) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Negative argument index\n";
+        return nullptr;
+    }
+
+    std::string resolvedCallee;
+    const CallICFGNode* callNode =
+        selectCallICFGNode(icfg, location, functionName, resolvedCallee);
+    if (!callNode) {
+        return nullptr;
+    }
+
+    // 打印所有callnode的所有svfg节点
+    // Find and display all associated SVFG nodes
+    std::vector<const SVFGNode*> associatedSVFGNodes;
+    std::vector<const ActualINSVFGNode*> actualINSVFGNodes;
+    for (auto& pair : *svfg) {
+        SVFGNode* svfgNode = pair.second;
+        if (svfgNode->getICFGNode() == callNode) {
+            associatedSVFGNodes.push_back(svfgNode);
+        }
+    }
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] All SVFG nodes for call node " << callNode->getId() << ":\n";
+    for (const SVFGNode* node : associatedSVFGNodes) {
+        SVF::SVFUtil::outs() << "[GraphReaderUtil] SVFG node ID: " << node->getId() << "\n";
+        // tostring
+        SVF::SVFUtil::outs() << "[GraphReaderUtil] SVFG node toString: " << node->toString() << "\n";
+        if (SVFUtil::isa<ActualINSVFGNode>(node)) {
+            SVF::SVFUtil::outs() << "[GraphReaderUtil] ActualINSVFGNode ID: " << node->getId() << "\n";
+            actualINSVFGNodes.push_back(SVFUtil::dyn_cast<ActualINSVFGNode>(node));
+        }
+    }
+    // size
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] ActualINSVFGNodes size: " << actualINSVFGNodes.size() << "\n";
+
+    if (!pag->hasCallSiteArgsMap(callNode)) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Call site '" << location
+                             << "' has no recorded actual parameters\n";
+        return nullptr;
+    }
+    const SVFIR::SVFVarList& args = pag->getCallSiteArgsList(callNode);
+    if (argIndex >= static_cast<int>(args.size())) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument index " << argIndex
+                             << " out of range (call has " << args.size() << " args)\n";
+        return nullptr;
+    }
+
+    const SVFVar* argVar = args[argIndex];
+    if (!argVar) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Null PAG node for argument " << argIndex
+                             << "\n";
+        return nullptr;
+    }
+    if (!argVar->isPointer()) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument " << argIndex
+                             << " is not a pointer; cannot map to ActualINSVFGNode\n";
+        return nullptr;
+    }
+
+    PointerAnalysis* pta = svfg->getPTA();
+    if (!pta) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] SVFG has no pointer-analysis instance\n";
+        return nullptr;
+    }
+    NodeBS argPts = pta->getPts(argVar->getId()).toNodeBS();
+    if (argPts.empty()) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument " << argIndex
+                             << " has empty points-to set; match may fail\n";
+    }
+
+    if (!svfg->hasActualINSVFGNodes(callNode)) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Call site '" << location
+                             << "' has no ActualINSVFG nodes\n";
+        return nullptr;
+    }
+
+    SVFG::ActualINSVFGNodeSet& actualIns = svfg->getActualINSVFGNodes(callNode);
+    const ActualINSVFGNode* bestExact = nullptr;
+    const ActualINSVFGNode* bestOverlap = nullptr;
+    size_t bestExactSize = std::numeric_limits<size_t>::max();
+    size_t bestOverlapSize = 0;
+
+    for (auto it = actualIns.begin(), eit = actualIns.end(); it != eit; ++it) {
+        const auto* actualIn = SVFUtil::dyn_cast<ActualINSVFGNode>(svfg->getSVFGNode(*it));
+        if (!actualIn) {
+            continue;
+        }
+
+        NodeBS regionPts = actualIn->getPointsTo();
+        NodeBS intersection = regionPts;
+        intersection &= argPts;
+
+        size_t regionSize = regionPts.count();
+        size_t overlapSize = intersection.count();
+        if (overlapSize == 0) {
+            continue;
+        }
+
+        if (overlapSize == regionSize && regionSize < bestExactSize) {
+            bestExact = actualIn;
+            bestExactSize = regionSize;
+        }
+        if (overlapSize > bestOverlapSize) {
+            bestOverlap = actualIn;
+            bestOverlapSize = overlapSize;
+        }
+    }
+
+    const ActualINSVFGNode* chosen = bestExact ? bestExact : bestOverlap;
+    if (!chosen) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Unable to match ActualINSVFGNode for call '"
+                             << location << "', arg_index=" << argIndex << "\n";
+        return nullptr;
+    }
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Matched ActualINSVFGNode ID="
+                         << chosen->getId() << " for call '" << location
+                         << "', arg_index=" << argIndex << "\n";
+    return chosen;
+}
+
+bool parseIndexField(const llvm::json::Object& obj,
+                     llvm::StringRef fieldName,
+                     const std::string& missingFieldName,
+                     const std::string& invalidFieldLabel,
+                     int& outValue) {
+    auto valueStr = obj.getString(fieldName);
+    if (!valueStr) {
+        sendJsonError("missing '" + missingFieldName + "'");
+        return false;
+    }
+    try {
+        outValue = std::stoi(valueStr->str());
+        return true;
+    } catch (...) {
+        sendJsonError("invalid '" + invalidFieldLabel + "' value: " + valueStr->str());
+        return false;
+    }
+}
+
+bool fetchFunctionStartLocation(SVFIR* pag, const std::string& funcName, std::string& startLocation) {
+    const FunObjVar* funObj = pag->getFunObjVar(funcName);
+    if (!funObj) {
+        sendJsonError("Cannot find function '" + funcName + "'");
+        return false;
+    }
+
+    const llvm::Value* funVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(funObj);
+    const llvm::Function* llvmFun = SVF::SVFUtil::dyn_cast<llvm::Function>(funVal);
+    if (!llvmFun) {
+        sendJsonError("Cannot get LLVM function for '" + funcName + "'");
+        return false;
+    }
+
+    llvm::json::Object funcInfo = getFunctionInfoJson(llvmFun);
+    auto filenameOpt = funcInfo["filename"].getAsString();
+    std::string filename = filenameOpt ? filenameOpt->str() : "";
+    if (filename.empty()) {
+        sendJsonError("Cannot get source location for function '" + funcName + "'");
+        return false;
+    }
+
+    int64_t startLine = funcInfo["start_line"].getAsInteger().value_or(0);
+    startLocation = filename + ":" + std::to_string(startLine);
+    return true;
+}
+
 // Helper function to determine SVFG node kind
 static std::string getSVFGNodeKind(const SVFGNode* node) {
     if (SVFUtil::isa<StoreVFGNode>(node)) return "StoreVFGNode";
@@ -687,7 +878,7 @@ static std::string getSVFGNodeKind(const SVFGNode* node) {
     return "VFGNode";
 }
 
-// Simplified function: recursively traces to ultimate source
+// recursively traces to ultimate source
 void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
     if (!svfg || !pag || !pagNode) {
         sendJsonError("Invalid input parameters for tracePAGStore");
@@ -987,6 +1178,7 @@ void traceCallArgumentToPAGNode(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::s
 }
 
 void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) {
+    // DEBUG
     SVF::SVFUtil::outs() << "\n========================================\n";
     SVF::SVFUtil::outs() << "Debug Info for Location: " << location << "\n";
     SVF::SVFUtil::outs() << "========================================\n\n";
@@ -1196,12 +1388,14 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
 }
 
+// 或者我们摒弃从pag找定义这个思路 既然检索的是值流操作的关键节点 我们把actualin作为起始节点呢？
 const PAGNode* traceCallArgumentValueFlow(SVFG* svfg,
                                           ICFG* icfg,
                                           SVFIR* pag,
                                           const std::string& callLocation,
                                           const std::string& functionName,
                                           int argIndex) {
+    // 这个与前面那个的区别是 他会先找callicfg节点 然后找对应的paramsvfg节点 最后沿着值流图找到定义位置的pag
     SVF::SVFUtil::outs() << "[GraphReaderUtil] traceCallArgumentValueFlow start. Location='"
                          << callLocation << "', function filter='"
                          << (functionName.empty() ? std::string("<none>") : functionName)
