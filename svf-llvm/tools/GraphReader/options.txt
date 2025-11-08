@@ -108,10 +108,7 @@ show function return info (debug)
 {"command": "find-call-arg-value-path-inside-with-get-pag", "location": "tif_getimage.c:295", "arg_index": "0", "callee_function_name" : "TIFFGetFieldDefaulted"}
 {"command": "find-call-arg-value-path-inside-with-get-svfg", "location": "tif_getimage.c:295", "arg_index": "0", "callee_function_name" : "TIFFGetFieldDefaulted"}
 
-// 直接使用pag get和使用trace到定义点到pag好像没什么差别 错误❌
-// 差别很大 必须使用trace之后的pag节点 其他pag是不是也要考虑变化一下？
-// 这个应该涉及我之前思考的如何收集distinguished svfgnode的问题 在面对gep时尤其离谱 后两个例子很好 
-// 另外 我需要一并添加不可达的return location 因为可能只是遍历出现了问题！
+// 最新的call arg追踪实现有问题（💦
 
 
 527 0 TIFFRGBAImageBegin
@@ -155,9 +152,7 @@ command for test
 { "command" : "find-lvalue-path-inside", "location" : "tif_dirread.c:4992", "eq_position" : "11"}
 { "command" : "find-lvalue-path-inside", "location" : "tif_dirwrite.c:1746", "eq_position" : "7"}
 
-{ "command" : "find-lvalue-memory-path-inside", "location" : "tif_dirwrite.c:1746", "eq_position" : "7"}
-{ "command" : "find-lvalue-memory-path-inside", "location" : "tif_getimage.c:368", "eq_position" : "17"}
-{ "command" : "find-lvalue-memory-path-inside", "location" : "tif_getimage.c:368", "eq_position" : "32"}
+{ "command" : "find-lvalue-path-inside", "location" : "tif_getimage.c:368", "eq_position" : "17"}
 
 { "command": "find-icfg-return-paths", "location": "tif_dirwrite.c:1746" }
 { "command": "find-icfg-return-paths", "location": "tif_dirwrite.c:2276" }
