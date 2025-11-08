@@ -41,15 +41,9 @@ public:
 
     //! Find all functions that can be called by a given function (transitively).
     void findAllCalleesByName(const std::string& functionName);
-
-    //! Find all return locations reachable from a given location within a function.
-    void findRetLocations(const std::string& functionName, const std::string& location);
     
     //! Check if a return location returns a pointer type variable.
     void checkReturnPointer(const std::string& location);
-    
-    //! Show all return instructions in a function (debug).
-    void showFunctionReturnInfo(const std::string& location);
     
 };
 

@@ -7,6 +7,7 @@
 #include "SVFIR/SVFValue.h"
 #include "Graphs/SVFG.h"
 #include "Graphs/SVFGNode.h"
+#include <llvm/ADT/StringRef.h>
 #include <llvm/IR/Function.h>
 #include <llvm/Support/JSON.h>
 #include <string>
@@ -45,9 +46,10 @@ namespace GraphReaderUtil {
     /*!
      * \brief Converts SVFGNode kind to a string representation.
      * \param node Pointer to the SVFGNode.
+     * \param detailed When true, returns detailed class names (e.g. StoreVFGNode).
      * \return A string describing the node kind.
      */
-    std::string getSVFGNodeKindString(const SVFGNode* node);
+    std::string getSVFGNodeKindString(const SVFGNode* node, bool detailed = false);
 
     /*!
      * \brief Creates and prints a standardized JSON error response.
@@ -82,9 +84,9 @@ namespace GraphReaderUtil {
     /// Supports: an array of objects; a single object; or an object with a
     /// top-level "commands" array. Returns true on success; otherwise false and
     /// sets errMsg.
-    bool parseCommandsLine(const std::string& jsonStr,
-                           std::vector<llvm::json::Object>& outCmds,
-                           std::string& errMsg);
+    bool parseCommandsLine(const std::string& jsonStr, std::vector<llvm::json::Object>& outCmds, std::string& errMsg);
+
+    bool fetchFunctionStartLocation(SVFIR* pag, const std::string& funcName, std::string& startLocation);
 
     /*!
      * \brief Gets the PAGNode for a specific function argument.
@@ -125,7 +127,8 @@ namespace GraphReaderUtil {
      * \param argIndex The argument index (0-based).
      * \return A const pointer to the PAGNode of the argument, or nullptr if not found.
      */
-    const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex);
+    const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex, const std::string& functionName = "");
+
 
     /*!
      * \brief Recursively traces the definition chain of a PAGNode to its ultimate source.
@@ -147,27 +150,6 @@ namespace GraphReaderUtil {
     void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location);
 
     /*!
-     * \brief Traces back from a function call argument to find related PAGNodes.
-     * This function finds the actual parameter node and its related PAGNodes,
-     * including both the loaded value and the address being loaded from.
-     * \param svfg Pointer to the SVFG.
-     * \param icfg Pointer to the ICFG.
-     * \param pag Pointer to the SVFIR/PAG.
-     * \param location A string in "filename:line" format for the call site.
-     * \param argIndex The argument index (0-based, 0 is first argument).
-     */
-    void traceCallArgumentToPAGNode(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex);
-
-    /*!
-     * \brief Finds the memory definition node (store) for a given address PAGNode.
-     * Uses SVFG backward traversal to find StoreVFGNode that writes to the address.
-     * \param svfg Pointer to the SVFG.
-     * \param addressPAG The address PAGNode (typically a GEP result).
-     * \return The StoreVFGNode that defines the memory at this address, or nullptr if not found.
-     */
-    const SVFGNode* findMemoryDefNode(SVFG* svfg, const SVFVar* addressPAG);
-
-    /*!
      * \brief Traces a call argument's value flow and finds its definition point.
      * Combines argument tracing with backward data flow to find where the value was stored.
      * Returns the PAGNode of the stored value (e.g., malloc result).
@@ -178,7 +160,7 @@ namespace GraphReaderUtil {
      * \param argIndex The argument index (0-based).
      * \return The PAGNode representing the value's definition, or nullptr if not found.
      */
-    const PAGNode* traceCallArgumentValueFlow(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& callLocation, int argIndex);
+    const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& callLocation, const std::string& functionName, int argIndex);
 
 } // namespace GraphReaderUtil
 } // namespace SVF

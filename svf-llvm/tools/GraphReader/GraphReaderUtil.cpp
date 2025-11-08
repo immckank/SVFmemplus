@@ -8,9 +8,86 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/raw_ostream.h"
+#include "MemoryModel/PointerAnalysis.h"
+#include <limits>
 
 namespace SVF {
 namespace GraphReaderUtil {
+
+namespace {
+
+static std::string resolveCalleeName(const llvm::CallBase* callInst) {
+    if (!callInst) {
+        return "";
+    }
+
+    if (const llvm::Function* directCallee = callInst->getCalledFunction()) {
+        return directCallee->getName().str();
+    }
+
+    const llvm::Value* calledOperand = callInst->getCalledOperand();
+    if (calledOperand && calledOperand->hasName()) {
+        return calledOperand->getName().str();
+    }
+
+    return "";
+}
+
+static const CallICFGNode* selectCallICFGNode(ICFG* icfg, const std::string& location,  const std::string& functionName) {
+    // TODO: 
+    // 这个函数依旧有缺陷 如果这个一行处多次调用了同名函数应该怎么处理
+    std::vector<const ICFGNode*> allNodes = findAllICFGNodesByLocation(icfg, location);
+    if (allNodes.empty()) {
+        return nullptr;
+    }
+
+    struct CandidateInfo {
+        const CallICFGNode* callNode;
+        std::string calleeName;
+        std::string sourceLoc;
+    };
+
+    std::vector<CandidateInfo> candidates;
+    for (const ICFGNode* node : allNodes) {
+        if (const auto* callNode = SVFUtil::dyn_cast<CallICFGNode>(node)) {
+            const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
+            const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
+            std::string calleeName = resolveCalleeName(callInst);
+            candidates.push_back({callNode, calleeName, callNode->getSourceLoc()});
+        }
+    }
+
+    if (candidates.empty()) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] No CallICFGNode found at location '"
+                             << location << "'\n";
+        return nullptr;
+    }
+
+    const CallICFGNode* matchedNode = nullptr;
+    for (const auto& candidate : candidates) {
+        if (!candidate.calleeName.empty() && candidate.calleeName == functionName) {
+            matchedNode = candidate.callNode;
+            break;
+        }
+    }
+
+    if (!matchedNode) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not find call to '" << functionName
+                             << "' at location '" << location << "'. Available callees:";
+        for (const auto& candidate : candidates) {
+            SVF::SVFUtil::errs() << " '"
+                                 << (candidate.calleeName.empty() ? std::string("<unknown>") : candidate.calleeName)
+                                 << "'";
+        }
+        SVF::SVFUtil::errs() << "\n";
+        return nullptr;
+    }
+
+    return matchedNode;
+}
+
+} // anonymous namespace
 
 bool parseCommandsLine(const std::string& jsonStr,
                        std::vector<llvm::json::Object>& outCmds,
@@ -59,8 +136,51 @@ void sendJsonError(const std::string& message) {
     llvm::outs().flush();
 }
 
-std::string getSVFGNodeKindString(const SVFGNode* node) {
-    if (!node) return "Null";
+std::string getSVFGNodeKindString(const SVFGNode* node, bool detailed) {
+    // DEBUG
+    // 基本debug功能保留
+    if (!node) {
+        return "Null";
+    }
+
+    auto pickName = [detailed](llvm::StringRef simple, llvm::StringRef detail) -> std::string {
+        return detailed ? detail.str() : simple.str();
+    };
+
+    if (SVFUtil::isa<StoreVFGNode>(node)) {
+        return pickName("Store", "StoreVFGNode");
+    }
+    if (SVFUtil::isa<LoadVFGNode>(node)) {
+        return pickName("Load", "LoadVFGNode");
+    }
+    if (SVFUtil::isa<CopyVFGNode>(node)) {
+        return pickName("Copy", "CopyVFGNode");
+    }
+    if (SVFUtil::isa<GepVFGNode>(node)) {
+        return pickName("Gep", "GepVFGNode");
+    }
+    if (SVFUtil::isa<AddrVFGNode>(node)) {
+        return pickName("Addr", "AddrVFGNode");
+    }
+    if (SVFUtil::isa<PHIVFGNode>(node)) {
+        return pickName("TPhi", "PHIVFGNode");
+    }
+    if (SVFUtil::isa<FormalParmVFGNode>(node)) {
+        return pickName("FParm", "FormalParmVFGNode");
+    }
+    if (SVFUtil::isa<ActualParmVFGNode>(node)) {
+        return pickName("AParm", "ActualParmVFGNode");
+    }
+    if (SVFUtil::isa<FormalRetVFGNode>(node)) {
+        return pickName("FRet", "FormalRetVFGNode");
+    }
+    if (SVFUtil::isa<ActualRetVFGNode>(node)) {
+        return pickName("ARet", "ActualRetVFGNode");
+    }
+    if (SVFUtil::isa<MRSVFGNode>(node)) {
+        return "MRSVFGNode";
+    }
+
     switch (node->getNodeKind()) {
         case SVFValue::Addr: return "Addr";
         case SVFValue::Copy: return "Copy";
@@ -87,7 +207,7 @@ std::string getSVFGNodeKindString(const SVFGNode* node) {
         case SVFValue::MPhi: return "MPhi";
         case SVFValue::MIntraPhi: return "MIntraPhi";
         case SVFValue::MInterPhi: return "MInterPhi";
-        default: return "Unknown";
+        default: return detailed ? "VFGNode" : "Unknown";
     }
 }
 
@@ -335,18 +455,19 @@ const PAGNode* getPAGNodeFromArg(SVFIR* pag, const std::string& funcName, int ar
     if (!pag) {
         return nullptr;
     }
-    
     const FunObjVar* fun = pag->getFunObjVar(funcName);
     if (!fun) {
         return nullptr;
     }
-    
     const SVFIR::SVFVarList& args = pag->getFunArgsList(fun);
     if (argIndex < 0 || static_cast<size_t>(argIndex) >= args.size()) {
         return nullptr;
     }
-    
-    return args[argIndex];
+    const SVFVar* arg = args[argIndex];
+    if (!arg) {
+        return nullptr;
+    }
+    return pag->getGNode(arg->getId());
 }
 
 const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
@@ -405,8 +526,10 @@ const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const std::string& loc
     return lhs;
 }
 
+// 这个函数可以用来构造gep栈
 const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
     if (!icfg || !pag) {
+        // actually impossible
         SVF::SVFUtil::errs() << "Error: Invalid ICFG or PAG pointer\n";
         return nullptr;
     }
@@ -503,71 +626,415 @@ const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& 
     return baseVar;
 }
 
-const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex) {
+// direct pag node to call arg
+const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex, const std::string& functionName) {
     if (!icfg || !pag) {
-        return nullptr;
-    }
-    
-    // Find all ICFG nodes at this location
-    std::vector<const ICFGNode*> allICFGNodes = findAllICFGNodesByLocation(icfg, location);
-    if (allICFGNodes.empty()) {
+        SVF::SVFUtil::errs() << "Error: Invalid ICFG or PAG pointer\n";
         return nullptr;
     }
 
-    // Find the CallICFGNode
-    const CallICFGNode* callNode = nullptr;
-    for (const ICFGNode* node : allICFGNodes) {
-        if (auto cn = SVFUtil::dyn_cast<CallICFGNode>(node)) {
-            callNode = cn;
-            break;
-        }
-    }
-
+    const CallICFGNode* callNode = selectCallICFGNode(icfg, location, functionName);
     if (!callNode) {
+        SVF::SVFUtil::errs() << "Error: No CallICFGNode found at location: " << location << "\n";
         return nullptr;
     }
 
-    // Get the llvm::CallInst to determine argument order
     const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
     const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
-    
     if (!callInst) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Failed to obtain CallBase from CallICFGNode at "
+                             << location << "\n";
         return nullptr;
     }
 
     if (argIndex < 0 || argIndex >= static_cast<int>(callInst->arg_size())) {
+        SVF::SVFUtil::errs() << "Error: Argument index " << argIndex
+                             << " out of range for call at " << location
+                             << " (argument count=" << callInst->arg_size() << ")\n";
         return nullptr;
     }
 
-    // Get the target argument llvm::Value
     const llvm::Value* targetArgVal = callInst->getArgOperand(argIndex);
-    
-    // Find the corresponding PAGNode for this argument
-    NodeID argNodeID = LLVMModuleSet::getLLVMModuleSet()->getValueNode(targetArgVal);
-    if (argNodeID != UINT_MAX && pag->hasGNode(argNodeID)) {
-        return pag->getGNode(argNodeID);
+    if (!targetArgVal) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Call argument operand is null at index "
+                             << argIndex << " for location '" << location << "'\n";
+        return nullptr;
     }
-    
-    return nullptr;
+
+    NodeID argNodeID = LLVMModuleSet::getLLVMModuleSet()->getValueNode(targetArgVal);
+    if (argNodeID == UINT_MAX || !pag->hasGNode(argNodeID)) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not find PAG node for argument index "
+                             << argIndex << " at location '" << location << "'\n";
+        return nullptr;
+    }
+
+    const PAGNode* targetNode = pag->getGNode(argNodeID);
+    return targetNode;
 }
 
-// Helper function to determine SVFG node kind
-static std::string getSVFGNodeKind(const SVFGNode* node) {
-    if (SVFUtil::isa<StoreVFGNode>(node)) return "StoreVFGNode";
-    if (SVFUtil::isa<LoadVFGNode>(node)) return "LoadVFGNode";
-    if (SVFUtil::isa<CopyVFGNode>(node)) return "CopyVFGNode";
-    if (SVFUtil::isa<GepVFGNode>(node)) return "GepVFGNode";
-    if (SVFUtil::isa<AddrVFGNode>(node)) return "AddrVFGNode";
-    if (SVFUtil::isa<PHIVFGNode>(node)) return "PHIVFGNode";
-    if (SVFUtil::isa<FormalParmVFGNode>(node)) return "FormalParmVFGNode";
-    if (SVFUtil::isa<ActualParmVFGNode>(node)) return "ActualParmVFGNode";
-    if (SVFUtil::isa<FormalRetVFGNode>(node)) return "FormalRetVFGNode";
-    if (SVFUtil::isa<ActualRetVFGNode>(node)) return "ActualRetVFGNode";
-    if (SVFUtil::isa<MRSVFGNode>(node)) return "MRSVFGNode";
-    return "VFGNode";
+// store pag node to call arg
+const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& callLocation, const std::string& functionName, int argIndex) {
+    // 这个与前面那个的区别是 他会先找callicfg节点 然后找对应的paramsvfg节点 最后沿着值流图找到定义位置的pag
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] tracePAGNodeFromCallArg start. Location='"
+                         << callLocation << "', function filter='"
+                         << (functionName.empty() ? std::string("<none>") : functionName)
+                         << "', arg_index=" << argIndex << "\n";
+
+    const CallICFGNode* callNode = selectCallICFGNode(icfg, callLocation, functionName);
+    if (!callNode) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Unable to resolve call node for tracePAGNodeFromCallArg.\n";
+        return nullptr;
+    }
+
+    // Step 2: Find ActualParmVFGNode for the specified argument
+    std::vector<const ActualParmVFGNode*> actualParmNodes;
+    for (auto& pair : *svfg) {
+        SVFGNode* svfgNode = pair.second;
+        if (svfgNode->getICFGNode() == callNode) {
+            if (auto apNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
+                actualParmNodes.push_back(apNode);
+            }
+        }
+    }
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Found " << actualParmNodes.size()
+                         << " ActualParmVFGNode candidate(s) at this call site.\n";
+
+    if (actualParmNodes.empty()) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] No ActualParmVFGNode found for this call.\n";
+        return nullptr;
+    }
+
+    const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
+    const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
+
+    if (!callInst) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not obtain CallBase from CallICFGNode.\n";
+        return nullptr;
+    }
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Call has " << callInst->arg_size() << " argument(s).\n";
+
+    if (argIndex < 0 || argIndex >= static_cast<int>(callInst->arg_size())) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument index " << argIndex
+                             << " is invalid for call at '" << callLocation << "'.\n";
+        return nullptr;
+    }
+
+    const llvm::Value* targetArgVal = callInst->getArgOperand(argIndex);
+    if (!targetArgVal) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Target argument value is null at index "
+                             << argIndex << ".\n";
+        return nullptr;
+    }
+
+    // Find the ActualParmVFGNode that corresponds to this argument
+    const ActualParmVFGNode* targetParam = nullptr;
+    for (const ActualParmVFGNode* apNode : actualParmNodes) {
+        const llvm::Value* paramLLVMVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(apNode->getParam());
+        if (paramLLVMVal == targetArgVal) {
+            targetParam = apNode;
+            break;
+        }
+    }
+
+    if (!targetParam) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not map LLVM argument to ActualParmVFGNode.\n";
+        return nullptr;
+    }
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Matched ActualParmVFGNode ID=" << targetParam->getId()
+                         << " for argument index " << argIndex << "\n";
+
+    // Step 3: Get the PAGNode from the ActualParmVFGNode
+    const SVFVar* paramPAG = targetParam->getParam();
+    if (!paramPAG) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Actual parameter node has null PAG reference.\n";
+        return nullptr;
+    }
+
+    const llvm::Value* paramLLVMVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(paramPAG);
+    if (!paramLLVMVal) {
+        SVF::SVFUtil::outs() << "[GraphReaderUtil] Actual parameter is not backed by an LLVM value; returning param PAG node.\n";
+        return paramPAG;
+    }
+
+    const llvm::LoadInst* loadInst = SVFUtil::dyn_cast<llvm::LoadInst>(paramLLVMVal);
+    if (!loadInst) {
+        SVF::SVFUtil::outs() << "[GraphReaderUtil] Argument is not a load instruction; returning parameter PAG node.\n";
+        return paramPAG;
+    }
+
+    const llvm::Value* ptrOperand = loadInst->getPointerOperand();
+    NodeID ptrNodeID = LLVMModuleSet::getLLVMModuleSet()->getValueNode(ptrOperand);
+
+    if (ptrNodeID == UINT_MAX || !pag->hasGNode(ptrNodeID)) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not find PAG node for pointer operand of load instruction.\n";
+        return nullptr;
+    }
+
+    const SVFVar* addressPAG = pag->getGNode(ptrNodeID);
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Tracing memory definition for address PAGNode ID="
+                         << addressPAG->getId() << "\n";
+
+    const SVFGNode* storeNode = nullptr;
+
+    if (svfg && addressPAG) {
+        // Strategy 1: Use SVFG backward traversal from load to find store via def-use edges
+        const LoadVFGNode* loadNode = nullptr;
+
+        for (auto it = svfg->begin(); it != svfg->end(); ++it) {
+            const SVFGNode* node = it->second;
+            if (const auto* load = SVFUtil::dyn_cast<LoadVFGNode>(node)) {
+                const SVFStmt* pagEdge = load->getPAGEdge();
+                const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(pagEdge);
+                if (loadStmt && loadStmt->getRHSVar()->getId() == addressPAG->getId()) {
+                    loadNode = load;
+                    break;
+                }
+            }
+        }
+
+        if (loadNode) {
+            for (auto it = loadNode->InEdgeBegin(); it != loadNode->InEdgeEnd(); ++it) {
+                const SVFGEdge* edge = *it;
+                const SVFGNode* srcNode = edge->getSrcNode();
+
+                if (const auto* candidateStore = SVFUtil::dyn_cast<StoreVFGNode>(srcNode)) {
+                    storeNode = candidateStore;
+                    break;
+                }
+
+                if (const auto* mssaNode = SVFUtil::dyn_cast<MRSVFGNode>(srcNode)) {
+                    for (auto it2 = mssaNode->InEdgeBegin(); it2 != mssaNode->InEdgeEnd(); ++it2) {
+                        const SVFGEdge* edge2 = *it2;
+                        const SVFGNode* srcNode2 = edge2->getSrcNode();
+                        if (const auto* candidateStore = SVFUtil::dyn_cast<StoreVFGNode>(srcNode2)) {
+                            storeNode = candidateStore;
+                            break;
+                        }
+                    }
+                }
+
+                if (storeNode) {
+                    break;
+                }
+            }
+        }
+
+        if (!storeNode) {
+            const auto* addressGep = SVFUtil::dyn_cast<GepValVar>(addressPAG);
+            if (addressGep) {
+                for (auto it = svfg->begin(); it != svfg->end(); ++it) {
+                    const SVFGNode* node = it->second;
+                    if (const auto* candidateStore = SVFUtil::dyn_cast<StoreVFGNode>(node)) {
+                        const SVFStmt* pagEdge = candidateStore->getPAGEdge();
+                        const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(pagEdge);
+                        if (!storeStmt) {
+                            continue;
+                        }
+
+                        const SVFVar* storeLHS = storeStmt->getLHSVar();
+                        if (const auto* storeLHSGep = SVFUtil::dyn_cast<GepValVar>(storeLHS)) {
+                            if (storeLHSGep->getConstantFieldIdx() == addressGep->getConstantFieldIdx()) {
+                                storeNode = candidateStore;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (!storeNode) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Warning: Could not locate store definition for address PAG node." << "\n";
+        return nullptr;
+    }
+
+    const PAGNode* storedValuePAG = nullptr;
+
+    if (const auto* storeVFGNode = SVFUtil::dyn_cast<StoreVFGNode>(storeNode)) {
+        const SVFStmt* pagEdge = storeVFGNode->getPAGEdge();
+        const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(pagEdge);
+        if (storeStmt) {
+            storedValuePAG = storeStmt->getRHSVar();
+        }
+    }
+
+    if (storedValuePAG) {
+        SVF::SVFUtil::outs() << "[GraphReaderUtil] Located stored value PAGNode ID="
+                             << storedValuePAG->getId() << " as definition source.\n";
+    } else {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Warning: Store definition found but RHS PAG node is null.\n";
+    }
+
+    return storedValuePAG;
 }
 
-// Simplified function: recursively traces to ultimate source
+const SVFGNode* getSVFGNodeFromActualINArg(SVFG* svfg,
+                                           ICFG* icfg,
+                                           SVFIR* pag,
+                                           const std::string& location,
+                                           int argIndex,
+                                           const std::string& functionName) {
+    // DEBUG
+    // 这里的操作不现实 actualin节点太多了 别名也很难获取 很难真正实现
+    if (!svfg || !icfg || !pag) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Invalid SVFG/ICFG/PAG pointer\n";
+        return nullptr;
+    }
+    if (argIndex < 0) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Negative argument index\n";
+        return nullptr;
+    }
+
+    const CallICFGNode* callNode = selectCallICFGNode(icfg, location, functionName);
+    if (!callNode) {
+        return nullptr;
+    }
+
+    // 打印所有callnode的所有svfg节点
+    // Find and display all associated SVFG nodes
+    std::vector<const SVFGNode*> associatedSVFGNodes;
+    std::vector<const ActualINSVFGNode*> actualINSVFGNodes;
+    for (auto& pair : *svfg) {
+        SVFGNode* svfgNode = pair.second;
+        if (svfgNode->getICFGNode() == callNode) {
+            associatedSVFGNodes.push_back(svfgNode);
+        }
+    }
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] All SVFG nodes for call node " << callNode->getId() << ":\n";
+    for (const SVFGNode* node : associatedSVFGNodes) {
+        SVF::SVFUtil::outs() << "[GraphReaderUtil] SVFG node ID: " << node->getId() << "\n";
+        // tostring
+        SVF::SVFUtil::outs() << "[GraphReaderUtil] SVFG node toString: " << node->toString() << "\n";
+        if (SVFUtil::isa<ActualINSVFGNode>(node)) {
+            SVF::SVFUtil::outs() << "[GraphReaderUtil] ActualINSVFGNode ID: " << node->getId() << "\n";
+            actualINSVFGNodes.push_back(SVFUtil::dyn_cast<ActualINSVFGNode>(node));
+        }
+    }
+    // size
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] ActualINSVFGNodes size: " << actualINSVFGNodes.size() << "\n";
+
+    if (!pag->hasCallSiteArgsMap(callNode)) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Call site '" << location
+                             << "' has no recorded actual parameters\n";
+        return nullptr;
+    }
+    const SVFIR::SVFVarList& args = pag->getCallSiteArgsList(callNode);
+    if (argIndex >= static_cast<int>(args.size())) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument index " << argIndex
+                             << " out of range (call has " << args.size() << " args)\n";
+        return nullptr;
+    }
+
+    const SVFVar* argVar = args[argIndex];
+    if (!argVar) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Null PAG node for argument " << argIndex
+                             << "\n";
+        return nullptr;
+    }
+    if (!argVar->isPointer()) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument " << argIndex
+                             << " is not a pointer; cannot map to ActualINSVFGNode\n";
+        return nullptr;
+    }
+
+    PointerAnalysis* pta = svfg->getPTA();
+    if (!pta) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] SVFG has no pointer-analysis instance\n";
+        return nullptr;
+    }
+    NodeBS argPts = pta->getPts(argVar->getId()).toNodeBS();
+    if (argPts.empty()) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument " << argIndex
+                             << " has empty points-to set; match may fail\n";
+    }
+
+    if (!svfg->hasActualINSVFGNodes(callNode)) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Call site '" << location
+                             << "' has no ActualINSVFG nodes\n";
+        return nullptr;
+    }
+
+    SVFG::ActualINSVFGNodeSet& actualIns = svfg->getActualINSVFGNodes(callNode);
+    const ActualINSVFGNode* bestExact = nullptr;
+    const ActualINSVFGNode* bestOverlap = nullptr;
+    size_t bestExactSize = std::numeric_limits<size_t>::max();
+    size_t bestOverlapSize = 0;
+
+    for (auto it = actualIns.begin(), eit = actualIns.end(); it != eit; ++it) {
+        const auto* actualIn = SVFUtil::dyn_cast<ActualINSVFGNode>(svfg->getSVFGNode(*it));
+        if (!actualIn) {
+            continue;
+        }
+
+        NodeBS regionPts = actualIn->getPointsTo();
+        NodeBS intersection = regionPts;
+        intersection &= argPts;
+
+        size_t regionSize = regionPts.count();
+        size_t overlapSize = intersection.count();
+        if (overlapSize == 0) {
+            continue;
+        }
+
+        if (overlapSize == regionSize && regionSize < bestExactSize) {
+            bestExact = actualIn;
+            bestExactSize = regionSize;
+        }
+        if (overlapSize > bestOverlapSize) {
+            bestOverlap = actualIn;
+            bestOverlapSize = overlapSize;
+        }
+    }
+
+    const ActualINSVFGNode* chosen = bestExact ? bestExact : bestOverlap;
+    if (!chosen) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Unable to match ActualINSVFGNode for call '"
+                             << location << "', arg_index=" << argIndex << "\n";
+        return nullptr;
+    }
+
+    SVF::SVFUtil::outs() << "[GraphReaderUtil] Matched ActualINSVFGNode ID="
+                         << chosen->getId() << " for call '" << location
+                         << "', arg_index=" << argIndex << "\n";
+    return chosen;
+}
+
+bool fetchFunctionStartLocation(SVFIR* pag, const std::string& funcName, std::string& startLocation) {
+    const FunObjVar* funObj = pag->getFunObjVar(funcName);
+    if (!funObj) {
+        sendJsonError("Cannot find function '" + funcName + "'");
+        return false;
+    }
+
+    const llvm::Value* funVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(funObj);
+    const llvm::Function* llvmFun = SVF::SVFUtil::dyn_cast<llvm::Function>(funVal);
+    if (!llvmFun) {
+        sendJsonError("Cannot get LLVM function for '" + funcName + "'");
+        return false;
+    }
+
+    llvm::json::Object funcInfo = getFunctionInfoJson(llvmFun);
+    auto filenameOpt = funcInfo["filename"].getAsString();
+    std::string filename = filenameOpt ? filenameOpt->str() : "";
+    if (filename.empty()) {
+        sendJsonError("Cannot get source location for function '" + funcName + "'");
+        return false;
+    }
+
+    int64_t startLine = funcInfo["start_line"].getAsInteger().value_or(0);
+    startLocation = filename + ":" + std::to_string(startLine);
+    return true;
+}
+
+// recursively traces to ultimate source
+// 这个函数最初是用来寻找一个左值转移 看这个左值最终被转移给了谁
+// 要么是一个局部变量 store给了这个变量
+// 要么是一个实参 被load到了实参当中 
+// 很可能这个函数也有一些问题...
 void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
     if (!svfg || !pag || !pagNode) {
         sendJsonError("Invalid input parameters for tracePAGStore");
@@ -593,7 +1060,7 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
     
     while (traceDepth < MAX_TRACE_DEPTH && svfg->hasDefSVFGNode(currentPAG)) {
         const SVFGNode* defSVFGNode = svfg->getDefSVFGNode(currentPAG);
-        std::string nodeKind = getSVFGNodeKind(defSVFGNode);
+        std::string nodeKind = getSVFGNodeKindString(defSVFGNode, /*detailed=*/true);
         
         std::string defLocation = "";
         if (const ICFGNode* icfgNode = defSVFGNode->getICFGNode()) {
@@ -626,7 +1093,7 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
                     
                     // 如果地址是 AddrVFGNode (alloca)，需要区分两种情况
                     if (SVFUtil::isa<AddrVFGNode>(addrDefNode)) {
-                        std::string addrNodeKind = getSVFGNodeKind(addrDefNode);
+                        std::string addrNodeKind = getSVFGNodeKindString(addrDefNode, /*detailed=*/true);
                         std::string addrDefLocation = "";
                         if (const ICFGNode* icfgNode = addrDefNode->getICFGNode()) {
                             addrDefLocation = icfgNode->getSourceLoc();
@@ -695,7 +1162,7 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
                     // 这个地址可能是 GEP、Addr 等操作的结果
                     if (svfg->hasDefSVFGNode(loadFromPAG)) {
                         const SVFGNode* addrDefNode = svfg->getDefSVFGNode(loadFromPAG);
-                        std::string addrNodeKind = getSVFGNodeKind(addrDefNode);
+                        std::string addrNodeKind = getSVFGNodeKindString(addrDefNode, /*detailed=*/true);
                         
                         // 如果地址是 AddrVFGNode (alloca)，这就是变量定义的位置
                         if (SVFUtil::isa<AddrVFGNode>(addrDefNode)) {
@@ -756,117 +1223,9 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
 }
 
-const SVFGNode* findMemoryDefNode(SVFG* svfg, const SVFVar* addressPAG) {
-    if (!svfg || !addressPAG) {
-        return nullptr;
-    }
-
-    // Strategy 1: Use SVFG backward traversal from load to find store via def-use edges
-    // First, find the LoadVFGNode that uses this address
-    const LoadVFGNode* loadNode = nullptr;
-    
-    for (auto it = svfg->begin(); it != svfg->end(); ++it) {
-        const SVFGNode* node = it->second;
-        if (const auto* load = SVFUtil::dyn_cast<LoadVFGNode>(node)) {
-            const SVFStmt* pagEdge = load->getPAGEdge();
-            const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(pagEdge);
-            if (loadStmt && loadStmt->getRHSVar()->getId() == addressPAG->getId()) {
-                loadNode = load;
-                break;
-            }
-        }
-    }
-    
-    if (loadNode) {
-        // Traverse backward through SVFG edges to find the store definition
-        for (auto it = loadNode->InEdgeBegin(); it != loadNode->InEdgeEnd(); ++it) {
-            const SVFGEdge* edge = *it;
-            const SVFGNode* srcNode = edge->getSrcNode();
-            
-            // Check if source is a StoreVFGNode
-            if (const auto* storeNode = SVFUtil::dyn_cast<StoreVFGNode>(srcNode)) {
-                return storeNode;
-            }
-            
-            // Check if source is an MSSA node (indirect def)
-            if (const auto* mssaNode = SVFUtil::dyn_cast<MRSVFGNode>(srcNode)) {
-                // Continue searching through MSSA node's predecessors
-                for (auto it2 = mssaNode->InEdgeBegin(); it2 != mssaNode->InEdgeEnd(); ++it2) {
-                    const SVFGEdge* edge2 = *it2;
-                    const SVFGNode* srcNode2 = edge2->getSrcNode();
-                    if (const auto* storeNode = SVFUtil::dyn_cast<StoreVFGNode>(srcNode2)) {
-                        return storeNode;
-                    }
-                }
-            }
-        }
-    }
-    
-    // Strategy 2: If SVFG edge traversal fails, try matching by GEP structure
-    
-    std::vector<const SVFGNode*> candidateStores;
-    
-    // Extract GEP information from the address
-    const GepValVar* addressGep = SVFUtil::dyn_cast<GepValVar>(addressPAG);
-    if (!addressGep) {
-        return nullptr;
-    }
-    
-    // Search for stores with matching GEP structure
-    for (auto it = svfg->begin(); it != svfg->end(); ++it) {
-        const SVFGNode* node = it->second;
-        
-        if (const auto* storeNode = SVFUtil::dyn_cast<StoreVFGNode>(node)) {
-            const SVFStmt* pagEdge = storeNode->getPAGEdge();
-            const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(pagEdge);
-            if (storeStmt) {
-                const SVFVar* storeLHS = storeStmt->getLHSVar();
-                
-                // Check if store target is also a GEP with same structure
-                if (const auto* storeLHSGep = SVFUtil::dyn_cast<GepValVar>(storeLHS)) {
-                    // Compare field index (offset)
-                    if (storeLHSGep->getConstantFieldIdx() == addressGep->getConstantFieldIdx()) {
-                        candidateStores.push_back(storeNode);
-                    }
-                }
-            }
-        }
-    }
-    
-    if (candidateStores.empty()) {
-        return nullptr;
-    }
-    
-    // Return the first candidate
-    return candidateStores[0];
-}
-
-void traceCallArgumentToPAGNode(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex) {
-    SVF::SVFUtil::outs() << "\n========================================\n";
-    SVF::SVFUtil::outs() << "Tracing Call Argument to PAGNode\n";
-    SVF::SVFUtil::outs() << "Location: " << location << "\n";
-    SVF::SVFUtil::outs() << "Argument Index: " << argIndex << "\n";
-    SVF::SVFUtil::outs() << "========================================\n\n";
-
-    // Part 1: Get PAGNode from call argument
-    const PAGNode* pagNode = getPAGNodeFromCallArg(icfg, pag, location, argIndex);
-    
-    if (!pagNode) {
-        SVF::SVFUtil::errs() << "Error: Could not get PAGNode for argument " << argIndex 
-                             << " at location: " << location << "\n";
-        sendJsonError("Could not get PAGNode for argument");
-        return;
-    }
-
-    // Part 2: Trace PAG store for this PAGNode
-    tracePAGStore(svfg, pag, pagNode);
-    
-    SVF::SVFUtil::outs() << "\n========================================\n";
-    SVF::SVFUtil::outs() << "End of Trace\n";
-    SVF::SVFUtil::outs() << "========================================\n\n";
-}
-
 void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) {
+    // DEBUG
+    // 重要功能 可以一直保留
     SVF::SVFUtil::outs() << "\n========================================\n";
     SVF::SVFUtil::outs() << "Debug Info for Location: " << location << "\n";
     SVF::SVFUtil::outs() << "========================================\n\n";
@@ -1074,122 +1433,6 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
     result["location"] = location;
     result["icfg_nodes_count"] = static_cast<int64_t>(allICFGNodes.size());
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
-}
-
-const PAGNode* traceCallArgumentValueFlow(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& callLocation, int argIndex) {
-    // Step 1: Find the CallICFGNode at the call location
-    std::vector<const ICFGNode*> allICFGNodes = findAllICFGNodesByLocation(icfg, callLocation);
-    if (allICFGNodes.empty()) {
-        SVF::SVFUtil::errs() << "Error: No ICFG nodes found at location: " << callLocation << "\n";
-        return nullptr;
-    }
-
-    const CallICFGNode* callNode = nullptr;
-    for (const ICFGNode* node : allICFGNodes) {
-        if (auto cn = SVFUtil::dyn_cast<CallICFGNode>(node)) {
-            callNode = cn;
-            break;
-        }
-    }
-
-    if (!callNode) {
-        SVF::SVFUtil::errs() << "Error: No CallICFGNode found at location: " << callLocation << "\n";
-        return nullptr;
-    }
-
-    // Step 2: Find ActualParmVFGNode for the specified argument
-    std::vector<const ActualParmVFGNode*> actualParmNodes;
-    for (auto& pair : *svfg) {
-        SVFGNode* svfgNode = pair.second;
-        if (svfgNode->getICFGNode() == callNode) {
-            if (auto apNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
-                actualParmNodes.push_back(apNode);
-            }
-        }
-    }
-
-    if (actualParmNodes.empty()) {
-        SVF::SVFUtil::errs() << "Error: No ActualParmVFGNode found for this call\n";
-        return nullptr;
-    }
-
-    // Get the llvm::CallInst to determine argument order
-    const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
-    const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
-    
-    if (!callInst) {
-        SVF::SVFUtil::errs() << "Error: Could not get CallBase from CallICFGNode\n";
-        return nullptr;
-    }
-
-    if (argIndex < 0 || argIndex >= static_cast<int>(callInst->arg_size())) {
-        SVF::SVFUtil::errs() << "Error: Invalid argument index " << argIndex << "\n";
-        return nullptr;
-    }
-
-    // Get the target argument llvm::Value
-    const llvm::Value* targetArgVal = callInst->getArgOperand(argIndex);
-    
-    // Find the ActualParmVFGNode that corresponds to this argument
-    const ActualParmVFGNode* targetParam = nullptr;
-    for (const ActualParmVFGNode* apNode : actualParmNodes) {
-        const llvm::Value* paramLLVMVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(apNode->getParam());
-        if (paramLLVMVal == targetArgVal) {
-            targetParam = apNode;
-            break;
-        }
-    }
-    
-    if (!targetParam) {
-        SVF::SVFUtil::errs() << "Error: Could not find ActualParmVFGNode for argument " << argIndex << "\n";
-        return nullptr;
-    }
-    
-    // Step 3: Get the PAGNode from the ActualParmVFGNode
-    const SVFVar* paramPAG = targetParam->getParam();
-
-    // Step 4: Check if this is a load instruction
-    const llvm::Value* paramLLVMVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(paramPAG);
-    if (!paramLLVMVal) {
-        return paramPAG;
-    }
-
-    const llvm::LoadInst* loadInst = SVFUtil::dyn_cast<llvm::LoadInst>(paramLLVMVal);
-    if (!loadInst) {
-        return paramPAG;
-    }
-    
-    // Step 5: Get the address being loaded from (typically a GEP result)
-    const llvm::Value* ptrOperand = loadInst->getPointerOperand();
-    NodeID ptrNodeID = LLVMModuleSet::getLLVMModuleSet()->getValueNode(ptrOperand);
-    
-    if (ptrNodeID == UINT_MAX || !pag->hasGNode(ptrNodeID)) {
-        SVF::SVFUtil::errs() << "Error: Could not find PAGNode for load pointer operand\n";
-        return nullptr;
-    }
-
-    const SVFVar* addressPAG = pag->getGNode(ptrNodeID);
-
-    // Step 6: Find the store definition for this address
-    const SVFGNode* storeNode = findMemoryDefNode(svfg, addressPAG);
-    
-    if (!storeNode) {
-        SVF::SVFUtil::errs() << "Warning: Could not find store definition for this address\n";
-        return nullptr;
-    }
-
-    // Step 7: Extract the stored value from the store node
-    const PAGNode* storedValuePAG = nullptr;
-    
-    if (const auto* storeVFGNode = SVFUtil::dyn_cast<StoreVFGNode>(storeNode)) {
-        const SVFStmt* pagEdge = storeVFGNode->getPAGEdge();
-        const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(pagEdge);
-        if (storeStmt) {
-            storedValuePAG = storeStmt->getRHSVar();
-        }
-    }
-
-    return storedValuePAG;
 }
 
 } // namespace GraphReaderUtil
