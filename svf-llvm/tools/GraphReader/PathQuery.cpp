@@ -1065,19 +1065,18 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
 
     // Find all ICFG paths to each return location
     std::map<const ICFGNode*, std::vector<std::vector<const ICFGNode*>>> pathsByReturn;
+    std::map<const ICFGNode*, std::map<std::vector<NodeID>, std::vector<int>>> pathGroupsByReturn;
 
     for (const ICFGNode* retLocation : returnLocations) {
         std::vector<std::vector<const ICFGNode*>> pathsToThisReturn;
         findICFGPaths(startNode, retLocation, function, pathsToThisReturn);
-        
-        if (!pathsToThisReturn.empty()) {
-            pathsByReturn[retLocation] = pathsToThisReturn;
-        }
+
+        pathsByReturn[retLocation] = pathsToThisReturn;
+        pathGroupsByReturn[retLocation];
     }
 
     // Step E & F: For each path, collect keySVFGNode sequence and group by sequence
     // Structure: return location -> (keySVFGNode sequence -> list of path indices)
-    std::map<const ICFGNode*, std::map<std::vector<NodeID>, std::vector<int>>> pathGroupsByReturn;
     
     // Also store the actual ICFG paths for later reference
     std::map<const ICFGNode*, std::vector<std::vector<const ICFGNode*>>> allICFGPathsByReturn = pathsByReturn;

@@ -116,6 +116,9 @@ show function return info (debug)
 value path Debug
 { "command" : "show-value-path-inside", "start" : "tif_dirwrite.c:1083", "index" : "1" }
 { "command" : "find-arg-value-path-inside", "function_name" : "TIFFWriteDirectorySec", "index" : "1"}
+{ "command" : "find-arg-value-path-inside", "function_name" : "_TIFFfree", "arg_index" : "0"}
+
+
 { "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:1099", "index" : "-1"}
 { "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:1099", "index" : "0"}
 
