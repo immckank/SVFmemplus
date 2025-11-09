@@ -9,6 +9,7 @@
 #include "SVF-LLVM/LLVMModule.h"
 #include "SVFIR/SVFStatements.h"
 #include "SVFIR/SVFVariables.h"
+#include <llvm/ADT/DenseMap.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
@@ -599,61 +600,48 @@ std::vector<const ICFGNode*> findActualReturnICFGNodes(ICFG* icfg, const FunObjV
 // Helper function to find all ICFG paths from start to target (intra-procedural)
 void PathQuery::findICFGPaths(const ICFGNode* startICFG, const ICFGNode* targetICFG, const FunObjVar* function, std::vector<std::vector<const ICFGNode*>>& allICFGPaths) {
     // TOOL FUNCTION
-    // 还算有用 展示保留
-    // Use BFS to find paths (prioritizes shorter paths over DFS)
-    std::deque<std::tuple<const ICFGNode*, std::vector<const ICFGNode*>, Set<const ICFGNode*>>> worklist;
-    std::vector<const ICFGNode*> initialPath;
-    initialPath.push_back(startICFG);
-    worklist.emplace_back(startICFG, initialPath, Set<const ICFGNode*>{startICFG});
+    // Use BFS to find paths (prioritizes shorter paths over DFS) while allowing limited node revisits
+    struct PathState {
+        const ICFGNode* node;
+        std::vector<const ICFGNode*> path;
+        llvm::DenseMap<const ICFGNode*, unsigned> visitCounts;
+    };
+
+    std::deque<PathState> worklist;
+    PathState initial;
+    initial.node = startICFG;
+    initial.path.push_back(startICFG);
+    initial.visitCounts[startICFG] = 1;
+    worklist.push_back(std::move(initial));
     
-    // Add limits to prevent infinite loops and focus on simple paths
-    const size_t MAX_PATHS = 50;  // Maximum number of paths to find (focus on simple paths)
-    const size_t MAX_PATH_LENGTH = 100;  // Maximum length of a single path (shorter = simpler)
-    const size_t MAX_ITERATIONS = 50000;  // Maximum iterations
+    // Add limits to prevent explosion but bias toward quickly finding reachable paths
+    const size_t MAX_PATHS = 10;              // Focus on a handful of representative paths
+    const size_t MAX_PATH_LENGTH = 120;       // Slightly relaxed to allow loop exits
+    const size_t MAX_ITERATIONS = 20000;      // Cap exploration time
+    const unsigned MAX_NODE_VISITS = 2;       // Allow loops to be re-entered once
     
     size_t iterations = 0;
-    size_t lastReportIteration = 0;
     
     while (!worklist.empty()) {
         iterations++;
         
-        // Progress reporting every 5000 iterations (more frequent for faster feedback)
-        if (iterations - lastReportIteration >= 5000) {
-            // SVFUtil::outs() << "  [findICFGPaths] Progress: " << iterations 
-            //                 << " iterations, worklist size: " << worklist.size()
-            //                 << ", paths found: " << allICFGPaths.size() << "\n";
-            lastReportIteration = iterations;
-        }
-        
-        // Check iteration limit
-        if (iterations > MAX_ITERATIONS) {
-            // SVFUtil::outs() << "  [findICFGPaths] Stopped: Reached max iterations (" 
-            //                 << MAX_ITERATIONS << "), found " << allICFGPaths.size() << " paths.\n";
+        if (iterations > MAX_ITERATIONS || allICFGPaths.size() >= MAX_PATHS) {
             break;
         }
         
-        // Check path count limit - stop early to focus on simpler paths
-        if (allICFGPaths.size() >= MAX_PATHS) {
-            // SVFUtil::outs() << "  [findICFGPaths] Stopped: Found " << MAX_PATHS 
-            //                 << " paths (limit reached).\n";
-            break;
-        }
-        
-        // BFS: take from front instead of back (this prioritizes shorter paths)
-        auto [currentNode, currentPath, pathVisited] = worklist.front();
+        PathState current = std::move(worklist.front());
         worklist.pop_front();
         
-        // Check path length limit
-        if (currentPath.size() > MAX_PATH_LENGTH) {
-            continue;  // Skip this path
-        }
-        
-        if (currentNode == targetICFG) {
-            allICFGPaths.push_back(currentPath);
+        if (current.path.size() > MAX_PATH_LENGTH) {
             continue;
         }
         
-        for (ICFGEdge* edge : currentNode->getOutEdges()) {
+        if (current.node == targetICFG) {
+            allICFGPaths.push_back(current.path);
+            continue;
+        }
+        
+        for (ICFGEdge* edge : current.node->getOutEdges()) {
             ICFGNode* succNode = edge->getDstNode();
             
             // Handle function calls: skip into callee, jump to return site
@@ -666,28 +654,30 @@ void PathQuery::findICFGPaths(const ICFGNode* startICFG, const ICFGNode* targetI
                 continue;
             }
             
+            if (!succNode) {
+                continue;
+            }
+            
             // Only traverse within the same function
             if (succNode->getFun() != function) {
                 continue;
             }
             
-            if (pathVisited.count(succNode)) {
+            unsigned visits = current.visitCounts.lookup(succNode);
+            if (visits >= MAX_NODE_VISITS) {
                 continue;
             }
             
-            auto newPath = currentPath;
-            newPath.push_back(succNode);
-            auto newVisited = pathVisited;
-            newVisited.insert(succNode);
+            PathState nextState;
+            nextState.node = succNode;
+            nextState.path = current.path;
+            nextState.path.push_back(succNode);
+            nextState.visitCounts = current.visitCounts;
+            nextState.visitCounts[succNode] = visits + 1;
             
-            worklist.emplace_back(succNode, std::move(newPath), std::move(newVisited));
+            worklist.push_back(std::move(nextState));
         }
     }
-    
-    // if (iterations > lastReportIteration) {
-    //     SVFUtil::outs() << "  [findICFGPaths] Completed: " << iterations 
-    //                     << " total iterations, found " << allICFGPaths.size() << " paths\n";
-    // }
 }
 
 void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
