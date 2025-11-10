@@ -95,6 +95,10 @@ ValVar ID: 87461
 ValVar ID: 105238
    %9 = getelementptr inbounds %struct._TIFFRGBAImage, ptr %8, i32 0, i32 11, !dbg !12152 { "ln": 2473, "cl": 22, "fl": "tif_getimage.c" }
 
+{"command": "analysis-lvar", "location": "tif_read.c:1421", "eq_position": "20"}
+{"command": "analysis-lvar", "location": "tif_getimage.c:370", "eq_position": "18"}
+{"command": "analysis-lvar", "location": "tif_dirwrite.c:1707", "eq_position": "6"}
+
 
 {"command": "find-base-lvar-def", "location": "tif_getimage.c:2855", "eq_position": "20"}
 {"command": "find-base-lvar-def", "location": "tif_getimage.c:2861", "eq_position": "3"}

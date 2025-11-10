@@ -193,6 +193,23 @@ int main(int argc, char ** argv) {
                     std::vector<const SVFGNode*> startSVFGNodes{startSVFGNode};
                     pq.getValueSensitiveReturnInsidePath(loc->str(), startSVFGNodes);
                 }
+            } else if (cname == "analysis-lvar") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                    continue;
+                }
+                int eqPosition = -1;
+                try {
+                    eqPosition = std::stoi(eqPositionStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
+                    continue;
+                }
+                llvm::json::Object analysisResult = SVF::GraphReaderUtil::analyzeStoreLValue(svfg, icfg, pag, loc->str(), eqPosition);
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(analysisResult))) << "\n";
+                llvm::outs().flush();
             } else if (cname == "find-call-arg-value-path-inside") {
                 auto loc = cmd.getString("location");
                 auto calleeFuncName = cmd.getString("callee_function_name");

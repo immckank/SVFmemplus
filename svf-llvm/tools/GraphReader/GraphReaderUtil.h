@@ -164,6 +164,21 @@ namespace GraphReaderUtil {
      */
     const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& callLocation, const std::string& functionName, int argIndex);
 
+    /*!
+     * \brief Analyze the left-hand side of a Store statement at a given source location/column.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param location A string in "filename:line" format.
+     * \param eqPosition The column number of the store statement.
+     * \return A JSON object describing the LHS, including struct/member info, offsets, etc.
+     */
+    llvm::json::Object analyzeStoreLValue(SVFG* svfg,
+                                          ICFG* icfg,
+                                          SVFIR* pag,
+                                          const std::string& location,
+                                          int eqPosition);
+
 } // namespace GraphReaderUtil
 } // namespace SVF
 

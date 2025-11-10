@@ -10,8 +10,12 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 #include "MemoryModel/PointerAnalysis.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/Operator.h"
 #include <limits>
 #include <map>
+#include <queue>
+#include <unordered_set>
 
 namespace SVF {
 namespace GraphReaderUtil {
@@ -86,6 +90,95 @@ static const CallICFGNode* selectCallICFGNode(ICFG* icfg, const std::string& loc
     }
 
     return matchedNode;
+}
+
+static std::string toString(const llvm::Type* type) {
+    if (!type) {
+        return "";
+    }
+    std::string result;
+    llvm::raw_string_ostream rso(result);
+    type->print(rso);
+    return rso.str();
+}
+
+static std::string toString(const llvm::Value* value) {
+    if (!value) {
+        return "";
+    }
+    std::string result;
+    llvm::raw_string_ostream rso(result);
+    value->print(rso, false);
+    return rso.str();
+}
+
+static const llvm::Module* getAnyModule() {
+    LLVMModuleSet* llvms = LLVMModuleSet::getLLVMModuleSet();
+    if (!llvms) {
+        return nullptr;
+    }
+    const auto& modules = llvms->getLLVMModules();
+    if (modules.empty()) {
+        return nullptr;
+    }
+    return &modules.front().get();
+}
+
+static bool isFunctionArgument(const llvm::Value* value) {
+    if (!value) {
+        return false;
+    }
+    value = value->stripPointerCasts();
+    return llvm::isa<llvm::Argument>(value);
+}
+
+static bool reachesFormalParameter(SVFG* svfg, const SVFVar* startVar, unsigned maxDepth = 256) {
+    if (!svfg || !startVar) {
+        return false;
+    }
+
+    if (!svfg->hasDefSVFGNode(startVar)) {
+        return false;
+    }
+
+    std::queue<std::pair<const SVFGNode*, unsigned>> worklist;
+    std::unordered_set<const SVFGNode*> visited;
+
+    worklist.emplace(svfg->getDefSVFGNode(startVar), 0);
+
+    while (!worklist.empty()) {
+        auto [node, depth] = worklist.front();
+        worklist.pop();
+
+        if (!node) {
+            continue;
+        }
+
+        if (!visited.insert(node).second) {
+            continue;
+        }
+
+        if (SVFUtil::isa<FormalParmVFGNode>(node)) {
+            return true;
+        }
+
+        if (depth >= maxDepth) {
+            continue;
+        }
+
+        for (auto it = node->InEdgeBegin(); it != node->InEdgeEnd(); ++it) {
+            const SVFGEdge* edge = *it;
+            if (!edge) {
+                continue;
+            }
+            const SVFGNode* srcNode = edge->getSrcNode();
+            if (srcNode) {
+                worklist.emplace(srcNode, depth + 1);
+            }
+        }
+    }
+
+    return false;
 }
 
 } // anonymous namespace
@@ -917,6 +1010,208 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
     }
 
     return storedValuePAG;
+}
+
+llvm::json::Object analyzeStoreLValue(SVFG* svfg,
+                                      ICFG* icfg,
+                                      SVFIR* pag,
+                                      const std::string& location,
+                                      int eqPosition) {
+    llvm::json::Object result;
+    result["command"] = "analysis-lvar";
+    result["location"] = location;
+    result["eq_position"] = eqPosition;
+
+    if (!icfg || !pag) {
+        result["success"] = false;
+        result["error"] = "Invalid ICFG or PAG pointer";
+        return result;
+    }
+
+    const llvm::Module* module = getAnyModule();
+    const llvm::DataLayout* dataLayout = module ? &module->getDataLayout() : nullptr;
+
+    std::vector<const ICFGNode*> nodes = findAllICFGNodesByLocation(icfg, location);
+    if (nodes.empty()) {
+        result["success"] = false;
+        result["error"] = "No ICFG nodes found at location";
+        return result;
+    }
+
+    const ICFGNode* matchedNode = nullptr;
+    for (const ICFGNode* node : nodes) {
+        if (!SVFUtil::isa<IntraICFGNode>(node)) {
+            continue;
+        }
+        llvm::json::Object locInfo = parseSourceLocation(node->getSourceLoc());
+        if (auto col = locInfo.getInteger("cl")) {
+            if (*col == eqPosition) {
+                matchedNode = node;
+                break;
+            }
+        }
+    }
+    if (!matchedNode) {
+        matchedNode = nodes.front();
+    }
+
+    result["icfg_node_id"] = static_cast<int64_t>(matchedNode->getId());
+
+    const IntraICFGNode* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(matchedNode);
+    if (!intraNode) {
+        result["success"] = false;
+        result["error"] = "Matched node is not an IntraICFGNode";
+        return result;
+    }
+
+    const StoreStmt* storeStmt = nullptr;
+    for (const SVFStmt* stmt : intraNode->getSVFStmts()) {
+        if (const auto* store = SVFUtil::dyn_cast<StoreStmt>(stmt)) {
+            storeStmt = store;
+            break;
+        }
+    }
+
+    if (!storeStmt) {
+        result["success"] = false;
+        result["error"] = "No StoreStmt found at specified location/column";
+        return result;
+    }
+
+    result["lhs_pag_id"] = static_cast<int64_t>(storeStmt->getLHSVar()->getId());
+
+    const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(intraNode);
+    const llvm::Instruction* inst = SVFUtil::dyn_cast<llvm::Instruction>(llvmVal);
+    const llvm::StoreInst* storeInst = llvm::dyn_cast<llvm::StoreInst>(inst);
+    if (!storeInst) {
+        result["success"] = false;
+        result["error"] = "Matched instruction is not a StoreInst";
+        return result;
+    }
+
+    result["success"] = true;
+    result["store_ir"] = toString(storeInst);
+
+    const llvm::Value* pointerOperand = storeInst->getPointerOperand();
+    const llvm::Value* basePointerValue = pointerOperand;
+    bool isStructLValue = false;
+    bool isMember = false;
+    std::string structName;
+    int64_t memberOffset = 0;
+    bool hasOffset = false;
+
+    const llvm::Value* pointerStripped = pointerOperand ? pointerOperand->stripPointerCasts() : nullptr;
+    const llvm::GEPOperator* gepOp = nullptr;
+    if (pointerStripped) {
+        gepOp = llvm::dyn_cast<llvm::GEPOperator>(pointerStripped);
+    }
+    if (!gepOp && pointerOperand) {
+        gepOp = llvm::dyn_cast<llvm::GEPOperator>(pointerOperand);
+    }
+
+    if (gepOp) {
+        basePointerValue = gepOp->getPointerOperand();
+
+        const llvm::Type* sourceType = gepOp->getSourceElementType();
+        if (sourceType && sourceType->isStructTy()) {
+            isStructLValue = true;
+            if (const auto* structTy = llvm::cast<llvm::StructType>(sourceType)) {
+                if (structTy->hasName()) {
+                    structName = structTy->getName().str();
+                }
+            }
+        }
+        isMember = gepOp->getNumIndices() > 1;
+
+        if (dataLayout) {
+            unsigned addrSpace = gepOp->getPointerAddressSpace();
+            llvm::APInt offsetAP(dataLayout->getPointerSizeInBits(addrSpace), 0);
+            if (gepOp->accumulateConstantOffset(*dataLayout, offsetAP)) {
+                memberOffset = offsetAP.getSExtValue();
+                hasOffset = true;
+            }
+        }
+    } else if (pointerOperand) {
+        if (const auto* ptrTy = llvm::dyn_cast<llvm::PointerType>(pointerOperand->getType())) {
+            if (!ptrTy->isOpaquePointerTy()) {
+                const llvm::Type* elementType = ptrTy->getNonOpaquePointerElementType();
+                if (elementType && elementType->isStructTy()) {
+                    isStructLValue = true;
+                    if (const auto* structTy = llvm::cast<llvm::StructType>(elementType)) {
+                        if (structTy->hasName()) {
+                            structName = structTy->getName().str();
+                        }
+                    }
+                }
+            }
+        }
+        hasOffset = true;
+        memberOffset = 0;
+    }
+
+    const llvm::Value* baseStripped = basePointerValue ? basePointerValue->stripPointerCasts() : nullptr;
+    bool pointerIsParam = isFunctionArgument(pointerOperand) || isFunctionArgument(pointerStripped);
+    bool baseIsParam = isFunctionArgument(basePointerValue) || isFunctionArgument(baseStripped);
+
+    if (!baseIsParam) {
+        const PAGNode* basePagNode = getPAGNodeFromLvarGEP(icfg, pag, location, eqPosition);
+        if (basePagNode) {
+            if (const auto* baseSVFVar = SVFUtil::dyn_cast<SVFVar>(basePagNode)) {
+                if (reachesFormalParameter(svfg, baseSVFVar)) {
+                    baseIsParam = true;
+                }
+            }
+        }
+    }
+
+    llvm::json::Object gepInfo;
+    std::string gepType = "not_struct";
+    if (isStructLValue) {
+        gepType = isMember ? "member" : "baseobj";
+    }
+    gepInfo["gep_type"] = gepType;
+
+    int64_t gepCl = -1;
+    if (const llvm::Instruction* gepInst = llvm::dyn_cast<llvm::Instruction>(pointerOperand)) {
+        const llvm::DebugLoc& loc = gepInst->getDebugLoc();
+        if (loc) {
+            gepCl = loc.getCol();
+        }
+    }
+    if (gepCl < 0) {
+        std::string gepStr = toString(pointerOperand);
+        llvm::json::Object gepLocObj = parseSourceLocation(gepStr);
+        if (auto cl = gepLocObj.getInteger("cl")) {
+            gepCl = *cl;
+        }
+    }
+    if (gepCl >= 0) {
+        gepInfo["gep_cl"] = gepCl;
+    } else {
+        gepInfo["gep_cl"] = nullptr;
+    }
+
+    if (hasOffset) {
+        gepInfo["offset"] = memberOffset;
+    } else {
+        gepInfo["offset"] = nullptr;
+    }
+    if (!structName.empty()) {
+        gepInfo["baseobj_type"] = structName;
+    } else if (basePointerValue && basePointerValue->getType()) {
+        gepInfo["baseobj_type"] = toString(basePointerValue->getType());
+    }
+
+    result["gep_info"] = std::move(gepInfo);
+    result["is_struct_lvalue"] = isStructLValue;
+    result["is_member_access"] = isMember;
+    result["is_lvar_param"] = pointerIsParam;
+    result["is_lvar_baseobj_param"] = baseIsParam;
+    if (!structName.empty()) {
+        result["struct_name"] = structName;
+    }
+
+    return result;
 }
 
 const SVFGNode* getSVFGNodeFromActualINArg(SVFG* svfg,
