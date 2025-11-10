@@ -11,6 +11,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "MemoryModel/PointerAnalysis.h"
 #include <limits>
+#include <map>
 
 namespace SVF {
 namespace GraphReaderUtil {
@@ -366,6 +367,52 @@ llvm::json::Object getStoreClInfoJson(SVFG* svfg, ICFG* icfg, const std::string&
     }
     
     result["store_cl"] = std::move(storeCls);
+    return result;
+}
+
+llvm::json::Object getGepClInfoJson(SVFG* svfg, ICFG* icfg, const std::string& location) {
+    llvm::json::Object result;
+    result["location"] = location;
+    llvm::json::Array gepCls;
+    llvm::json::Array gepClNodes;
+    std::map<int64_t, llvm::json::Array> clToNodes;
+    
+    std::vector<const ICFGNode*> icfgNodes = findAllICFGNodesByLocation(icfg, location);
+    if (icfgNodes.empty()) {
+        result["gep_cl"] = std::move(gepCls);
+        result["gep_cl_nodes"] = std::move(gepClNodes);
+        return result;
+    }
+    
+    for (const ICFGNode* icfgNode : icfgNodes) {
+        // 遍历SVFG的所有节点，找到与当前ICFG节点关联的节点
+        for (auto& pair : *svfg) {
+            SVFGNode* svfgNode = pair.second;
+            if (svfgNode->getICFGNode() == icfgNode) {
+                // 检查是否是GepVFGNode
+                if (SVFUtil::isa<GepVFGNode>(svfgNode)) {
+                    // 获取该节点的源位置信息
+                    std::string sourceLocStr = svfgNode->toString();
+                    llvm::json::Object locInfo = parseSourceLocation(sourceLocStr);
+                    
+                    // 获取cl（列号）信息
+                    if (auto cl = locInfo.getInteger("cl")) {
+                        gepCls.push_back(*cl);
+                        clToNodes[*cl].push_back(sourceLocStr);
+                    }
+                }
+            }
+        }
+    }
+    
+    result["gep_cl"] = std::move(gepCls);
+    for (auto& entry : clToNodes) {
+        llvm::json::Object clInfo;
+        clInfo["cl"] = entry.first;
+        clInfo["svfg_nodes"] = std::move(entry.second);
+        gepClNodes.push_back(std::move(clInfo));
+    }
+    result["gep_cl_nodes"] = std::move(gepClNodes);
     return result;
 }
 

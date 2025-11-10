@@ -80,6 +80,8 @@ namespace GraphReaderUtil {
      */
     llvm::json::Object getStoreClInfoJson(SVFG* svfg, ICFG* icfg, const std::string& location);
 
+    llvm::json::Object getGepClInfoJson(SVFG* svfg, ICFG* icfg, const std::string& location);
+
     /// Parse a JSON string into a list of command objects.
     /// Supports: an array of objects; a single object; or an object with a
     /// top-level "commands" array. Returns true on success; otherwise false and
