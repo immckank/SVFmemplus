@@ -132,8 +132,6 @@ int main(int argc, char ** argv) {
                 } else {
                     pq.getConditionInsidePath(s->str(), e->str());
                 }
-            } else if (cname == "exit") {
-                shouldExit = true;
             } else if (cname == "find-arg-value-path-inside") {
                 auto functionName = cmd.getString("function_name");
                 auto argIndexStr = cmd.getString("arg_index");
@@ -156,7 +154,7 @@ int main(int argc, char ** argv) {
                     continue;
                 }
                 const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromArg(pag, functionNameStr, argIndex);
-                    if (!startPAGNode) {
+                if (!startPAGNode) {
                     SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for function '" + functionNameStr + "' argument " + std::to_string(argIndex));
                     continue;
                 }
@@ -193,23 +191,6 @@ int main(int argc, char ** argv) {
                     std::vector<const SVFGNode*> startSVFGNodes{startSVFGNode};
                     pq.getValueSensitiveReturnInsidePath(loc->str(), startSVFGNodes);
                 }
-            } else if (cname == "analysis-lvar") {
-                auto loc = cmd.getString("location");
-                auto eqPositionStr = cmd.getString("eq_position");
-                if (!loc || !eqPositionStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
-                    continue;
-                }
-                int eqPosition = -1;
-                try {
-                    eqPosition = std::stoi(eqPositionStr->str());
-                } catch (...) {
-                    SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
-                    continue;
-                }
-                llvm::json::Object analysisResult = SVF::GraphReaderUtil::analyzeStoreLValue(svfg, icfg, pag, loc->str(), eqPosition);
-                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(analysisResult))) << "\n";
-                llvm::outs().flush();
             } else if (cname == "find-call-arg-value-path-inside") {
                 auto loc = cmd.getString("location");
                 auto calleeFuncName = cmd.getString("callee_function_name");
@@ -241,6 +222,45 @@ int main(int argc, char ** argv) {
                     std::vector<const SVFGNode*> startSVFGNodes{startSVFGNode};
                     pq.getValueSensitiveReturnInsidePath(loc->str(), startSVFGNodes);
                 }
+            } else if (cname == "analysis-lvar") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                    continue;
+                }
+                int eqPosition = -1;
+                try {
+                    eqPosition = std::stoi(eqPositionStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
+                    continue;
+                }
+                llvm::json::Object analysisResult = SVF::GraphReaderUtil::analyzeStoreLValue(svfg, icfg, pag, loc->str(), eqPosition);
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(analysisResult))) << "\n";
+                llvm::outs().flush();
+            } else if (cname == "find-base-lvar-def") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                } else {
+                    int eqPosition = -1;
+                    try {
+                        eqPosition = std::stoi(eqPositionStr->str());
+                    } catch (...) {
+                        SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
+                        continue;
+                    }
+                    // Step 1: Get PAGNode from LvarGEP
+                    const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromLvarGEP(icfg, pag, loc->str(), eqPosition);
+                    if (!targetPAG) {
+                        SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for LvarGEP at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
+                    } else {
+                        // Step 2: Trace PAG store
+                        SVF::GraphReaderUtil::tracePAGStore(svfg, pag, targetPAG);
+                    }
+                }
             } else if (cname == "check-return-pointer") {
                 auto loc = cmd.getString("location");
                 if (!loc) {
@@ -264,27 +284,15 @@ int main(int argc, char ** argv) {
                     llvm::json::Object result = SVF::GraphReaderUtil::getGepClInfoJson(svfg, icfg, loc->str());
                     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 }
-            } else if (cname == "find-base-lvar-def") {
+            } else if (cname == "get-constrain-inside") {
                 auto loc = cmd.getString("location");
-                auto eqPositionStr = cmd.getString("eq_position");
-                if (!loc || !eqPositionStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                if (!loc) {
+                    loc = cmd.getString("locaton"); // fallback for common typo
+                }
+                if (!loc) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
                 } else {
-                    int eqPosition = -1;
-                    try {
-                        eqPosition = std::stoi(eqPositionStr->str());
-                    } catch (...) {
-                        SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
-                        continue;
-                    }
-                    // Step 1: Get PAGNode from LvarGEP
-                    const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromLvarGEP(icfg, pag, loc->str(), eqPosition);
-                    if (!targetPAG) {
-                        SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for LvarGEP at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
-                    } else {
-                        // Step 2: Trace PAG store
-                        SVF::GraphReaderUtil::tracePAGStore(svfg, pag, targetPAG);
-                    }
+                    pq.getConstrainInside(loc->str());
                 }
             } else if (cname == "show-code-line"){
                 // DEBUG
@@ -295,7 +303,9 @@ int main(int argc, char ** argv) {
                 } else {
                     SVF::GraphReaderUtil::showCodeLineDebugInfo(svfg, icfg, loc->str());
                 }
-            }else {
+            } else if (cname == "exit") {
+                shouldExit = true;
+            } else {
                 SVF::GraphReaderUtil::sendJsonError("unknown command: " + cname);
             }
         }

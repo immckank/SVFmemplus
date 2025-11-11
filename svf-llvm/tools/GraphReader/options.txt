@@ -40,6 +40,28 @@ no branch not void
 { "command" : "find-icfg-return-paths", "name" : "isCCITTCompression",  "location" : "tif_getimage.c:254"}
 
 
+{"command" : "get-constrain-inside", "location" : "tif_jpeg.c:558"}
+
+{
+    "common_constraint_count":1,
+    "common_constraints":[
+        {
+            "condition_value":"false",
+            "dst_icfg_node_id":32014,
+            "location":"tif_jpeg.c:551",
+            "src_icfg_node_id":32012,
+            "type":"branch"
+            }
+        ],"error":false,"function":"TIFFjpeg_tables_dest",
+        "path_count":2,
+        "paths":[
+            {
+                "constraints":[
+                    {
+                        "condition_value":"false",
+                        "dst_icfg_node_id":31991,
+                        "location":"tif_jpeg.c:547","src_icfg_node_id":31989,"type":"branch"},{"condition_value":"false","dst_icfg_node_id":32014,"location":"tif_jpeg.c:551","src_icfg_node_id":32012,"type":"branch"}],"node_count":40,"path_id":1},{"constraints":[{"condition_value":"true","dst_icfg_node_id":31990,"location":"tif_jpeg.c:547","src_icfg_node_id":31989,"type":"branch"},{"condition_value":"false","dst_icfg_node_id":32014,"location":"tif_jpeg.c:551","src_icfg_node_id":32012,"type":"branch"}],"node_count":46,"path_id":2}],"target_icfg_node_id":32035,"target_location":{"cl":2,"fl":"tif_jpeg.c","ln":558}}
+
 
 isCCITTCompression
 

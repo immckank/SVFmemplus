@@ -48,6 +48,18 @@ public:
     void getConstrain(const std::string& location);
 
     /*!
+     * \brief Collects branch constraints from a function's entry to a target location.
+     *
+     * This method enumerates all intra-procedural paths starting at the function entry
+     * and ending at the given location. For each path, it records conditional branches
+     * encountered and whether the true or false edge was taken. The result also reports
+     * common constraints that every discovered path must satisfy.
+     *
+     * \param location Target source location string (e.g., "file.c:123").
+     */
+    void getConstrainInside(const std::string& location);
+
+    /*!
      * \brief Finds all ICFG paths from a location to all function return locations.
      *
      * This method performs pure ICFG-level traversal (control flow) from the given location

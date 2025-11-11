@@ -483,6 +483,164 @@ void PathQuery::getConstrain(const std::string& location) {
     llvm::outs().flush();
 }
 
+void PathQuery::getConstrainInside(const std::string& location) {
+    SVFUtil::outs() << "[getConstrainInside] Start location: " << location << "\n";
+
+    if (!icfg) {
+        GraphReaderUtil::sendJsonError("ICFG is null!");
+        return;
+    }
+
+    std::vector<const ICFGNode*> icfgNodes = GraphReaderUtil::findAllICFGNodesByLocation(icfg, location);
+    if (icfgNodes.empty()) {
+        GraphReaderUtil::sendJsonError("Cannot find ICFG nodes for location: " + location);
+        return;
+    }
+
+    const ICFGNode* targetNode = nullptr;
+    const FunObjVar* function = nullptr;
+    FunEntryICFGNode* entryNode = nullptr;
+
+    for (const ICFGNode* node : icfgNodes) {
+        if (!node) {
+            continue;
+        }
+        const FunObjVar* fun = node->getFun();
+        if (!fun) {
+            continue;
+        }
+
+        FunEntryICFGNode* candidateEntry = icfg->getFunEntryICFGNode(const_cast<FunObjVar*>(fun));
+        if (!candidateEntry) {
+            continue;
+        }
+
+        targetNode = node;
+        function = fun;
+        entryNode = candidateEntry;
+        break;
+    }
+
+    if (!targetNode || !function || !entryNode) {
+        GraphReaderUtil::sendJsonError("Failed to resolve function entry for location: " + location);
+        return;
+    }
+
+    SVFUtil::outs() << "[getConstrainInside] Target ICFG node id: " << targetNode->getId()
+                    << " function: " << function->getName() << "\n";
+    SVFUtil::outs() << "[getConstrainInside] Entry ICFG node id: " << entryNode->getId() << "\n";
+
+    std::vector<std::vector<const ICFGNode*>> icfgPaths;
+    findICFGPaths(entryNode, targetNode, function, icfgPaths);
+
+    llvm::json::Object result;
+    result["error"] = false;
+    result["function"] = function->getName();
+    result["path_count"] = static_cast<int64_t>(icfgPaths.size());
+    result["target_icfg_node_id"] = static_cast<int64_t>(targetNode->getId());
+
+    llvm::json::Object targetLocInfo = GraphReaderUtil::parseSourceLocation(targetNode->getSourceLoc());
+    if (targetLocInfo.empty()) {
+        targetLocInfo = GraphReaderUtil::parseSourceLocation(location);
+    }
+    result["target_location"] = std::move(targetLocInfo);
+
+    if (icfgPaths.empty()) {
+        result["message"] = "No intra-procedural paths found from function entry to target location.";
+        llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+        llvm::outs().flush();
+        return;
+    }
+
+    llvm::json::Array pathsArray;
+    std::map<std::string, llvm::json::Object> keyToEvent;
+    std::set<std::string> commonEventKeys;
+    bool firstPath = true;
+    int pathId = 1;
+
+    for (const auto& path : icfgPaths) {
+        llvm::json::Object pathObj;
+        pathObj["path_id"] = pathId++;
+        pathObj["node_count"] = static_cast<int64_t>(path.size());
+
+        llvm::json::Array constraintEvents;
+        std::set<std::string> pathEventKeys;
+
+        for (size_t idx = 0; idx + 1 < path.size(); ++idx) {
+            const ICFGNode* srcNode = path[idx];
+            const ICFGNode* dstNode = path[idx + 1];
+            const IntraCFGEdge* branchEdge = nullptr;
+
+            for (ICFGEdge* edge : srcNode->getOutEdges()) {
+                if (edge->getDstNode() != dstNode) {
+                    continue;
+                }
+                if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
+                    if (intraEdge->getCondition()) {
+                        branchEdge = intraEdge;
+                        break;
+                    }
+                }
+            }
+
+            if (!branchEdge) {
+                continue;
+            }
+
+            llvm::json::Object branchInfo = GraphReaderUtil::formatBranchInfo(branchEdge);
+            branchInfo["src_icfg_node_id"] = static_cast<int64_t>(srcNode->getId());
+            branchInfo["dst_icfg_node_id"] = static_cast<int64_t>(dstNode->getId());
+
+            std::string locKey = "unknown";
+            if (auto loc = branchInfo.getString("location")) {
+                locKey = loc->str();
+            }
+            std::string condKey = "unknown";
+            if (auto cond = branchInfo.getString("condition_value")) {
+                condKey = cond->str();
+            }
+            std::string eventKey = locKey + "|" + condKey;
+
+            keyToEvent[eventKey] = branchInfo;
+            pathEventKeys.insert(eventKey);
+
+            constraintEvents.push_back(std::move(branchInfo));
+        }
+
+        if (firstPath) {
+            commonEventKeys = pathEventKeys;
+            firstPath = false;
+        } else {
+            std::set<std::string> intersection;
+            for (const std::string& key : commonEventKeys) {
+                if (pathEventKeys.count(key)) {
+                    intersection.insert(key);
+                }
+            }
+            commonEventKeys = std::move(intersection);
+        }
+
+        pathObj["constraints"] = std::move(constraintEvents);
+        pathsArray.push_back(std::move(pathObj));
+    }
+
+    result["paths"] = std::move(pathsArray);
+
+    llvm::json::Array commonConstraints;
+    for (const std::string& key : commonEventKeys) {
+        auto it = keyToEvent.find(key);
+        if (it != keyToEvent.end()) {
+            llvm::json::Object copyObj = it->second;
+            commonConstraints.push_back(std::move(copyObj));
+        }
+    }
+    result["common_constraints"] = std::move(commonConstraints);
+    result["common_constraint_count"] = static_cast<int64_t>(commonEventKeys.size());
+
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
+}
+
 // Helper function to find actual return statement ICFG nodes (not wrapper nodes)
 std::vector<const ICFGNode*> findActualReturnICFGNodes(ICFG* icfg, const FunObjVar* function) {
     // TOOL FUNCTION
