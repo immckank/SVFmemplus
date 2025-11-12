@@ -132,8 +132,6 @@ int main(int argc, char ** argv) {
                 } else {
                     pq.getConditionInsidePath(s->str(), e->str());
                 }
-            } else if (cname == "exit") {
-                shouldExit = true;
             } else if (cname == "find-arg-value-path-inside") {
                 auto functionName = cmd.getString("function_name");
                 auto argIndexStr = cmd.getString("arg_index");
@@ -156,7 +154,7 @@ int main(int argc, char ** argv) {
                     continue;
                 }
                 const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromArg(pag, functionNameStr, argIndex);
-                    if (!startPAGNode) {
+                if (!startPAGNode) {
                     SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for function '" + functionNameStr + "' argument " + std::to_string(argIndex));
                     continue;
                 }
@@ -224,21 +222,23 @@ int main(int argc, char ** argv) {
                     std::vector<const SVFGNode*> startSVFGNodes{startSVFGNode};
                     pq.getValueSensitiveReturnInsidePath(loc->str(), startSVFGNodes);
                 }
-            } else if (cname == "check-return-pointer") {
+            } else if (cname == "analysis-lvar") {
                 auto loc = cmd.getString("location");
-                if (!loc) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
-                } else {
-                    fq.checkReturnPointer(loc->str());
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                    continue;
                 }
-            } else if (cname == "find-store-cl") {
-                auto loc = cmd.getString("location");
-                if (!loc) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
-                } else {
-                    llvm::json::Object result = SVF::GraphReaderUtil::getStoreClInfoJson(svfg, icfg, loc->str());
-                    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                int eqPosition = -1;
+                try {
+                    eqPosition = std::stoi(eqPositionStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
+                    continue;
                 }
+                llvm::json::Object analysisResult = SVF::GraphReaderUtil::analyzeStoreLValue(svfg, icfg, pag, loc->str(), eqPosition);
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(analysisResult))) << "\n";
+                llvm::outs().flush();
             } else if (cname == "find-base-lvar-def") {
                 auto loc = cmd.getString("location");
                 auto eqPositionStr = cmd.getString("eq_position");
@@ -261,6 +261,39 @@ int main(int argc, char ** argv) {
                         SVF::GraphReaderUtil::tracePAGStore(svfg, pag, targetPAG);
                     }
                 }
+            } else if (cname == "check-return-pointer") {
+                auto loc = cmd.getString("location");
+                if (!loc) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                } else {
+                    fq.checkReturnPointer(loc->str());
+                }
+            } else if (cname == "find-store-cl") {
+                auto loc = cmd.getString("location");
+                if (!loc) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                } else {
+                    llvm::json::Object result = SVF::GraphReaderUtil::getStoreClInfoJson(svfg, icfg, loc->str());
+                    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                }
+            } else if (cname == "find-gep-cl") {
+                auto loc = cmd.getString("location");
+                if (!loc) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                } else {
+                    llvm::json::Object result = SVF::GraphReaderUtil::getGepClInfoJson(svfg, icfg, loc->str());
+                    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                }
+            } else if (cname == "get-constrain-inside") {
+                auto loc = cmd.getString("location");
+                if (!loc) {
+                    loc = cmd.getString("locaton"); // fallback for common typo
+                }
+                if (!loc) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                } else {
+                    pq.getConstrainInside(loc->str());
+                }
             } else if (cname == "show-code-line"){
                 // DEBUG
                 // 一个重要的debug功能 可以一直保留
@@ -270,7 +303,9 @@ int main(int argc, char ** argv) {
                 } else {
                     SVF::GraphReaderUtil::showCodeLineDebugInfo(svfg, icfg, loc->str());
                 }
-            }else {
+            } else if (cname == "exit") {
+                shouldExit = true;
+            } else {
                 SVF::GraphReaderUtil::sendJsonError("unknown command: " + cname);
             }
         }

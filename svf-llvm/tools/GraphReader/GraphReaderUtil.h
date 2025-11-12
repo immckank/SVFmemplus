@@ -80,6 +80,8 @@ namespace GraphReaderUtil {
      */
     llvm::json::Object getStoreClInfoJson(SVFG* svfg, ICFG* icfg, const std::string& location);
 
+    llvm::json::Object getGepClInfoJson(SVFG* svfg, ICFG* icfg, const std::string& location);
+
     /// Parse a JSON string into a list of command objects.
     /// Supports: an array of objects; a single object; or an object with a
     /// top-level "commands" array. Returns true on success; otherwise false and
@@ -161,6 +163,21 @@ namespace GraphReaderUtil {
      * \return The PAGNode representing the value's definition, or nullptr if not found.
      */
     const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& callLocation, const std::string& functionName, int argIndex);
+
+    /*!
+     * \brief Analyze the left-hand side of a Store statement at a given source location/column.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param location A string in "filename:line" format.
+     * \param eqPosition The column number of the store statement.
+     * \return A JSON object describing the LHS, including struct/member info, offsets, etc.
+     */
+    llvm::json::Object analyzeStoreLValue(SVFG* svfg,
+                                          ICFG* icfg,
+                                          SVFIR* pag,
+                                          const std::string& location,
+                                          int eqPosition);
 
 } // namespace GraphReaderUtil
 } // namespace SVF
