@@ -1132,11 +1132,6 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
         return;
     }
 
-    if (startSVFGNodes.empty()) {
-        GraphReaderUtil::sendJsonError("No SVFG start nodes provided for value-sensitive analysis.");
-        return;
-    }
-
     const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
     if (!startNode) {
         GraphReaderUtil::sendJsonError("Cannot find ICFGNode for location: " + startLocation);
@@ -1171,13 +1166,15 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
         }
     };
 
-    for (const SVFGNode* startNodeCandidate : startSVFGNodes) {
-        enqueueStartNode(startNodeCandidate);
-    }
+    if (!startSVFGNodes.empty()) {
+        for (const SVFGNode* startNodeCandidate : startSVFGNodes) {
+            enqueueStartNode(startNodeCandidate);
+        }
 
-    if (validStartNodes.empty()) {
-        GraphReaderUtil::sendJsonError("No valid SVFG start nodes belong to function '" + function->getName() + "'.");
-        return;
+        if (validStartNodes.empty()) {
+            GraphReaderUtil::sendJsonError("No valid SVFG start nodes belong to function '" + function->getName() + "'.");
+            return;
+        }
     }
 
     while (!worklist.empty()) {
