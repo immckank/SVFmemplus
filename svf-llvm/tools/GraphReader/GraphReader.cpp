@@ -153,17 +153,14 @@ int main(int argc, char ** argv) {
                     SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + argIndexStr->str());
                     continue;
                 }
+                std::vector<const SVFGNode*> startSVFGNodes;
                 const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromArg(pag, functionNameStr, argIndex);
-                if (!startPAGNode) {
-                    SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for function '" + functionNameStr + "' argument " + std::to_string(argIndex));
-                    continue;
+                if (startPAGNode) {
+                    const SVFGNode* startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
+                    if (startSVFGNode) {
+                        startSVFGNodes.push_back(startSVFGNode);
+                    }
                 }
-                const SVFGNode* startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
-                if (!startSVFGNode) {
-                    SVF::GraphReaderUtil::sendJsonError("Cannot find SVFGNode for PAGNode " + std::to_string(startPAGNode->getId()));
-                    continue;
-                }
-                std::vector<const SVFGNode*> startSVFGNodes{startSVFGNode};
                 pq.getValueSensitiveReturnInsidePath(startLocation, startSVFGNodes);
             } else if (cname == "find-lvalue-path-inside") {
                 auto loc = cmd.getString("location");

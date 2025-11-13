@@ -101,6 +101,7 @@ path
 {"command": "show-code-line", "location": "tif_getimage.c:512"}
 {"command": "show-code-line", "location": "tif_dirwrite.c:2348"}
 {"command": "show-code-line", "location": "tif_getimage.c:368"}
+{"command": "show-code-line", "location": "tif_read.c:932"}
 Node String: GepVFGNode ID: 23723 GepStmt: [Var87447 <-- Var87446]
 ValVar ID: 87447
    %197 = getelementptr inbounds %struct._TIFFRGBAImage, ptr %196, i32 0, i32 11, !dbg !12359 { "ln": 368, "cl": 9, "fl": "tif_getimage.c" }
@@ -158,6 +159,8 @@ value path Debug
 { "command" : "show-value-path-inside", "start" : "tif_dirwrite.c:1083", "index" : "1" }
 { "command" : "find-arg-value-path-inside", "function_name" : "TIFFWriteDirectorySec", "arg_index" : "1"}
 { "command" : "find-arg-value-path-inside", "function_name" : "_TIFFfree", "arg_index" : "0"}
+{ "command" : "find-arg-value-path-inside", "function_name" : "TIFFSetField", "arg_index" : "0"}
+{ "command" : "find-arg-value-path-inside", "function_name" : "TIFFSetField", "arg_index" : "3"}
 
 
 { "command" : "find-var-value-path-inside", "location" : "tif_dirwrite.c:1099", "index" : "-1"}
