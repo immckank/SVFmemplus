@@ -243,11 +243,13 @@ void UseAfterFreeBug::printBugToTerminal() const
             SVFUtil::errs() << "\t  Use at : ("<< (*eventIt).getEventLoc() << ")  \n";
             SVFUtil::errs() << "\t  use path: \n";
         }
+        else if(eventType == SVFBugEvent::PotentialLoop){
+            SVFUtil::errs() << "\t  The above pair might be a false-positive report due to loop\n";
+        }
         else SVFUtil::errs() << "\t\t  --> (" << (*eventIt).getEventLoc() << "|" << (*eventIt).getEventDescription() << ") \n";
     }
     SVFUtil::errs() << "\n";
 }
-
 cJSON * UninitBug::getBugDescription() const
 {
     cJSON *bugDescription = cJSON_CreateObject();

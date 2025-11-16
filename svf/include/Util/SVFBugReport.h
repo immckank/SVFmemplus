@@ -59,7 +59,8 @@ public:
         Loop = 0x4,
         SourceInst = 0x5,
         Free = 0x6,
-        Use = 0x7
+        Use = 0x7,
+        PotentialLoop = 0x8
     };
 
 protected:

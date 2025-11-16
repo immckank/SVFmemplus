@@ -100,6 +100,53 @@ bool icfgReachable(const ICFGNode* start, const ICFGNode* target) {
     return false;
 }
 
+bool isBackEdge(const ICFGEdge* edge) {
+    auto src = edge->getSrcNode();
+    auto dst = edge->getDstNode();
+
+    const FunObjVar* Fsrc = src->getFun();
+    const FunObjVar* Fdst = dst->getFun();
+
+    // 仅在同一函数内的边才可能是循环回边
+    if (Fsrc != Fdst || !Fsrc) return false;
+
+    const SVFBasicBlock* BBsrc = src->getBB();
+    const SVFBasicBlock* BBdst = dst->getBB();
+    if (!BBsrc || !BBdst) return false;
+
+    //如果二者来自同一基本块，那么不会是回边，但同一基本块本身肯定支配自己，对这一情况予以排除
+    if (BBsrc == BBdst) return false; 
+
+    return Fsrc->strictlyDominate(BBdst, BBsrc);
+}
+
+
+bool hasLoopBackEdge(const ICFGNode* src, const ICFGNode* dst) {
+    std::unordered_set<const ICFGNode*> visited;
+    std::deque<const ICFGNode*> worklist;
+    worklist.push_back(src);
+
+    while (!worklist.empty()) {
+        const ICFGNode* node = worklist.front();
+        worklist.pop_front();
+
+        if (!visited.insert(node).second) continue;
+        if (node == dst) return false;  // 找到了 use，不是循环引起的路径阻塞
+
+        for (const ICFGEdge* e : node->getOutEdges()) {
+            if (isBackEdge(e)) {
+                // 只有当当前 src 能到达 dst，且回边位于同一可达区域中时才返回
+                if (visited.count(e->getDstNode()) == 0){
+                    return true;
+                }
+            }
+            worklist.push_back(e->getDstNode());
+        }
+    }
+    return false;
+}
+
+
 bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, GenericBug::EventStack& eventStack){
     bool flag = true;
     for(SVFGNodeSetIter fit = freeNodesBegin(), efit = freeNodesEnd(); fit!=efit; ++fit)
@@ -120,6 +167,8 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, Gene
                 slice->setFinalCond(slice->getVFCond(*uit));
                 slice->evalFinalCond2Event(eventStack);
                 flag = false;
+
+                if(hasLoopBackEdge(ficfg, uicfg)) eventStack.push_back(SVFBugEvent(SVFBugEvent::PotentialLoop, ficfg));
             }
         }
     }

@@ -159,6 +159,8 @@ public:
 
     bool dominate(const SVFBasicBlock* bbKey, const SVFBasicBlock* bbValue) const;
 
+    bool strictlyDominate(const SVFBasicBlock* bbKey, const SVFBasicBlock* bbValue) const;
+
     bool postDominate(const SVFBasicBlock* bbKey, const SVFBasicBlock* bbValue) const;
 
     /// find nearest common post dominator of two basic blocks
