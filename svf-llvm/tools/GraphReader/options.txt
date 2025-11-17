@@ -102,6 +102,10 @@ path
 {"command": "show-code-line", "location": "tif_dirwrite.c:2348"}
 {"command": "show-code-line", "location": "tif_getimage.c:368"}
 {"command": "show-code-line", "location": "tif_read.c:932"}
+
+{"command": "show-code-line", "location": "tif_dirread.c:5607"}
+{"command": "show-code-line", "location": "tif_dirread.c:2524"}
+
 Node String: GepVFGNode ID: 23723 GepStmt: [Var87447 <-- Var87446]
 ValVar ID: 87447
    %197 = getelementptr inbounds %struct._TIFFRGBAImage, ptr %196, i32 0, i32 11, !dbg !12359 { "ln": 368, "cl": 9, "fl": "tif_getimage.c" }

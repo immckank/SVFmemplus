@@ -175,17 +175,20 @@ int main(int argc, char ** argv) {
                         SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
                         continue;
                     }
-                    const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
-                    if (!startPAGNode) {
-                        SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
-                        continue;
+                    std::vector<const SVFGNode*> startSVFGNodes;
+                    if (eqPosition != -1) {
+                        const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
+                        if (!startPAGNode) {
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
+                            continue;
+                        }
+                        const SVFGNode* startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
+                        if (!startSVFGNode) {
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find SVFGNode for PAGNode " + std::to_string(startPAGNode->getId()));
+                            continue;
+                        }
+                        startSVFGNodes.push_back(startSVFGNode);
                     }
-                    const SVFGNode* startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
-                    if (!startSVFGNode) {
-                        SVF::GraphReaderUtil::sendJsonError("Cannot find SVFGNode for PAGNode " + std::to_string(startPAGNode->getId()));
-                        continue;
-                    }
-                    std::vector<const SVFGNode*> startSVFGNodes{startSVFGNode};
                     pq.getValueSensitiveReturnInsidePath(loc->str(), startSVFGNodes);
                 }
             } else if (cname == "find-call-arg-value-path-inside") {

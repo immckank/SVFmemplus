@@ -1258,11 +1258,7 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
                                 shouldHideInOutput = true;
                             } else if (SVFUtil::isa<CmpVFGNode>(svfgNode)) {
                                 shouldHideInOutput = true;
-                            }
-                            
-                            // Optionally filter out IntraMSSAPHI and Load nodes from output
-                            // Uncomment these lines if you want to hide them:
-                            else if (SVFUtil::isa<IntraMSSAPHISVFGNode>(svfgNode)) {
+                            } else if (SVFUtil::isa<IntraMSSAPHISVFGNode>(svfgNode)) {
                                 shouldHideInOutput = true;
                             } else if (SVFUtil::isa<LoadVFGNode>(svfgNode)) {
                                 shouldHideInOutput = true;
