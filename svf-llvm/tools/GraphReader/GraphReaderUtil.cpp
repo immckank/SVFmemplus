@@ -1565,6 +1565,179 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
 }
 
+bool isLvarFormalParm(SVFG* svfg, SVFIR* pag, const PAGNode* pagNode) {
+    if (!svfg || !pag || !pagNode) {
+        return false;
+    }
+
+    const SVFVar* current = SVFUtil::dyn_cast<SVFVar>(pagNode);
+    if (!current) {
+        return false;
+    }
+
+    constexpr int MAX_TRACE_DEPTH = 16;
+    int depth = 0;
+
+    while (current && depth < MAX_TRACE_DEPTH) {
+        // First, check if current is a GepValVar or GepObjVar, and directly trace to its base
+        // This handles the case where a Store's LHS is a GEP result (e.g., store to a struct field)
+        if (const GepValVar* gepValVar = SVFUtil::dyn_cast<GepValVar>(current)) {
+            // For GepValVar, get the base ValVar and continue tracing from there
+            const ValVar* baseValVar = gepValVar->getBaseNode();
+            if (baseValVar) {
+                current = baseValVar;
+                ++depth;
+                continue;
+            }
+        } else if (const GepObjVar* gepObjVar = SVFUtil::dyn_cast<GepObjVar>(current)) {
+            // For GepObjVar, get the base BaseObjVar and continue tracing from there
+            const BaseObjVar* baseObjVar = gepObjVar->getBaseObj();
+            if (baseObjVar) {
+                current = baseObjVar;
+                ++depth;
+                continue;
+            }
+        }
+
+        if (!svfg->hasDefSVFGNode(current)) {
+            break;
+        }
+
+        const SVFGNode* defNode = svfg->getDefSVFGNode(current);
+        if (!defNode) {
+            break;
+        }
+
+        // Check if this node directly defines a formal parameter
+        if (SVFUtil::isa<FormalParmVFGNode>(defNode)) {
+            return true;
+        }
+
+        // Handle GepVFGNode: trace back through the RHS (source object) of the GEP
+        // This handles the case where the current node is defined by a GEP operation
+        if (const GepVFGNode* gepNode = SVFUtil::dyn_cast<GepVFGNode>(defNode)) {
+            const SVFStmt* stmt = gepNode->getPAGEdge();
+            if (const GepStmt* gepStmt = SVFUtil::dyn_cast<GepStmt>(stmt)) {
+                const SVFVar* rhsVar = gepStmt->getRHSVar();
+                if (rhsVar) {
+                    // Recursively check if the RHS (source object) traces to a formal parameter
+                    current = rhsVar;
+                    ++depth;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        // Handle CopyVFGNode: trace back through the RHS of the copy
+        if (const CopyVFGNode* copyNode = SVFUtil::dyn_cast<CopyVFGNode>(defNode)) {
+            const SVFStmt* stmt = copyNode->getPAGEdge();
+            if (const CopyStmt* copyStmt = SVFUtil::dyn_cast<CopyStmt>(stmt)) {
+                const SVFVar* rhsVar = copyStmt->getRHSVar();
+                if (rhsVar) {
+                    current = rhsVar;
+                    ++depth;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        // Handle LoadVFGNode: trace back through the loaded address and its stores
+        if (const LoadVFGNode* loadNode = SVFUtil::dyn_cast<LoadVFGNode>(defNode)) {
+            const SVFStmt* stmt = loadNode->getPAGEdge();
+            const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(stmt);
+            if (!loadStmt) {
+                break;
+            }
+
+            const SVFVar* loadFromPAG = loadStmt->getRHSVar();
+            if (!loadFromPAG) {
+                break;
+            }
+
+            // If the loaded address has a def node (e.g., alloca), check whether any store to it originates from a formal parameter.
+            if (svfg->hasDefSVFGNode(loadFromPAG)) {
+                const SVFGNode* addrDefNode = svfg->getDefSVFGNode(loadFromPAG);
+                if (SVFUtil::isa<AddrVFGNode>(addrDefNode)) {
+                    // Check if this alloca is used to store a function parameter (parameter shadow copy)
+                    for (auto it = loadFromPAG->getInEdges().begin(); it != loadFromPAG->getInEdges().end(); ++it) {
+                        const SVFStmt* inStmt = *it;
+                        if (const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(inStmt)) {
+                            const SVFVar* storedValue = storeStmt->getRHSVar();
+                            if (storedValue && svfg->hasDefSVFGNode(storedValue)) {
+                                const SVFGNode* storedDefNode = svfg->getDefSVFGNode(storedValue);
+                                if (SVFUtil::isa<FormalParmVFGNode>(storedDefNode)) {
+                                    return true;
+                                }
+                                // Continue tracing from the stored value
+                                current = storedValue;
+                                ++depth;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Try to find a Store that writes to this address and trace back through it
+            bool advanced = false;
+            for (auto it = loadFromPAG->getInEdges().begin(); it != loadFromPAG->getInEdges().end(); ++it) {
+                const SVFStmt* inStmt = *it;
+                if (const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(inStmt)) {
+                    const SVFVar* storedValue = storeStmt->getRHSVar();
+                    if (storedValue) {
+                        current = storedValue;
+                        advanced = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!advanced) {
+                // If no store found, try to trace from the address itself
+                current = loadFromPAG;
+                ++depth;
+                continue;
+            }
+
+            ++depth;
+            continue;
+        }
+
+        // Handle AddrVFGNode: if it's an alloca, check if it stores a parameter
+        if (SVFUtil::isa<AddrVFGNode>(defNode)) {
+            // For AddrVFGNode (alloca), check incoming Store edges
+            bool advanced = false;
+            for (auto it = current->getInEdges().begin(); it != current->getInEdges().end(); ++it) {
+                const SVFStmt* inStmt = *it;
+                if (const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(inStmt)) {
+                    const SVFVar* storedValue = storeStmt->getRHSVar();
+                    if (storedValue && svfg->hasDefSVFGNode(storedValue)) {
+                        if (SVFUtil::isa<FormalParmVFGNode>(svfg->getDefSVFGNode(storedValue))) {
+                            return true;
+                        }
+                        // Continue tracing from the stored value
+                        current = storedValue;
+                        advanced = true;
+                        ++depth;
+                        break;
+                    }
+                }
+            }
+            if (!advanced) {
+                break;
+            }
+            continue;
+        }
+
+        // For other node types (ActualRetVFGNode, etc.), stop tracing
+        break;
+    }
+
+    return false;
+}
+
 void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) {
     // DEBUG
     // 重要功能 可以一直保留

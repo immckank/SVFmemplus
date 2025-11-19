@@ -86,11 +86,42 @@ public:
     void getValueSensitiveReturnInsidePath(const std::string& startLocation,
                                            const std::vector<const SVFGNode*>& startSVFGNodes);
 
+    /*!
+     * \brief Performs value-sensitive path analysis with detailed path output format.
+     *
+     * This method has the same logic as getValueSensitiveReturnInsidePath but outputs
+     * paths in a detailed format where each path includes start node, key SVFG nodes,
+     * and return node with full location information.
+     *
+     * \param startLocation Source code location string (e.g., "file.c:123").
+     * \param startSVFGNodes Optional vector of starting SVFG nodes.
+     */
+    void getValueSensitiveReturnInsidePathDetailed(const std::string& startLocation,
+                                                   const std::vector<const SVFGNode*>& startSVFGNodes);
+
     void findICFGPaths(const ICFGNode* startICFG,
                        const ICFGNode* targetICFG,
                        const FunObjVar* function,
                        std::vector<std::vector<const ICFGNode*>>& allICFGPaths);
+
+    /*!
+     * \brief Check if there is a value flow path from src PAGNode to dst PAGNode using backward traversal.
+     *
+     * This method performs backward traversal on SVFG starting from nodes that use src,
+     * and checks if we can reach any node that defines dst. It outputs debug information
+     * for each node visited during traversal.
+     *
+     * \param src Source PAGNode ID (the value being used).
+     * \param dst Target PAGNode ID (the value we want to reach).
+     * \return true if there is a value flow path, false otherwise.
+     */
+    bool isValueFlowReachable(NodeID src, NodeID dst);
+
 private:
+
+    bool backwardValueFlowReachable(const Set<const SVFGNode*>& seedNodes,
+                                    const Set<const SVFGNode*>& targetDefNodes);
+
     SVFG* svfg;
     ICFG* icfg;
     SVFIR* pag;

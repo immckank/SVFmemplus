@@ -144,6 +144,23 @@ namespace GraphReaderUtil {
     void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode);
 
     /*!
+     * \brief Returns true if the given PAG node (l-value or r-value) can be traced back to a FormalParmVFGNode.
+     *        This function can handle arbitrary statement types, including:
+     *        - Store statements: checks if the destination (LHS) traces to a formal parameter
+     *        - GEP statements: checks if the LHS or RHS (source object) traces to a formal parameter
+     *        - Load statements: traces back through the loaded address and its stores
+     *        - Copy statements: traces back through the RHS
+     *        - Addr statements: checks if the alloca stores a parameter
+     *        This performs a lightweight backward walk similar to tracePAGStore, but stops as soon
+     *        as a formal parameter is discovered.
+     * \param svfg Pointer to the SVFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param pagNode The PAG node to check (can be LHS or RHS of any statement).
+     * \return true if the node can be traced back to a FormalParmVFGNode, false otherwise.
+     */
+    bool isLvarFormalParm(SVFG* svfg, SVFIR* pag, const PAGNode* pagNode);
+
+    /*!
      * \brief Shows all ICFG nodes and their corresponding SVFG nodes at a given source location.
      * \param svfg Pointer to the SVFG.
      * \param icfg Pointer to the ICFG.

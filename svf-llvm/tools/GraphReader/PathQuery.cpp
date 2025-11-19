@@ -9,12 +9,16 @@
 #include "SVF-LLVM/LLVMModule.h"
 #include "SVFIR/SVFStatements.h"
 #include "SVFIR/SVFVariables.h"
+#include "SVFIR/SVFType.h"
+#include "MemoryModel/PointerAnalysis.h"
+#include "MemoryModel/PointsTo.h"
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/FormatVariadic.h>
+#include <llvm/Support/raw_ostream.h>
 #include <algorithm>
 #include <deque>
 #include <iostream>
@@ -1192,6 +1196,26 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
         }
     }
 
+    PointerAnalysis* pta = svfg ? svfg->getPTA() : nullptr;
+    Set<NodeID> startNodeLHSPointers;
+    if (pta && !validStartNodes.empty()) {
+        SVFUtil::errs() << "[ActualParmFilter] === Collecting start SVFGNode LHS pointer PAGNode IDs ===\n";
+        for (const SVFGNode* startSVFGNode : validStartNodes) {
+            const PAGNode* lhsNode = nullptr;
+            if (const StmtVFGNode* stmtNode = SVFUtil::dyn_cast<StmtVFGNode>(startSVFGNode)) {
+                lhsNode = stmtNode->getPAGDstNode();
+            } else if (const FormalParmVFGNode* formalParmNode = SVFUtil::dyn_cast<FormalParmVFGNode>(startSVFGNode)) {
+                lhsNode = formalParmNode->getParam();
+            }
+            if (lhsNode && lhsNode->isPointer()) {
+                startNodeLHSPointers.insert(lhsNode->getId());
+                SVFUtil::errs() << "[ActualParmFilter]   Added LHS pointer NodeID=" << lhsNode->getId()
+                                << " from start SVFGNode ID=" << startSVFGNode->getId() << "\n";
+            }
+        }
+        SVFUtil::errs() << "[ActualParmFilter]   Total start LHS pointer PAG nodes: " << startNodeLHSPointers.size() << "\n";
+    }
+
     // Step D: Find all ICFG paths to return locations
     std::vector<const ICFGNode*> returnLocations = findActualReturnICFGNodes(icfg, function);
 
@@ -1245,6 +1269,12 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
                             // All nodes were collected during BFS, now we filter what to display
                             bool shouldHideInOutput = false;
                             
+                            // Debug: show node type
+                            if (SVFUtil::isa<StoreSVFGNode>(svfgNode)) {
+                                SVFUtil::outs() << "[StoreFilter] Processing keySVFGNode ID=" << svfgNode->getId() 
+                                                << ", Type=StoreSVFGNode\n";
+                            }
+                            
                             // Filter out pure control-flow nodes (don't affect data/memory)
                             if (SVFUtil::isa<BranchVFGNode>(svfgNode)) {
                                 shouldHideInOutput = true;
@@ -1262,11 +1292,165 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
                                 shouldHideInOutput = true;
                             } else if (SVFUtil::isa<LoadVFGNode>(svfgNode)) {
                                 shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<CopyVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (const ActualParmVFGNode* actualParmNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
+                                SVFUtil::errs() << "[ActualParmFilter] Checking ActualParmVFGNode ID=" << actualParmNode->getId() << "\n";
+                                const PAGNode* paramNode = actualParmNode->getParam();
+                                if (!paramNode) {
+                                    shouldHideInOutput = true;
+                                    SVFUtil::errs() << "[ActualParmFilter]   -> FILTERED: Actual parameter has no associated PAG node\n";
+                                } else if (startNodeLHSPointers.empty()) {
+                                    SVFUtil::errs() << "[ActualParmFilter]   -> SKIPPED: No startSVFGNode LHS pointers available for reachability check\n";
+                                } else {
+                                    bool canReachStart = false;
+                                    for (NodeID lhsPtrId : startNodeLHSPointers) {
+                                        SVFUtil::errs() << "[ActualParmFilter]   Checking value flow: Actual param PAGNode ID=" << paramNode->getId()
+                                                       << " -> Start LHS PAGNode ID=" << lhsPtrId << "\n";
+                                        if (isValueFlowReachable(paramNode->getId(), lhsPtrId)) {
+                                            canReachStart = true;
+                                            SVFUtil::errs() << "[ActualParmFilter]     -> Value flow reachable. Keeping node.\n";
+                                            break;
+                                        }
+                                    }
+                                    if (!canReachStart) {
+                                        shouldHideInOutput = true;
+                                        SVFUtil::errs() << "[ActualParmFilter]   -> FILTERED: Actual parameter cannot reach any startSVFGNode LHS pointer\n";
+                                    }
+                                }
+                            } else if (const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(svfgNode)) {
+                                // Filter out stores to stack objects that are not address-taken
+                                // This filters out local variable assignments like "mb = data"
+                                // but keeps stores to function parameters like "*value = data"
+                                SVFUtil::outs() << "[StoreFilter] Found StoreSVFGNode ID=" << svfgNode->getId() 
+                                                << " (" << svfgNode->toString() << ")\n";
+                                
+                                const PAGNode* dstNode = storeNode->getPAGDstNode();
+                                if (dstNode) {
+                                    SVFUtil::outs() << "[StoreFilter]   DstNode ID=" << dstNode->getId() 
+                                                    << ", Type=";
+                                    if (SVFUtil::isa<ValVar>(dstNode)) {
+                                        SVFUtil::outs() << "ValVar";
+                                        if (SVFUtil::isa<ArgValVar>(dstNode)) {
+                                            SVFUtil::outs() << "(ArgValVar)";
+                                        }
+                                    } else if (SVFUtil::isa<ObjVar>(dstNode)) {
+                                        SVFUtil::outs() << "ObjVar";
+                                    } else {
+                                        SVFUtil::outs() << "Other";
+                                    }
+                                    SVFUtil::outs() << "\n";
+                                    
+                                    // For ValVar, check if it corresponds to a local variable (AllocaInst)
+                                    // For ObjVar, check if it's a stack object
+                                    bool isLocalStackVar = false;
+                                    bool isAddressTaken = false;
+                                    
+                                    if (const ValVar* valVar = SVFUtil::dyn_cast<ValVar>(dstNode)) {
+                                        // If it's an argument variable, it's address-taken (not a local variable)
+                                        if (SVFUtil::isa<ArgValVar>(valVar)) {
+                                            isAddressTaken = true;
+                                            SVFUtil::outs() << "[StoreFilter]   -> ArgValVar detected, isAddressTaken=true\n";
+                                        } else {
+                                            // Check if the ValVar corresponds to an AllocaInst (local variable)
+                                            const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(valVar);
+                                            if (llvmVal) {
+                                                if (SVFUtil::isa<llvm::AllocaInst>(llvmVal)) {
+                                                    isLocalStackVar = true;
+                                                    SVFUtil::outs() << "[StoreFilter]   -> ValVar corresponds to AllocaInst (local variable)\n";
+                                                    
+                                                    // Check if the address is truly taken (not just used in current Store)
+                                                    // Address is taken if:
+                                                    // 1. It's used in function calls (Call edges)
+                                                    // 2. It's stored to other locations (Store edges to other nodes)
+                                                    // 3. It has multiple AddrStmt edges (used in multiple places)
+                                                    
+                                                    bool hasCallEdges = valVar->hasOutgoingEdges(SVFStmt::Call);
+                                                    bool hasStoreEdges = valVar->hasOutgoingEdges(SVFStmt::Store);
+                                                    bool hasRetEdges = valVar->hasOutgoingEdges(SVFStmt::Ret);
+                                                    
+                                                    // Count AddrStmt edges
+                                                    u32_t addrStmtCount = 0;
+                                                    if (valVar->hasIncomingEdges(SVFStmt::Addr)) {
+                                                        // Use const iterator to count edges
+                                                        auto it = valVar->getIncomingEdgesBegin(SVFStmt::Addr);
+                                                        auto end = valVar->getIncomingEdgesEnd(SVFStmt::Addr);
+                                                        for (; it != end; ++it) {
+                                                            addrStmtCount++;
+                                                        }
+                                                    }
+                                                    
+                                                    SVFUtil::outs() << "[StoreFilter]   -> AddrStmt count=" << addrStmtCount
+                                                                    << ", hasCallEdges=" << (hasCallEdges ? "true" : "false")
+                                                                    << ", hasStoreEdges=" << (hasStoreEdges ? "true" : "false")
+                                                                    << ", hasRetEdges=" << (hasRetEdges ? "true" : "false") << "\n";
+                                                    
+                                                    // Address is taken if used in calls, returns, or multiple stores
+                                                    if (hasCallEdges || hasRetEdges || (hasStoreEdges && addrStmtCount > 1)) {
+                                                        isAddressTaken = true;
+                                                        SVFUtil::outs() << "[StoreFilter]   -> Address is taken (used in calls/returns/multiple stores)\n";
+                                                    } else {
+                                                        SVFUtil::outs() << "[StoreFilter]   -> Address not taken (only used in local assignment)\n";
+                                                    }
+                                                } else {
+                                                    SVFUtil::outs() << "[StoreFilter]   -> ValVar corresponds to non-AllocaInst: " 
+                                                                    << (llvmVal->getName().empty() ? "unnamed" : llvmVal->getName().str()) << "\n";
+                                                }
+                                            } else {
+                                                SVFUtil::outs() << "[StoreFilter]   -> ValVar has no corresponding LLVM value\n";
+                                            }
+                                        }
+                                    } else if (const ObjVar* objVar = SVFUtil::dyn_cast<ObjVar>(dstNode)) {
+                                        // Get the base object for ObjVar
+                                        const BaseObjVar* baseObj = pag->getBaseObject(dstNode->getId());
+                                        if (baseObj) {
+                                            SVFUtil::outs() << "[StoreFilter]   BaseObj ID=" << baseObj->getId()
+                                                            << ", isStack=" << (baseObj->isStack() ? "true" : "false")
+                                                            << ", isHeap=" << (baseObj->isHeap() ? "true" : "false")
+                                                            << ", isGlobal=" << (baseObj->isGlobalObj() ? "true" : "false")
+                                                            << "\n";
+                                            
+                                            if (baseObj->isStack()) {
+                                                isLocalStackVar = true;
+                                                // Check if there are AddrStmt edges pointing to it
+                                                bool hasAddrEdges = objVar->hasIncomingEdges(SVFStmt::Addr);
+                                                SVFUtil::outs() << "[StoreFilter]   -> ObjVar, hasIncomingEdges(Addr)=" 
+                                                                << (hasAddrEdges ? "true" : "false") << "\n";
+                                                if (hasAddrEdges) {
+                                                    isAddressTaken = true;
+                                                }
+                                            }
+                                        } else {
+                                            SVFUtil::outs() << "[StoreFilter]   -> BaseObj is null for ObjVar\n";
+                                        }
+                                    }
+                                    
+                                    SVFUtil::outs() << "[StoreFilter]   -> Final: isLocalStackVar=" 
+                                                    << (isLocalStackVar ? "true" : "false")
+                                                    << ", isAddressTaken=" << (isAddressTaken ? "true" : "false") << "\n";
+                                    
+                                    // Filter out stores to local stack variables that are not address-taken
+                                    if (isLocalStackVar && !isAddressTaken) {
+                                        shouldHideInOutput = true;
+                                        SVFUtil::outs() << "[StoreFilter]   -> FILTERED OUT (local stack variable, address not taken)\n";
+                                    } else {
+                                        SVFUtil::outs() << "[StoreFilter]   -> KEPT (not a local stack variable or address taken)\n";
+                                    }
+                                } else {
+                                    SVFUtil::outs() << "[StoreFilter]   -> DstNode is null\n";
+                                }
                             }
                             
                             if (!shouldHideInOutput) {
                                 keySVFGSequence.push_back(svfgNode->getId());
                                 seenInPath.insert(svfgNode->getId());
+                                if (SVFUtil::isa<StoreSVFGNode>(svfgNode)) {
+                                    SVFUtil::outs() << "[StoreFilter]   -> ADDED to sequence (shouldHideInOutput=false)\n";
+                                }
+                            } else {
+                                if (SVFUtil::isa<StoreSVFGNode>(svfgNode)) {
+                                    SVFUtil::outs() << "[StoreFilter]   -> NOT added to sequence (shouldHideInOutput=true)\n";
+                                }
                             }
                         }
                     }
@@ -1382,6 +1566,673 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
 
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
     llvm::outs().flush();
+}
+
+void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& startLocation, const std::vector<const SVFGNode*>& startSVFGNodes) {
+    if (!icfg || !svfg || !pag) {
+        GraphReaderUtil::sendJsonError("ICFG, SVFG, or PAG is null for value-sensitive analysis!");
+        return;
+    }
+
+    const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
+    if (!startNode) {
+        GraphReaderUtil::sendJsonError("Cannot find ICFGNode for location: " + startLocation);
+        return;
+    }
+
+    const FunObjVar* function = startNode->getFun();
+    if (!function) {
+        GraphReaderUtil::sendJsonError("Start location is not inside any function");
+        return;
+    }
+
+    // Step C: Find all reachable SVFGNodes from provided start nodes (keySVFGNodes)
+    Set<const SVFGNode*> keySVFGNodes;
+    std::queue<const SVFGNode*> worklist;
+    std::vector<const SVFGNode*> validStartNodes;
+
+    auto enqueueStartNode = [&](const SVFGNode* node) {
+        if (!node) {
+            return;
+        }
+        if (node->getFun() != function) {
+            SVFUtil::errs() << "[getValueSensitiveReturnInsidePathDetailed] Ignoring start SVFGNode "
+                            << node->getId() << " because it belongs to function '"
+                            << (node->getFun() ? node->getFun()->getName() : "unknown")
+                            << "' instead of '" << function->getName() << "'.\n";
+            return;
+        }
+        if (keySVFGNodes.insert(node).second) {
+            worklist.push(node);
+            validStartNodes.push_back(node);
+        }
+    };
+
+    if (!startSVFGNodes.empty()) {
+        for (const SVFGNode* startNodeCandidate : startSVFGNodes) {
+            enqueueStartNode(startNodeCandidate);
+        }
+
+        if (validStartNodes.empty()) {
+            GraphReaderUtil::sendJsonError("No valid SVFG start nodes belong to function '" + function->getName() + "'.");
+            return;
+        }
+    }
+
+    while (!worklist.empty()) {
+        const SVFGNode* currentNode = worklist.front();
+        worklist.pop();
+
+        for (const SVFGEdge* edge : currentNode->getOutEdges()) {
+            const SVFGNode* nextNode = edge->getDstNode();
+            if (nextNode->getFun() != function) {
+                continue;
+            }
+            if (keySVFGNodes.insert(nextNode).second) {
+                worklist.push(nextNode);
+            }
+        }
+    }
+
+    // Step D: Find all ICFG paths to return locations
+    std::vector<const ICFGNode*> returnLocations = findActualReturnICFGNodes(icfg, function);
+
+    if (returnLocations.empty()) {
+        llvm::json::Object result;
+        result["path_number"] = "0";
+        result["paths"] = llvm::json::Array{};
+        llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+        llvm::outs().flush();
+        return;
+    }
+
+    // Find all ICFG paths to each return location
+    std::map<const ICFGNode*, std::vector<std::vector<const ICFGNode*>>> pathsByReturn;
+
+    for (const ICFGNode* retLocation : returnLocations) {
+        std::vector<std::vector<const ICFGNode*>> pathsToThisReturn;
+        findICFGPaths(startNode, retLocation, function, pathsToThisReturn);
+        pathsByReturn[retLocation] = pathsToThisReturn;
+    }
+
+    // Step E & F: For each path, collect keySVFGNode sequence and group by sequence
+    // Structure: return location -> (keySVFGNode sequence -> list of path indices)
+    std::map<const ICFGNode*, std::map<std::vector<NodeID>, std::vector<int>>> pathGroupsByReturn;
+
+    // Get pointer analysis for points-to set queries
+    PointerAnalysis* pta = svfg ? svfg->getPTA() : nullptr;
+    
+    // Extract left-hand side pointer nodes from startSVFGNodes for alias checking
+    // This set contains all pointer PAGNode IDs from the start nodes' LHS
+    Set<NodeID> startNodeLHSPointers;
+    // Map from LHS PAGNode ID to startSVFGNode for location lookup
+    std::map<NodeID, const SVFGNode*> lhsPtrIdToStartSVFGNode;
+    if (pta && !startSVFGNodes.empty()) {
+        SVFUtil::errs() << "[StoreFilter] === Extracting LHS PAGNode IDs from startSVFGNodes ===\n";
+        SVFUtil::errs() << "[StoreFilter] Total startSVFGNodes: " << startSVFGNodes.size() << "\n";
+        for (const SVFGNode* startSVFGNode : startSVFGNodes) {
+            // Output startSVFGNode location
+            std::string startNodeLocStr = startSVFGNode->toString();
+            SVFUtil::errs() << "[StoreFilter]   Processing startSVFGNode ID=" << startSVFGNode->getId() << "\n";
+            SVFUtil::errs() << "[StoreFilter]     -> Location: " << startNodeLocStr << "\n";
+            
+            // Also try to get location from ICFGNode
+            const ICFGNode* icfgNode = startSVFGNode->getICFGNode();
+            if (icfgNode) {
+                std::string icfgLocStr = icfgNode->getSourceLoc();
+                if (!icfgLocStr.empty()) {
+                    SVFUtil::errs() << "[StoreFilter]     -> ICFG Location: " << icfgLocStr << "\n";
+                }
+            }
+            const PAGNode* lhsNode = nullptr;
+            std::string nodeTypeStr = "Unknown";
+            
+            // Get LHS node based on node type
+            if (const StmtVFGNode* stmtNode = SVFUtil::dyn_cast<StmtVFGNode>(startSVFGNode)) {
+                lhsNode = stmtNode->getPAGDstNode();
+                nodeTypeStr = "StmtVFGNode";
+                
+                // Check if it's a Store node
+                if (const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(startSVFGNode)) {
+                    nodeTypeStr = "StoreSVFGNode";
+                    SVFUtil::errs() << "[StoreFilter]     -> Type: " << nodeTypeStr << "\n";
+                    if (storeNode->getPAGSrcNode()) {
+                        SVFUtil::errs() << "[StoreFilter]     -> Store RHS PAGNode ID=" << storeNode->getPAGSrcNode()->getId() << "\n";
+                    }
+                } else {
+                    SVFUtil::errs() << "[StoreFilter]     -> Type: " << nodeTypeStr << "\n";
+                }
+            } else if (const FormalParmVFGNode* formalParmNode = SVFUtil::dyn_cast<FormalParmVFGNode>(startSVFGNode)) {
+                lhsNode = formalParmNode->getParam();
+                nodeTypeStr = "FormalParmVFGNode";
+                SVFUtil::errs() << "[StoreFilter]     -> Type: " << nodeTypeStr << "\n";
+            } else {
+                SVFUtil::errs() << "[StoreFilter]     -> Type: " << nodeTypeStr << "\n";
+            }
+            
+            if (lhsNode) {
+                SVFUtil::errs() << "[StoreFilter]     -> LHS PAGNode ID=" << lhsNode->getId() 
+                               << ", isPointer()=" << (lhsNode->isPointer() ? "true" : "false") << "\n";
+                
+                // Output LLVM Value info if available
+                LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
+                if (const ValVar* valVar = SVFUtil::dyn_cast<ValVar>(lhsNode)) {
+                    const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(valVar);
+                    if (llvmVal) {
+                        SVFUtil::errs() << "[StoreFilter]     -> LHS LLVM Value: " << (void*)llvmVal;
+                        if (llvmVal->hasName()) {
+                            SVFUtil::errs() << " (name: " << llvmVal->getName().str() << ")";
+                        }
+                        SVFUtil::errs() << "\n";
+                    }
+                }
+                
+                // Output points-to set if it's a pointer
+                if (lhsNode->isPointer()) {
+                    const PointsTo& lhsPts = pta->getPts(lhsNode->getId());
+                    SVFUtil::errs() << "[StoreFilter]     -> LHS points-to set: size=" << lhsPts.count() << ", objects={";
+                    bool first = true;
+                    for (NodeID objId : lhsPts) {
+                        if (!first) {
+                            SVFUtil::errs() << ", ";
+                        }
+                        first = false;
+                        SVFUtil::errs() << objId;
+                    }
+                    SVFUtil::errs() << "}\n";
+                    
+                    // Add the pointer node ID directly for alias checking
+                    startNodeLHSPointers.insert(lhsNode->getId());
+                    lhsPtrIdToStartSVFGNode[lhsNode->getId()] = startSVFGNode;
+                    SVFUtil::errs() << "[StoreFilter]     -> ADDED to startNodeLHSPointers set\n";
+                } else {
+                    SVFUtil::errs() << "[StoreFilter]     -> NOT ADDED: LHS is not a pointer\n";
+                }
+            } else {
+                SVFUtil::errs() << "[StoreFilter]     -> LHS PAGNode is NULL\n";
+            }
+        }
+        SVFUtil::errs() << "[StoreFilter] === Finished extracting. Total LHS pointer PAGNode IDs: " << startNodeLHSPointers.size() << " ===\n";
+    }
+
+    for (const auto& [retICFG, icfgPaths] : pathsByReturn) {
+        for (size_t pathIdx = 0; pathIdx < icfgPaths.size(); pathIdx++) {
+            const auto& icfgPath = icfgPaths[pathIdx];
+            
+            // Collect keySVFGNode sequence for this path
+            std::vector<NodeID> keySVFGSequence;
+            Set<NodeID> seenInPath;  // Avoid duplicates in same path
+            
+            for (const ICFGNode* icfgNode : icfgPath) {
+                // Find all SVFG nodes at this ICFG location
+                for (auto it = svfg->begin(); it != svfg->end(); ++it) {
+                    const SVFGNode* svfgNode = it->second;
+                    if (svfgNode->getICFGNode() == icfgNode) {
+                        // Check if this is a keySVFGNode
+                        if (keySVFGNodes.count(svfgNode) && !seenInPath.count(svfgNode->getId())) {
+                            // OUTPUT FILTER: Hide certain node types from the final sequence
+                            // All nodes were collected during BFS, now we filter what to display
+                            bool shouldHideInOutput = false;
+                            
+                            // Filter out pure control-flow nodes (don't affect data/memory)
+                            if (SVFUtil::isa<BranchVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<NullPtrSVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<DummyVersionPropSVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<BinaryOPVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<UnaryOPVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<CmpVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<IntraMSSAPHISVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<LoadVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (SVFUtil::isa<CopyVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                            } else if (const ActualParmVFGNode* actualParmNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
+                                shouldHideInOutput = true;
+                                // 按照注释要求：沿 actual 参数入边找到关联 Load 节点，取其 RHS，
+                                // 并利用现有 isValueFlowReachable() 判断是否可达起始 LHS 指针。
+                                // 找到当前actualParmNode的入边 找到所有与之相连的load节点
+                                std::vector<const LoadVFGNode*> connectedLoads;
+                                for (const SVFGEdge* inEdge : actualParmNode->getInEdges()) {
+                                    const SVFGNode* pred = inEdge->getSrcNode();
+                                    if (const LoadVFGNode* loadNode = SVFUtil::dyn_cast<LoadVFGNode>(pred)) {
+                                        connectedLoads.push_back(loadNode);
+                                    }
+                                }
+                                for (const LoadVFGNode* loadNode : connectedLoads) {
+                                    const SVFStmt* stmt = loadNode->getPAGEdge();
+                                    const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(stmt);
+                                    if (!loadStmt) {
+                                        continue;
+                                    }
+                                    const SVFVar* rhsVar = loadStmt->getRHSVar();
+                                    if (!rhsVar) {
+                                        continue;
+                                    }
+                                    NodeID rhsNodeId = rhsVar->getId();
+                                    for (NodeID lhsPtrId : startNodeLHSPointers) {
+                                        if (isValueFlowReachable(rhsNodeId, lhsPtrId)) {
+                                            shouldHideInOutput = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            } else if (const GepVFGNode* gepNode = SVFUtil::dyn_cast<GepVFGNode>(svfgNode)) {
+                                // Filter out GEP operations on array objects
+                                // This operation doesn't affect memory ownership
+                                const GepStmt* gepStmt = SVFUtil::dyn_cast<GepStmt>(gepNode->getPAGEdge());
+                                if (gepStmt) {
+                                    // Strategy 1: Check AccessPath types in GepStmt
+                                    // AccessPath contains type information for each index operand
+                                    bool isArrayFromAccessPath = false;
+                                    bool hasStructFromAccessPath = false;
+                                    const AccessPath::IdxOperandPairs& typePairs = gepStmt->getOffsetVarAndGepTypePairVec();
+                                    for (const auto& pair : typePairs) {
+                                        const SVFType* idxType = pair.second;
+                                        if (idxType) {
+                                            if (SVFUtil::isa<SVFStructType>(idxType) || idxType->isStructTy()) {
+                                                hasStructFromAccessPath = true;
+                                            }
+                                            if (SVFUtil::isa<SVFArrayType>(idxType) || idxType->isArrayTy()) {
+                                                isArrayFromAccessPath = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    
+                                    if (hasStructFromAccessPath) {
+                                        // Struct GEP should be preserved
+                                        shouldHideInOutput = false;
+                                    } else if (isArrayFromAccessPath) {
+                                        shouldHideInOutput = true;
+                                    } else {
+                                        shouldHideInOutput = true;
+                                    }
+                                    
+                                    // Only continue with base object checks if not already filtered
+                                    if (!shouldHideInOutput) {
+                                        
+                                        // Try to get base object from LHS (GepObjVar)
+                                        const PAGNode* lhsNode = gepStmt->getLHSVar();
+                                        const BaseObjVar* baseObj = nullptr;
+                                        
+                                        if (lhsNode) {
+                                            // Check if LHS is a GepObjVar
+                                            if (const GepObjVar* gepObjVar = SVFUtil::dyn_cast<GepObjVar>(lhsNode)) {
+                                                baseObj = gepObjVar->getBaseObj();
+                                            } else {
+                                                // Try getBaseObject for LHS
+                                                baseObj = pag->getBaseObject(lhsNode->getId());
+                                            }
+                                        }
+                                        
+                                        // If not found from LHS, try RHS
+                                        if (!baseObj) {
+                                            const PAGNode* rhsNode = gepStmt->getRHSVar();
+                                            if (rhsNode) {
+                                                // Check if RHS is an ObjVar directly
+                                                if (const ObjVar* objVar = SVFUtil::dyn_cast<ObjVar>(rhsNode)) {
+                                                    if (const GepObjVar* gepObjVar = SVFUtil::dyn_cast<GepObjVar>(objVar)) {
+                                                        baseObj = gepObjVar->getBaseObj();
+                                                    } else {
+                                                        baseObj = pag->getBaseObject(rhsNode->getId());
+                                                    }
+                                                } else {
+                                                    // RHS is ValVar (pointer value), try getBaseObject
+                                                    baseObj = pag->getBaseObject(rhsNode->getId());
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Check if base object is an array
+                                        if (baseObj) {
+                                            if (baseObj->isStruct()) {
+                                                shouldHideInOutput = false;
+                                            } else if (baseObj->isArray()) {
+                                                shouldHideInOutput = true;
+                                            }
+                                        } else {
+                                            // Try to check type from LHS node directly
+                                            bool isArrayType = false;
+                                            
+                                            if (lhsNode) {
+                                                // Get type from LHS node
+                                                const SVFType* lhsType = lhsNode->getType();
+                                                if (lhsType) {
+                                                    // Check if it's an array type
+                                                    if (SVFUtil::isa<SVFStructType>(lhsType) || lhsType->isStructTy()) {
+                                                        shouldHideInOutput = false;
+                                                        isArrayType = false;
+                                                    } else if (SVFUtil::isa<SVFArrayType>(lhsType)) {
+                                                        isArrayType = true;
+                                                    } else if (lhsType->isArrayTy()) {
+                                                        isArrayType = true;
+                                                    }
+                                                    
+                                                    // Also try to get LLVM type if available
+                                                    if (const ValVar* valVar = SVFUtil::dyn_cast<ValVar>(lhsNode)) {
+                                                        const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(valVar);
+                                                        if (llvmVal) {
+                                                            const llvm::Type* llvmType = llvmVal->getType();
+                                                            if (llvmType) {
+                                                                // Check if LLVM type is pointer to array
+                                                                if (llvmType->isPointerTy()) {
+                                                                    // Handle opaque pointers in LLVM 16+
+                                                                    const llvm::PointerType* ptrType = llvm::cast<llvm::PointerType>(llvmType);
+                                                                    if (!ptrType->isOpaque()) {
+                                                                        const llvm::Type* pointeeType = ptrType->getNonOpaquePointerElementType();
+                                                                        if (pointeeType && pointeeType->isArrayTy()) {
+                                                                            isArrayType = true;
+                                                                        }
+                                                                    } else {
+                                                                        // For opaque pointers, try to get type from GEP instruction if available
+                                                                        if (const llvm::GetElementPtrInst* gepInst = llvm::dyn_cast<llvm::GetElementPtrInst>(llvmVal)) {
+                                                                            const llvm::Type* sourceType = gepInst->getSourceElementType();
+                                                                            if (sourceType && sourceType->isArrayTy()) {
+                                                                                isArrayType = true;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                } else if (llvmType->isArrayTy()) {
+                                                                    isArrayType = true;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            
+                                            if (isArrayType) {
+                                                shouldHideInOutput = true;
+                                            }
+                                        }
+                                    } // End of base object checks
+                                }
+                            } else if (const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(svfgNode)) {
+                                const PAGNode* dstNode = storeNode->getPAGDstNode();
+                                if (dstNode) {
+                                    bool reachesFormalParm = GraphReaderUtil::isLvarFormalParm(svfg, pag, dstNode);
+                                    if (!reachesFormalParm) {
+                                        shouldHideInOutput = true;
+                                    }
+                                }
+                                
+                                // Additional filter: filter out stores of concrete values (non-pointer) to objects of interest
+                                // This only affects memory values, not memory ownership/state
+                                if (!shouldHideInOutput) {
+                                    const PAGNode* srcNode = storeNode->getPAGSrcNode();
+                                    if (srcNode) {
+                                        if (!srcNode->isPointer()) {
+                                            shouldHideInOutput = true;
+                                        } else if (pta && !startNodeLHSPointers.empty()) {
+                                            bool hasAlias = false;
+                                            for (NodeID lhsPtrId : startNodeLHSPointers) {
+                                                if (pta->alias(srcNode->getId(), lhsPtrId) != AliasResult::NoAlias) {
+                                                    hasAlias = true;
+                                                    break;
+                                                }
+                                            }
+                                            
+                                            bool hasValueFlow = false;
+                                            if (!hasAlias) {
+                                                for (NodeID lhsPtrId : startNodeLHSPointers) {
+                                                    if (isValueFlowReachable(srcNode->getId(), lhsPtrId)) {
+                                                        hasValueFlow = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            
+                                            if (!hasAlias && !hasValueFlow) {
+                                                shouldHideInOutput = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if (!shouldHideInOutput) {
+                                keySVFGSequence.push_back(svfgNode->getId());
+                                seenInPath.insert(svfgNode->getId());
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Group this path by its keySVFGNode sequence
+            pathGroupsByReturn[retICFG][keySVFGSequence].push_back(pathIdx);
+        }
+    }
+
+    // Step G: Build JSON output with detailed path format
+    // Each path group becomes one path in the output
+    llvm::json::Array pathsArray;
+
+    // Helper function to format location JSON object to "filename:line" string
+    auto formatLocationString = [](const llvm::json::Object& locObj) -> std::string {
+        std::string filename;
+        int64_t line = 0;
+        
+        if (auto fl = locObj.getString("fl")) {
+            filename = fl->str();
+        }
+        if (auto ln = locObj.getInteger("ln")) {
+            line = *ln;
+        }
+        
+        if (filename.empty() && line == 0) {
+            return "";
+        } else if (filename.empty()) {
+            return std::to_string(line);
+        } else if (line == 0) {
+            return filename;
+        } else {
+            return filename + ":" + std::to_string(line);
+        }
+    };
+
+    // Build start node description
+    std::string startNodeDesc = startNode->toString();
+    if (startNodeDesc.empty()) {
+        startNodeDesc = "Start location: " + startLocation;
+    }
+
+    // Iterate over all return locations and their path groups
+    for (const auto& [retICFG, pathGroups] : pathGroupsByReturn) {
+        // For each path group (keySVFGSequence), create one path
+        for (const auto& [keySVFGSequence, pathIndices] : pathGroups) {
+            llvm::json::Array pathArray;
+            
+            // Add start node
+            llvm::json::Object startNodeObj;
+            startNodeObj["node"] = "start";
+            startNodeObj["node_desc"] = startNodeDesc;
+            // Get location from startNode->toString() using parseSourceLocation and format as string
+            llvm::json::Object startLocationObj = GraphReaderUtil::parseSourceLocation(startNodeDesc);
+            startNodeObj["location"] = formatLocationString(startLocationObj);
+            pathArray.push_back(std::move(startNodeObj));
+            
+            // Add middle key SVFG nodes from the group's keySVFGSequence
+            for (NodeID nodeId : keySVFGSequence) {
+                const SVFGNode* svfgNode = svfg->getSVFGNode(nodeId);
+                if (!svfgNode) {
+                    continue;
+                }
+                
+                llvm::json::Object nodeObj;
+                
+                // Get node type name
+                std::string nodeType = GraphReaderUtil::getSVFGNodeKindString(svfgNode, true);
+                nodeObj["node"] = nodeType;
+                
+                // Get node description
+                std::string nodeDesc = svfgNode->toString();
+                nodeObj["node_desc"] = nodeDesc;
+                
+                // Get location from svfgNode->toString() using parseSourceLocation and format as string
+                llvm::json::Object locationObj = GraphReaderUtil::parseSourceLocation(nodeDesc);
+                nodeObj["location"] = formatLocationString(locationObj);
+                
+                pathArray.push_back(std::move(nodeObj));
+            }
+            
+            // Add return node
+            llvm::json::Object returnNodeObj;
+            returnNodeObj["node"] = "return";
+            
+            std::string retNodeDesc = retICFG->toString();
+            if (retNodeDesc.empty()) {
+                retNodeDesc = "Return location";
+            }
+            returnNodeObj["node_desc"] = retNodeDesc;
+            
+            // Get location from retICFG->toString() using parseSourceLocation and format as string
+            llvm::json::Object retLocationObj = GraphReaderUtil::parseSourceLocation(retNodeDesc);
+            returnNodeObj["location"] = formatLocationString(retLocationObj);
+            
+            pathArray.push_back(std::move(returnNodeObj));
+            
+            pathsArray.push_back(std::move(pathArray));
+        }
+    }
+
+    // Build final result
+    llvm::json::Object result;
+    result["path_number"] = std::to_string(pathsArray.size());
+    result["paths"] = std::move(pathsArray);
+
+    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+    llvm::outs().flush();
+}
+
+// dst - 关联我关心的变量
+// src - 当前位置的变量 - 可能指向一个 store(右值) 或者 formalparm(parm)
+bool PathQuery::isValueFlowReachable(NodeID src, NodeID dst) {
+    if (!svfg || !pag) {
+        return false;
+    }
+    
+    if (src == dst) {
+        return true;
+    }
+    
+    // Step 1: Find all SVFG nodes that define dst (target nodes we want to reach)
+    Set<const SVFGNode*> targetDefNodes;
+    for (auto it = svfg->begin(); it != svfg->end(); ++it) {
+        const SVFGNode* node = it->second;
+        
+        // Check if this node defines dst
+        if (const StmtVFGNode* stmtNode = SVFUtil::dyn_cast<StmtVFGNode>(node)) {
+            if (stmtNode->getPAGDstNode() && stmtNode->getPAGDstNode()->getId() == dst) {
+                targetDefNodes.insert(node);
+               
+            }
+        } else if (const FormalParmVFGNode* formalParmNode = SVFUtil::dyn_cast<FormalParmVFGNode>(node)) {
+            if (formalParmNode->getParam() && formalParmNode->getParam()->getId() == dst) {
+                targetDefNodes.insert(node);
+            }
+        }
+    }
+    
+    if (targetDefNodes.empty()) {
+        return false;
+    }
+    
+    // Step 2: Find all SVFG nodes that use src (starting nodes for backward traversal)
+    Set<const SVFGNode*> sourceUseNodes;
+
+    for (auto it = svfg->begin(); it != svfg->end(); ++it) {
+        const SVFGNode* node = it->second;
+        
+        // Check if this node uses src (as RHS/src or as LHS but from a different perspective)
+        bool usesSrc = false;
+        if (const StmtVFGNode* stmtNode = SVFUtil::dyn_cast<StmtVFGNode>(node)) {
+            // Check if src is used as RHS (source) of this statement
+            if (stmtNode->getPAGSrcNode() && stmtNode->getPAGSrcNode()->getId() == src) {
+                usesSrc = true;
+            }
+            // For Store nodes, also check if src is the value being stored (RHS)
+            if (const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(stmtNode)) {
+                if (storeNode->getPAGSrcNode() && storeNode->getPAGSrcNode()->getId() == src) {
+                    usesSrc = true;
+                }
+            }
+        }
+        
+        if (usesSrc) {
+            sourceUseNodes.insert(node);
+        }
+    }
+    
+    if (sourceUseNodes.empty()) {
+        return false;
+    }
+    
+    return backwardValueFlowReachable(sourceUseNodes, targetDefNodes);
+}
+
+bool PathQuery::backwardValueFlowReachable(const Set<const SVFGNode*>& seedNodes,
+                                           const Set<const SVFGNode*>& targetDefNodes) {
+    if (seedNodes.empty()) {
+        return false;
+    }
+
+    std::queue<const SVFGNode*> worklist;
+    Set<const SVFGNode*> visited;
+    llvm::DenseMap<const SVFGNode*, const SVFGNode*> parentMap;
+
+    for (const SVFGNode* node : seedNodes) {
+        worklist.push(node);
+        visited.insert(node);
+        parentMap[node] = nullptr;
+    }
+
+    size_t iteration = 0;
+    const size_t MAX_ITERATIONS = 1000; // Prevent infinite loops
+    const size_t MAX_VISITED = 100; // Limit search space
+
+    while (!worklist.empty() && iteration < MAX_ITERATIONS && visited.size() < MAX_VISITED) {
+        iteration++;
+        const SVFGNode* currentNode = worklist.front();
+        worklist.pop();
+
+        if (targetDefNodes.count(currentNode)) {
+            std::vector<const SVFGNode*> pathNodes;
+            const SVFGNode* pathNode = currentNode;
+            while (pathNode) {
+                pathNodes.push_back(pathNode);
+                auto it = parentMap.find(pathNode);
+                if (it == parentMap.end()) {
+                    break;
+                }
+                pathNode = it->second;
+            }
+
+            return true;
+        }
+
+        if (SVFUtil::isa<IntraMSSAPHISVFGNode>(currentNode)) {
+            continue;
+        }
+
+        for (const SVFGEdge* edge : currentNode->getInEdges()) {
+            const SVFGNode* pred = edge->getSrcNode();
+
+            if (pred && visited.insert(pred).second) {
+                worklist.push(pred);
+                parentMap[pred] = currentNode;
+            }
+        }
+    }
+
+    return false;
 }
 
 }// namespace SVF

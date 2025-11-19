@@ -191,6 +191,78 @@ int main(int argc, char ** argv) {
                     }
                     pq.getValueSensitiveReturnInsidePath(loc->str(), startSVFGNodes);
                 }
+            } else if (cname == "find-lvalue-detail-path-inside") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                } else {
+                    int eqPosition = -1;
+                    try {
+                        eqPosition = std::stoi(eqPositionStr->str());
+                    } catch (...) {
+                        SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
+                        continue;
+                    }
+                    std::vector<const SVFGNode*> startSVFGNodes;
+                    if (eqPosition != -1) {
+                        const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
+                        if (!startPAGNode) {
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
+                            continue;
+                        }
+                        const SVFGNode* startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
+                        if (!startSVFGNode) {
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find SVFGNode for PAGNode " + std::to_string(startPAGNode->getId()));
+                            continue;
+                        }
+                        startSVFGNodes.push_back(startSVFGNode);
+                    }
+                    pq.getValueSensitiveReturnInsidePathDetailed(loc->str(), startSVFGNodes);
+                }
+            } else if (cname == "find-lvalue-detail-path-inside-store") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                    continue;
+                }
+                int eqPosition = -1;
+                try {
+                    eqPosition = std::stoi(eqPositionStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
+                    continue;
+                }
+                // 直接寻找cl的store路径
+                std::vector<const ICFGNode*> nodes = SVF::GraphReaderUtil::findAllICFGNodesByLocation(icfg, loc->str());
+                const ICFGNode* matchedNode = nullptr;
+                for (const ICFGNode* node : nodes) {
+                    if (!SVFUtil::isa<IntraICFGNode>(node)) {
+                        continue;
+                    }
+                    llvm::json::Object locInfo = SVF::GraphReaderUtil::parseSourceLocation(node->getSourceLoc());
+                    if (auto col = locInfo.getInteger("cl")) {
+                        if (*col == eqPosition) {
+                            matchedNode = node;
+                            break;
+                        }
+                    }
+                }
+                std::vector<const SVFGNode*> storeNodes;
+                for (auto& pair : *svfg) {
+                    SVFGNode* svfgNode = pair.second;
+                    if (svfgNode->getICFGNode() == matchedNode) {
+                        if (auto storeNode = SVFUtil::dyn_cast<StoreVFGNode>(svfgNode)) {
+                            storeNodes.push_back(storeNode);
+                        }
+                    }
+                }
+                std::vector<const SVFGNode*> startSVFGNodes;
+                for (const SVFGNode* storeNode : storeNodes) {
+                    startSVFGNodes.push_back(storeNode);
+                }
+                pq.getValueSensitiveReturnInsidePathDetailed(loc->str(), startSVFGNodes);
             } else if (cname == "find-call-arg-value-path-inside") {
                 auto loc = cmd.getString("location");
                 auto calleeFuncName = cmd.getString("callee_function_name");
