@@ -28,3 +28,4 @@ compile_commands.json
 Release-build/
 *.dot
 /PUT
+test/
