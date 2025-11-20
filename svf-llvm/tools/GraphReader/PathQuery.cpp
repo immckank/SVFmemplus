@@ -1668,91 +1668,22 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
     // Map from LHS PAGNode ID to startSVFGNode for location lookup
     std::map<NodeID, const SVFGNode*> lhsPtrIdToStartSVFGNode;
     if (pta && !startSVFGNodes.empty()) {
-        SVFUtil::errs() << "[StoreFilter] === Extracting LHS PAGNode IDs from startSVFGNodes ===\n";
-        SVFUtil::errs() << "[StoreFilter] Total startSVFGNodes: " << startSVFGNodes.size() << "\n";
         for (const SVFGNode* startSVFGNode : startSVFGNodes) {
-            // Output startSVFGNode location
-            std::string startNodeLocStr = startSVFGNode->toString();
-            SVFUtil::errs() << "[StoreFilter]   Processing startSVFGNode ID=" << startSVFGNode->getId() << "\n";
-            SVFUtil::errs() << "[StoreFilter]     -> Location: " << startNodeLocStr << "\n";
-            
-            // Also try to get location from ICFGNode
-            const ICFGNode* icfgNode = startSVFGNode->getICFGNode();
-            if (icfgNode) {
-                std::string icfgLocStr = icfgNode->getSourceLoc();
-                if (!icfgLocStr.empty()) {
-                    SVFUtil::errs() << "[StoreFilter]     -> ICFG Location: " << icfgLocStr << "\n";
-                }
-            }
             const PAGNode* lhsNode = nullptr;
-            std::string nodeTypeStr = "Unknown";
             
             // Get LHS node based on node type
             if (const StmtVFGNode* stmtNode = SVFUtil::dyn_cast<StmtVFGNode>(startSVFGNode)) {
                 lhsNode = stmtNode->getPAGDstNode();
-                nodeTypeStr = "StmtVFGNode";
-                
-                // Check if it's a Store node
-                if (const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(startSVFGNode)) {
-                    nodeTypeStr = "StoreSVFGNode";
-                    SVFUtil::errs() << "[StoreFilter]     -> Type: " << nodeTypeStr << "\n";
-                    if (storeNode->getPAGSrcNode()) {
-                        SVFUtil::errs() << "[StoreFilter]     -> Store RHS PAGNode ID=" << storeNode->getPAGSrcNode()->getId() << "\n";
-                    }
-                } else {
-                    SVFUtil::errs() << "[StoreFilter]     -> Type: " << nodeTypeStr << "\n";
-                }
             } else if (const FormalParmVFGNode* formalParmNode = SVFUtil::dyn_cast<FormalParmVFGNode>(startSVFGNode)) {
                 lhsNode = formalParmNode->getParam();
-                nodeTypeStr = "FormalParmVFGNode";
-                SVFUtil::errs() << "[StoreFilter]     -> Type: " << nodeTypeStr << "\n";
-            } else {
-                SVFUtil::errs() << "[StoreFilter]     -> Type: " << nodeTypeStr << "\n";
             }
             
-            if (lhsNode) {
-                SVFUtil::errs() << "[StoreFilter]     -> LHS PAGNode ID=" << lhsNode->getId() 
-                               << ", isPointer()=" << (lhsNode->isPointer() ? "true" : "false") << "\n";
-                
-                // Output LLVM Value info if available
-                LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
-                if (const ValVar* valVar = SVFUtil::dyn_cast<ValVar>(lhsNode)) {
-                    const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(valVar);
-                    if (llvmVal) {
-                        SVFUtil::errs() << "[StoreFilter]     -> LHS LLVM Value: " << (void*)llvmVal;
-                        if (llvmVal->hasName()) {
-                            SVFUtil::errs() << " (name: " << llvmVal->getName().str() << ")";
-                        }
-                        SVFUtil::errs() << "\n";
-                    }
-                }
-                
-                // Output points-to set if it's a pointer
-                if (lhsNode->isPointer()) {
-                    const PointsTo& lhsPts = pta->getPts(lhsNode->getId());
-                    SVFUtil::errs() << "[StoreFilter]     -> LHS points-to set: size=" << lhsPts.count() << ", objects={";
-                    bool first = true;
-                    for (NodeID objId : lhsPts) {
-                        if (!first) {
-                            SVFUtil::errs() << ", ";
-                        }
-                        first = false;
-                        SVFUtil::errs() << objId;
-                    }
-                    SVFUtil::errs() << "}\n";
-                    
-                    // Add the pointer node ID directly for alias checking
-                    startNodeLHSPointers.insert(lhsNode->getId());
-                    lhsPtrIdToStartSVFGNode[lhsNode->getId()] = startSVFGNode;
-                    SVFUtil::errs() << "[StoreFilter]     -> ADDED to startNodeLHSPointers set\n";
-                } else {
-                    SVFUtil::errs() << "[StoreFilter]     -> NOT ADDED: LHS is not a pointer\n";
-                }
-            } else {
-                SVFUtil::errs() << "[StoreFilter]     -> LHS PAGNode is NULL\n";
+            if (lhsNode && lhsNode->isPointer()) {
+                // Add the pointer node ID directly for alias checking
+                startNodeLHSPointers.insert(lhsNode->getId());
+                lhsPtrIdToStartSVFGNode[lhsNode->getId()] = startSVFGNode;
             }
         }
-        SVFUtil::errs() << "[StoreFilter] === Finished extracting. Total LHS pointer PAGNode IDs: " << startNodeLHSPointers.size() << " ===\n";
     }
 
     for (const auto& [retICFG, icfgPaths] : pathsByReturn) {
@@ -1793,11 +1724,104 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                                 shouldHideInOutput = true;
                             } else if (SVFUtil::isa<CopyVFGNode>(svfgNode)) {
                                 shouldHideInOutput = true;
+                            } else if (const ActualINSVFGNode* actualInNode = SVFUtil::dyn_cast<ActualINSVFGNode>(svfgNode)) {
+                                std::vector<const StoreSVFGNode*> connectedStores;
+                                std::vector<const MSSAPHISVFGNode*> connectedMPHI;
+                                for (const SVFGEdge* inEdge : actualInNode->getInEdges()) {
+                                    const SVFGNode* srcNode = inEdge->getSrcNode();
+                                    if (const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(srcNode)) {
+                                        connectedStores.push_back(storeNode);
+                                    } else if (const MSSAPHISVFGNode* mphiNode = SVFUtil::dyn_cast<MSSAPHISVFGNode>(srcNode)) {
+                                        connectedMPHI.push_back(mphiNode);
+                                    }
+                                }
+                                shouldHideInOutput = true;
+                                std::queue<const MSSAPHISVFGNode*> mphiQueue;
+                                std::set<NodeID> processedMPHI;
+                                bool foundReachableStore = false;
+                                
+                                // 首先处理初始的connectedStores（如果有）
+                                for (const StoreSVFGNode* storeNode : connectedStores) {
+                                    const SVFStmt* stmt = storeNode->getPAGEdge();
+                                    const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(stmt);
+                                    if (!storeStmt) {
+                                        continue;
+                                    }
+                                    const SVFVar* lhsVar = storeStmt->getLHSVar();
+                                    if (!lhsVar) {
+                                        continue;
+                                    }
+                                    NodeID lhsNodeId = lhsVar->getId();
+                                    for (NodeID lhsPtrId : startNodeLHSPointers) {
+                                        if (isValueFlowReachable(lhsNodeId, lhsPtrId)) {
+                                            shouldHideInOutput = false;
+                                            foundReachableStore = true;
+                                            break;
+                                        }
+                                    }
+                                    if (foundReachableStore) {
+                                        break;
+                                    }
+                                }
+                                
+                                // 将初始的connectedMPHI节点加入队列（如果还没找到isReachable的store）
+                                if (!foundReachableStore) {
+                                    for (const MSSAPHISVFGNode* mphiNode : connectedMPHI) {
+                                        if (processedMPHI.find(mphiNode->getId()) == processedMPHI.end()) {
+                                            mphiQueue.push(mphiNode);
+                                            processedMPHI.insert(mphiNode->getId());
+                                        }
+                                    }
+                                }
+                                
+                                // while循环处理所有mphi节点，直到找到isReachable的store节点或队列为空
+                                while (!mphiQueue.empty() && !foundReachableStore) {
+                                    const MSSAPHISVFGNode* mphiNode = mphiQueue.front();
+                                    mphiQueue.pop();
+                                    
+                                    // 遍历当前mphi节点的所有入边
+                                    for (const SVFGEdge* inEdge : mphiNode->getInEdges()) {
+                                        if (foundReachableStore) {
+                                            break;
+                                        }
+                                        
+                                        const SVFGNode* srcNode = inEdge->getSrcNode();
+                                        
+                                        // 如果src节点是store类型的，立即处理并检查isReachable
+                                        if (const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(srcNode)) {
+                                            const SVFStmt* stmt = storeNode->getPAGEdge();
+                                            const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(stmt);
+                                            if (storeStmt) {
+                                                const SVFVar* lhsVar = storeStmt->getLHSVar();
+                                                if (lhsVar) {
+                                                    NodeID lhsNodeId = lhsVar->getId();
+                                                    for (NodeID lhsPtrId : startNodeLHSPointers) {
+                                                        if (isValueFlowReachable(lhsNodeId, lhsPtrId)) {
+                                                            shouldHideInOutput = false;
+                                                            foundReachableStore = true;
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        } 
+                                        // 如果src节点是mphi类型的，加入队列继续处理（如果还没找到isReachable的store）
+                                        else if (const MSSAPHISVFGNode* nextMphiNode = SVFUtil::dyn_cast<MSSAPHISVFGNode>(srcNode)) {
+                                            // 检查是否已经处理过，避免重复处理
+                                            if (processedMPHI.find(nextMphiNode->getId()) == processedMPHI.end()) {
+                                                mphiQueue.push(nextMphiNode);
+                                                processedMPHI.insert(nextMphiNode->getId());
+                                            }
+                                        }
+                                    }
+                                }
+                                if (foundReachableStore) {
+                                    while (!mphiQueue.empty()) {
+                                        mphiQueue.pop();
+                                    }
+                                }
                             } else if (const ActualParmVFGNode* actualParmNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
                                 shouldHideInOutput = true;
-                                // 按照注释要求：沿 actual 参数入边找到关联 Load 节点，取其 RHS，
-                                // 并利用现有 isValueFlowReachable() 判断是否可达起始 LHS 指针。
-                                // 找到当前actualParmNode的入边 找到所有与之相连的load节点
                                 std::vector<const LoadVFGNode*> connectedLoads;
                                 for (const SVFGEdge* inEdge : actualParmNode->getInEdges()) {
                                     const SVFGNode* pred = inEdge->getSrcNode();
@@ -1958,7 +1982,9 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                                 const PAGNode* dstNode = storeNode->getPAGDstNode();
                                 if (dstNode) {
                                     bool reachesFormalParm = GraphReaderUtil::isLvarFormalParm(svfg, pag, dstNode);
-                                    if (!reachesFormalParm) {
+                                    bool reachesReturn = isLvarReachesReturn(svfg, pag, dstNode);
+                                    // Only hide if left value neither reaches formal parameter nor reaches return value
+                                    if (!reachesFormalParm && !reachesReturn) {
                                         shouldHideInOutput = true;
                                     }
                                 }
@@ -2011,6 +2037,166 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
         }
     }
 
+    // Step F.5: Extract and filter branch information for each path group
+    // Structure: return ICFG -> (keySVFGSequence -> consistent branch nodes)
+    // Branch node info: ICFG node, edge, location, condition value, position in path
+    struct BranchNodeInfo {
+        const ICFGNode* srcNode;
+        const IntraCFGEdge* edge;
+        llvm::json::Object branchInfo;
+        size_t positionInPath;  // Index in ICFG path where this branch occurs
+        std::string branchKey;  // Unique key: "location|condition_value|dst_node_id"
+    };
+    
+    std::map<const ICFGNode*, 
+             std::map<std::vector<NodeID>, 
+                      std::vector<BranchNodeInfo>>> consistentBranchesByReturn;
+    
+    for (const auto& [retICFG, pathGroups] : pathGroupsByReturn) {
+        const auto& icfgPaths = pathsByReturn.at(retICFG);
+        
+        for (const auto& [keySVFGSequence, pathIndices] : pathGroups) {
+            if (pathIndices.empty()) {
+                continue;
+            }
+            
+            // Extract branch information from all paths in this group
+            // Map: branchKey -> set of condition values across all paths
+            std::map<std::string, std::set<std::string>> branchKeyToCondValues;
+            // Map: branchKey -> BranchNodeInfo (for reference)
+            std::map<std::string, BranchNodeInfo> branchKeyToInfo;
+            
+            for (int pathIdx : pathIndices) {
+                if (pathIdx < 0 || static_cast<size_t>(pathIdx) >= icfgPaths.size()) {
+                    continue;
+                }
+                const auto& icfgPath = icfgPaths[pathIdx];
+                
+                // Extract branches from this ICFG path
+                for (size_t idx = 0; idx + 1 < icfgPath.size(); ++idx) {
+                    const ICFGNode* srcNode = icfgPath[idx];
+                    const ICFGNode* dstNode = icfgPath[idx + 1];
+                    const IntraCFGEdge* branchEdge = nullptr;
+                    
+                    // Find the edge from srcNode to dstNode
+                    for (ICFGEdge* edge : srcNode->getOutEdges()) {
+                        if (edge->getDstNode() != dstNode) {
+                            continue;
+                        }
+                        if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
+                            if (intraEdge->getCondition()) {
+                                branchEdge = intraEdge;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (!branchEdge) {
+                        continue;
+                    }
+                    
+                    // Create branch info
+                    llvm::json::Object branchInfo = GraphReaderUtil::formatBranchInfo(branchEdge);
+                    std::string location = "unknown";
+                    std::string conditionValue = "unknown";
+                    
+                    if (auto loc = branchInfo.getString("location")) {
+                        location = loc->str();
+                    }
+                    if (auto cond = branchInfo.getString("condition_value")) {
+                        conditionValue = cond->str();
+                    }
+                    
+                    // Create unique key: location + condition_value + dst_node_id
+                    // This helps distinguish different branches at the same location
+                    std::string branchKey = location + "|" + conditionValue + "|" + 
+                                          std::to_string(dstNode->getId());
+                    
+                    // Store condition value for this branch key
+                    branchKeyToCondValues[branchKey].insert(conditionValue);
+                    
+                    // Store branch info (use first occurrence as reference)
+                    if (branchKeyToInfo.find(branchKey) == branchKeyToInfo.end()) {
+                        BranchNodeInfo info;
+                        info.srcNode = srcNode;
+                        info.edge = branchEdge;
+                        info.branchInfo = branchInfo;
+                        info.positionInPath = idx;
+                        info.branchKey = branchKey;
+                        branchKeyToInfo[branchKey] = info;
+                    }
+                }
+            }
+            
+            // Filter: only keep branches that are consistent across all paths in the group
+            // A branch is consistent if ALL paths in the group have the same branch (same location, same condition value)
+            std::vector<BranchNodeInfo> consistentBranches;
+            for (const auto& [branchKey, condValues] : branchKeyToCondValues) {
+                // If all paths have the same condition value, check if all paths have this branch
+                if (condValues.size() == 1 && pathIndices.size() > 0) {
+                    // Check if this branch appears in ALL paths with the same condition value
+                    int pathCountWithBranch = 0;
+                    
+                    for (int pathIdx : pathIndices) {
+                        if (pathIdx < 0 || static_cast<size_t>(pathIdx) >= icfgPaths.size()) {
+                            continue;
+                        }
+                        const auto& icfgPath = icfgPaths[pathIdx];
+                        
+                        bool foundBranch = false;
+                        for (size_t idx = 0; idx + 1 < icfgPath.size(); ++idx) {
+                            const ICFGNode* srcNode = icfgPath[idx];
+                            const ICFGNode* dstNode = icfgPath[idx + 1];
+                            
+                            for (ICFGEdge* edge : srcNode->getOutEdges()) {
+                                if (edge->getDstNode() != dstNode) {
+                                    continue;
+                                }
+                                if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
+                                    if (intraEdge->getCondition()) {
+                                        llvm::json::Object brInfo = GraphReaderUtil::formatBranchInfo(intraEdge);
+                                        std::string loc = "unknown";
+                                        std::string condVal = "unknown";
+                                        if (auto l = brInfo.getString("location")) {
+                                            loc = l->str();
+                                        }
+                                        if (auto c = brInfo.getString("condition_value")) {
+                                            condVal = c->str();
+                                        }
+                                        std::string key = loc + "|" + condVal + "|" + 
+                                                         std::to_string(dstNode->getId());
+                                        if (key == branchKey) {
+                                            foundBranch = true;
+                                            pathCountWithBranch++;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if (foundBranch) {
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Only include branch if it appears in ALL paths in the group
+                    // This ensures we only keep branches that are completely consistent across the group
+                    if (pathCountWithBranch == static_cast<int>(pathIndices.size())) {
+                        consistentBranches.push_back(branchKeyToInfo[branchKey]);
+                    }
+                }
+            }
+            
+            // Sort branches by position in path (to maintain order)
+            std::sort(consistentBranches.begin(), consistentBranches.end(),
+                     [](const BranchNodeInfo& a, const BranchNodeInfo& b) {
+                         return a.positionInPath < b.positionInPath;
+                     });
+            
+            consistentBranchesByReturn[retICFG][keySVFGSequence] = std::move(consistentBranches);
+        }
+    }
+
     // Step G: Build JSON output with detailed path format
     // Each path group becomes one path in the output
     llvm::json::Array pathsArray;
@@ -2046,6 +2232,9 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
 
     // Iterate over all return locations and their path groups
     for (const auto& [retICFG, pathGroups] : pathGroupsByReturn) {
+        // Get ICFG paths for this return location
+        const auto& icfgPaths = pathsByReturn.at(retICFG);
+        
         // For each path group (keySVFGSequence), create one path
         for (const auto& [keySVFGSequence, pathIndices] : pathGroups) {
             llvm::json::Array pathArray;
@@ -2059,28 +2248,153 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
             startNodeObj["location"] = formatLocationString(startLocationObj);
             pathArray.push_back(std::move(startNodeObj));
             
-            // Add middle key SVFG nodes from the group's keySVFGSequence
-            for (NodeID nodeId : keySVFGSequence) {
-                const SVFGNode* svfgNode = svfg->getSVFGNode(nodeId);
-                if (!svfgNode) {
-                    continue;
+            // Get consistent branches for this path group
+            const auto& consistentBranches = consistentBranchesByReturn[retICFG][keySVFGSequence];
+            
+            // Build a unified sequence of nodes (branches and SVFG nodes) in path order
+            // Use the first path in the group as reference for ordering
+            struct PathNode {
+                enum Type { BRANCH, SVFG };
+                Type type;
+                size_t position;  // Position in ICFG path
+                llvm::json::Object nodeObj;
+            };
+            
+            std::vector<PathNode> orderedNodes;
+            
+            // Add branch nodes
+            for (const auto& branchInfo : consistentBranches) {
+                PathNode node;
+                node.type = PathNode::BRANCH;
+                node.position = branchInfo.positionInPath;
+                
+                // Create branch node JSON object
+                llvm::json::Object branchObj;
+                branchObj["node"] = "branch";
+                
+                // Get branch description from ICFG node
+                std::string branchDesc = branchInfo.srcNode->toString();
+                if (branchDesc.empty()) {
+                    branchDesc = "Branch";
+                }
+                branchObj["node_desc"] = branchDesc;
+                
+                // Get location from branch info
+                std::string branchLocation = "unknown";
+                if (auto loc = branchInfo.branchInfo.getString("location")) {
+                    branchLocation = loc->str();
+                }
+                branchObj["location"] = branchLocation;
+                
+                // Add condition value
+                std::string conditionValue = "unknown";
+                if (auto cond = branchInfo.branchInfo.getString("condition_value")) {
+                    conditionValue = cond->str();
+                }
+                branchObj["condition_value"] = conditionValue;
+                
+                node.nodeObj = std::move(branchObj);
+                orderedNodes.push_back(std::move(node));
+            }
+            
+            // Add SVFG nodes and determine their positions in ICFG path
+            if (!pathIndices.empty() && pathIndices[0] >= 0 && 
+                static_cast<size_t>(pathIndices[0]) < icfgPaths.size()) {
+                const auto& refICFGPath = icfgPaths[pathIndices[0]];
+                
+                // Map: SVFG NodeID -> position in ICFG path
+                std::map<NodeID, size_t> svfgNodeToPosition;
+                for (size_t icfgIdx = 0; icfgIdx < refICFGPath.size(); ++icfgIdx) {
+                    const ICFGNode* icfgNode = refICFGPath[icfgIdx];
+                    // Find SVFG nodes at this ICFG location that are in keySVFGSequence
+                    for (NodeID nodeId : keySVFGSequence) {
+                        const SVFGNode* svfgNode = svfg->getSVFGNode(nodeId);
+                        if (svfgNode && svfgNode->getICFGNode() == icfgNode) {
+                            // Use first occurrence position
+                            if (svfgNodeToPosition.find(nodeId) == svfgNodeToPosition.end()) {
+                                svfgNodeToPosition[nodeId] = icfgIdx;
+                            }
+                        }
+                    }
                 }
                 
-                llvm::json::Object nodeObj;
-                
-                // Get node type name
-                std::string nodeType = GraphReaderUtil::getSVFGNodeKindString(svfgNode, true);
-                nodeObj["node"] = nodeType;
-                
-                // Get node description
-                std::string nodeDesc = svfgNode->toString();
-                nodeObj["node_desc"] = nodeDesc;
-                
-                // Get location from svfgNode->toString() using parseSourceLocation and format as string
-                llvm::json::Object locationObj = GraphReaderUtil::parseSourceLocation(nodeDesc);
-                nodeObj["location"] = formatLocationString(locationObj);
-                
-                pathArray.push_back(std::move(nodeObj));
+                // Add SVFG nodes to ordered list
+                for (NodeID nodeId : keySVFGSequence) {
+                    const SVFGNode* svfgNode = svfg->getSVFGNode(nodeId);
+                    if (!svfgNode) {
+                        continue;
+                    }
+                    
+                    PathNode node;
+                    node.type = PathNode::SVFG;
+                    // Get position from map, or use max if not found (shouldn't happen)
+                    auto it = svfgNodeToPosition.find(nodeId);
+                    node.position = (it != svfgNodeToPosition.end()) ? it->second : SIZE_MAX;
+                    
+                    llvm::json::Object nodeObj;
+                    
+                    // Get node type name
+                    std::string nodeType = GraphReaderUtil::getSVFGNodeKindString(svfgNode, true);
+                    nodeObj["node"] = nodeType;
+                    
+                    // Get node description
+                    std::string nodeDesc = svfgNode->toString();
+                    nodeObj["node_desc"] = nodeDesc;
+                    
+                    // Get location from svfgNode->toString() using parseSourceLocation and format as string
+                    llvm::json::Object locationObj = GraphReaderUtil::parseSourceLocation(nodeDesc);
+                    nodeObj["location"] = formatLocationString(locationObj);
+                    
+                    node.nodeObj = std::move(nodeObj);
+                    orderedNodes.push_back(std::move(node));
+                }
+            } else {
+                // Fallback: just add SVFG nodes in sequence order (no position info)
+                for (NodeID nodeId : keySVFGSequence) {
+                    const SVFGNode* svfgNode = svfg->getSVFGNode(nodeId);
+                    if (!svfgNode) {
+                        continue;
+                    }
+                    
+                    PathNode node;
+                    node.type = PathNode::SVFG;
+                    node.position = SIZE_MAX;  // No position info, will be added at end
+                    
+                    llvm::json::Object nodeObj;
+                    
+                    // Get node type name
+                    std::string nodeType = GraphReaderUtil::getSVFGNodeKindString(svfgNode, true);
+                    nodeObj["node"] = nodeType;
+                    
+                    // Get node description
+                    std::string nodeDesc = svfgNode->toString();
+                    nodeObj["node_desc"] = nodeDesc;
+                    
+                    // Get location from svfgNode->toString() using parseSourceLocation and format as string
+                    llvm::json::Object locationObj = GraphReaderUtil::parseSourceLocation(nodeDesc);
+                    nodeObj["location"] = formatLocationString(locationObj);
+                    
+                    node.nodeObj = std::move(nodeObj);
+                    orderedNodes.push_back(std::move(node));
+                }
+            }
+            
+            // Sort all nodes by position (branches and SVFG nodes together)
+            std::sort(orderedNodes.begin(), orderedNodes.end(),
+                     [](const PathNode& a, const PathNode& b) {
+                         if (a.position != b.position) {
+                             return a.position < b.position;
+                         }
+                         // If same position, branches come before SVFG nodes
+                         if (a.type != b.type) {
+                             return a.type < b.type;
+                         }
+                         return false;
+                     });
+            
+            // Add ordered nodes to path
+            for (auto& pathNode : orderedNodes) {
+                pathArray.push_back(std::move(pathNode.nodeObj));
             }
             
             // Add return node
@@ -2232,6 +2546,111 @@ bool PathQuery::backwardValueFlowReachable(const Set<const SVFGNode*>& seedNodes
         }
     }
 
+    return false;
+}
+
+bool PathQuery::isLvarReachesReturn(SVFG* svfg, SVFIR* pag, const PAGNode* pagNode) {
+    if (!svfg || !pag || !pagNode) {
+        return false;
+    }
+
+    // Step 1: Get the def SVFGNode and function from the given PAGNode
+    if (!svfg->hasDefSVFGNode(pagNode)) {
+        return false;
+    }
+
+    const SVFGNode* defNode = svfg->getDefSVFGNode(pagNode);
+    if (!defNode) {
+        return false;
+    }
+
+    const FunObjVar* function = defNode->getFun();
+    if (!function) {
+        return false;
+    }
+
+    // Step 2: Early check - verify function return type is pointer type
+    const llvm::Value* funVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(function);
+    if (!funVal) {
+        return false;
+    }
+
+    const llvm::Function* llvmFunc = llvm::dyn_cast<llvm::Function>(funVal);
+    if (!llvmFunc) {
+        return false;
+    }
+
+    // Check if return type is pointer type, if not (void, etc.), return false
+    if (!llvmFunc->getReturnType()->isPointerTy()) {
+        return false;
+    }
+
+    // Step 3: Find actual return locations using findActualReturnICFGNodes
+    if (!icfg) {
+        return false;
+    }
+
+    std::vector<const ICFGNode*> returnLocations = findActualReturnICFGNodes(icfg, function);
+    if (returnLocations.empty()) {
+        return false;
+    }
+
+    // Step 4: Extract LoadVFGNode statements at return locations and get their RHS PAGNodes
+    std::vector<const SVFVar*> loadRHSNodes;
+    
+    for (const ICFGNode* retICFGNode : returnLocations) {
+        // Find all SVFG nodes associated with this return ICFG node
+        for (auto it = svfg->begin(); it != svfg->end(); ++it) {
+            const SVFGNode* svfgNode = it->second;
+            if (svfgNode->getICFGNode() != retICFGNode) {
+                continue;
+            }
+
+            // Focus on LoadVFGNode
+            if (const LoadVFGNode* loadNode = SVFUtil::dyn_cast<LoadVFGNode>(svfgNode)) {
+                const SVFStmt* stmt = loadNode->getPAGEdge();
+                if (!stmt) {
+                    continue;
+                }
+
+                const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(stmt);
+                if (!loadStmt) {
+                    continue;
+                }
+
+                // Get the RHS (right value) PAGNode - this is the address being loaded from
+                const SVFVar* rhsVar = loadStmt->getRHSVar();
+                if (rhsVar) {
+                    loadRHSNodes.push_back(rhsVar);
+                }
+            }
+        }
+    }
+
+    // Step 5: If no load operations found, return false
+    if (loadRHSNodes.empty()) {
+        return false;
+    }
+
+    // Step 6: Check if the starting PAGNode can reach any of the load RHS PAGNodes
+    NodeID startNodeId = pagNode->getId();
+    
+    for (const SVFVar* loadRHSNode : loadRHSNodes) {
+        if (!loadRHSNode) {
+            continue;
+        }
+
+        NodeID loadRHSNodeId = loadRHSNode->getId();
+        
+        // Use isValueFlowReachable to check if startNode can reach loadRHSNode
+        // Note: isValueFlowReachable(src, dst) checks if src can reach dst via backward traversal
+        // We want to check if startNode can reach loadRHSNode, so we use isValueFlowReachable(startNodeId, loadRHSNodeId)
+        if (isValueFlowReachable(startNodeId, loadRHSNodeId)) {
+            return true;
+        }
+    }
+
+    // If none of the load RHS nodes are reachable, return false
     return false;
 }
 

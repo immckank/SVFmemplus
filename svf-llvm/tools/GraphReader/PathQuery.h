@@ -117,6 +117,24 @@ public:
      */
     bool isValueFlowReachable(NodeID src, NodeID dst);
 
+    /*!
+     * \brief Check if a left value can reach the return value of the current function.
+     *
+     * This method checks if the given PAGNode (left value) can traverse forward
+     * to reach the return value of the function containing it. It finds actual return
+     * locations using findActualReturnICFGNodes, extracts LoadVFGNode statements at
+     * those locations, and checks if the PAGNode can reach the RHS (right value) of
+     * those load statements using isValueFlowReachable.
+     *
+     * \param svfg Pointer to the SVFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param pagNode The PAG node to check (left value).
+     * \return true if the node can reach a return value load's RHS, false otherwise.
+     *         Returns false if function return type is not pointer, or if no load
+     *         operations are found at return locations.
+     */
+    bool isLvarReachesReturn(SVFG* svfg, SVFIR* pag, const PAGNode* pagNode);
+
 private:
 
     bool backwardValueFlowReachable(const Set<const SVFGNode*>& seedNodes,

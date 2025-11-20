@@ -224,6 +224,11 @@ command for test
 { "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirwrite.c:1688", "eq_position" : "7"}
 
 
+sepcial 左值是返回值的store case
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirread.c:4333", "eq_position" : "8"}
+4333 8
+
+
 { "command" : "find-lvalue-path-inside", "location" : "tif_getimage.c:368", "eq_position" : "17"}
 
 { "command": "find-icfg-return-paths", "location": "tif_dirwrite.c:1746" }
