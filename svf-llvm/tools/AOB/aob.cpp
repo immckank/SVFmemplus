@@ -65,8 +65,8 @@ int main(int argc, char** argv)
 
     }
 
-    AOBchecker aob;
-    aob.runOnModule(pag);
+    AOBChecker aobChecker;
+    aobChecker.runOnModule(pag);
 
     LLVMModuleSet::releaseLLVMModuleSet();
     return 0;

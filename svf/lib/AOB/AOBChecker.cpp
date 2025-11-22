@@ -31,61 +31,58 @@
 using namespace SVF;
 using namespace std;
 
-void AOBchecker::runOnModule(SVFIR* pag)
+void AOBChecker::runOnModule(SVFIR* pag)
 {
     assert(pag && "PAG must not be null");
 
-    cout << "checking for array index out of bound!" << endl;
-    cout << (pag == NULL) << endl;
+    cout << "handling for aob" << endl;
 
     // Initialize: add all array nodes to worklist with offset and size
-    for (auto it = pag->begin(); it != pag->end(); ++it)
-    {
-        // const NodeID nodeID = it->first;
-        const SVFVar *node = it->second;
-        cout << node->getValueName() << endl;
-        // Get gep nodes
-        if(auto *gepNode = SVFUtil::dyn_cast<GepValVar>(node))
-        {
-            cout << "there is a gep val var!" << endl;
-            // Get array nodes
-            const SVFType *nodeType = gepNode->getType(); 
-            if(nodeType->isArrayTy()){
-                // Get size of array 
-                s64_t size = 0;
-                const ValVar *baseNode = gepNode->getBaseNode();
-
-                // Memory on stack created by alloca instruction
-                // for example: int a[10] -> %a = alloca [10*i32], align 16
-                if(auto *stackObjVar = SVFUtil::dyn_cast<StackObjVar>(baseNode))
-                {
-                    const SVFType *arrayType = stackObjVar->getType();
-                    const StInfo *arrayInfo = arrayType->getTypeInfo();
-                    size = arrayInfo->getNumOfFlattenElements();
-                }
-
-                // Memory on heap created by malloc instruction
-                else if(auto *heapObjVar = SVFUtil::dyn_cast<HeapObjVar>(baseNode)){
-                    const SVFType *arrayType = heapObjVar->getType();
-                    const StInfo *arrayInfo = arrayType->getTypeInfo();
-                    size = arrayInfo->getNumOfFlattenElements();
-                }
-
-                // Add to worklist
-                if(size > 0)
-                    this->worklist.push(BFSNode(gepNode, 0, size));
-
-                cout << "size = " << size << endl;
-            }
-
-        }
-    }
+    initialize(pag);
 
     // Propagate: breadth-first research(BFS)
     propagate(pag);
 }
 
-void AOBchecker::propagate(SVFIR* pag)
+void AOBChecker::initialize(SVFIR* pag)
+{   
+    SVFStmt::SVFStmtSetTy addrStmtSet = pag->getSVFStmtSet(SVFStmt::Addr);
+    for (auto stmt: addrStmtSet)
+    {   
+        if(auto addrStmt = SVFUtil::dyn_cast<AddrStmt>(stmt)){
+            const SVFVar* src = addrStmt->getRHSVar();
+            const SVFVar* dest = addrStmt->getLHSVar();
+            // handle alloca instruction with stack obj val
+            if(const StackObjVar* stackObjVar = SVFUtil::dyn_cast<StackObjVar>(src)){
+                u64_t size = 0;
+
+               
+                // handle case: %arrayidx = alloca [10*i32], align 16
+                if(stackObjVar->getNumOfElements() > 0)
+                {   
+                    size = stackObjVar->getNumOfElements();
+                    if(size > 0)
+                        this->worklist.push(BFSNode(dest, 0, size));
+                }
+
+                 // handle case: int a[n] -> %a = alloca i32, i32 %n, align 4
+                const std::vector<SVFVar*>& sizeVec = addrStmt->getArrSize();
+                if(sizeVec.size() != 0)
+                {   
+                    cout << "vec size = " << sizeVec.size() << endl;
+                    if(const auto constVar = SVFUtil::dyn_cast<ConstIntObjVar>(sizeVec[0]))
+                        size = constVar->getZExtValue();
+                    if(size > 0)
+                        this->worklist.push(BFSNode(dest, 0, size));
+                }
+                
+                cout << "size = " << size << endl;
+            }
+        }   
+    }
+}
+
+void AOBChecker::propagate(SVFIR* pag)
 {
     while (!worklist.empty())
     {
@@ -107,7 +104,7 @@ void AOBchecker::propagate(SVFIR* pag)
                 offset = cur.offset + ap.getConstantStructFldIdx();
                 
                 // in-bound checking
-                if(offset < 0 || offset >= cur.size)
+                if(offset < 0 || static_cast<u64_t>(offset) >= cur.size)
                     report(dstNode, offset, cur.size);
                 
                 // add to queue
@@ -125,7 +122,7 @@ void AOBchecker::propagate(SVFIR* pag)
                 offset = cur.offset;
 
                 // in-bound checking
-                if(offset < 0 || offset >= cur.size)
+                if(offset < 0 || static_cast<u64_t>(offset) >= cur.size)
                     report(dstNode, offset, cur.size);
 
                 // add to queue
@@ -138,7 +135,7 @@ void AOBchecker::propagate(SVFIR* pag)
 }
 
 
-void AOBchecker::report(const SVFVar* base, s64_t fldIdx, s64_t arraySize)
+void AOBChecker::report(const SVFVar* base, s64_t fldIdx, u64_t arraySize)
 {
     cout << "[AOBChecker][BFS] Array Out-of-Bounds detected! "
          << "Base: " << base->toString()

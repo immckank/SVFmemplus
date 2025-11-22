@@ -38,20 +38,21 @@
 
 namespace SVF {
 
-class AOBchecker {
+class AOBChecker {
 public:
     struct BFSNode{
         const SVFVar* node;
         s64_t offset;
-        s64_t size;
+        u64_t size;
 
-        BFSNode(const SVFVar* n = nullptr, s64_t off = 0, s64_t s = 0)
+        BFSNode(const SVFVar* n = nullptr, s64_t off = 0, u64_t s = 0)
         : node(n), offset(off), size(s) {}
     };
 
     void runOnModule(SVFIR* pag);
+    void initialize(SVFIR* pag);
     void propagate(SVFIR* pag);
-    void report(const SVFVar* base, s64_t fldIdx, s64_t arraySize);
+    void report(const SVFVar* base, s64_t fldIdx, u64_t arraySize);
 
 private:
     std::queue<BFSNode> worklist;
