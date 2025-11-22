@@ -97,9 +97,22 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventSta
             }
 
             if(storeNodes.find(node) != storeNodes.end()){
-                // 对于非ptr类型，忽略对ptr的store操作
+                // 对于非ptr类型的load，忽略ptr类的store操作
                 if((*lit)->toString().find("load ptr") == std::string::npos){
                     if(node->toString().find("store ptr") == std::string::npos) curStoreSet.insert(node);
+                    else{
+                        bool formal_param=false, cur_alloc=false;
+
+                        for(auto edge : node->getInEdges()){
+                            SVFGNode* pre = edge->getSrcNode();
+                            // 其中一个是FormalParam，说明是函数传参，把这个store也加入
+                            if(FormalParmVFGNode::classof(pre)){
+                                formal_param = true;
+                            }
+                            else if(pre == slice->getSource()) cur_alloc=true;
+                        }
+                        if(cur_alloc && formal_param) curStoreSet.insert(node);
+                    }
                 }
                 else curStoreSet.insert(node);
             }
