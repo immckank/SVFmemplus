@@ -52,31 +52,46 @@ void AOBChecker::initialize(SVFIR* pag)
         if(auto addrStmt = SVFUtil::dyn_cast<AddrStmt>(stmt)){
             const SVFVar* src = addrStmt->getRHSVar();
             const SVFVar* dest = addrStmt->getLHSVar();
-            // handle alloca instruction with stack obj val
+            // handle alloca instruction with stack obj
             if(const StackObjVar* stackObjVar = SVFUtil::dyn_cast<StackObjVar>(src)){
                 u64_t size = 0;
 
-               
                 // handle case: %arrayidx = alloca [10*i32], align 16
-                if(stackObjVar->getNumOfElements() > 0)
-                {   
-                    size = stackObjVar->getNumOfElements();
-                    if(size > 0)
-                        this->worklist.push(BFSNode(dest, 0, size));
+                const SVFType* objType = stackObjVar->getType();
+                const StInfo* objInfo = objType->getTypeInfo();
+                size = objInfo->getNumOfFlattenElements();
+                if(size > 1)
+                {
+                    this->worklist.push(BFSNode(dest, 0, size));
+                    // cout << "add case from type, size = " << size << endl;
+                    continue;
+                }
+            
+
+                // handle case: int a[n] -> %a = alloca i32, i32 %n, align 4
+                size = stackObjVar->getNumOfElements();
+                if(size > 1)
+                {      
+                    // cout << "add case from stack, size = " << size << endl;
+                    this->worklist.push(BFSNode(dest, 0, size));
+                    continue;
                 }
 
-                 // handle case: int a[n] -> %a = alloca i32, i32 %n, align 4
-                const std::vector<SVFVar*>& sizeVec = addrStmt->getArrSize();
-                if(sizeVec.size() != 0)
-                {   
-                    cout << "vec size = " << sizeVec.size() << endl;
-                    if(const auto constVar = SVFUtil::dyn_cast<ConstIntObjVar>(sizeVec[0]))
-                        size = constVar->getZExtValue();
-                    if(size > 0)
-                        this->worklist.push(BFSNode(dest, 0, size));
-                }
-                
-                cout << "size = " << size << endl;
+                // handle case: int a[n] -> %a = alloca i32, i32 %n, align 4
+                // size = 0;
+                // const std::vector<SVFVar*>& sizeVec = addrStmt->getArrSize();
+                // if(sizeVec.size() > 0)
+                // {   
+                //     if(const auto constVar = SVFUtil::dyn_cast<ConstIntObjVar>(sizeVec[0]))
+                //         size = constVar->getZExtValue();
+                //     cout << "size from vec = " << sizeVec.size() << endl;
+                //     if(size > 1){
+                //         cout << "add case from type, size = " << size << endl;
+                //         this->worklist.push(BFSNode(dest, 0, size));
+                //         // continue;
+                //     }
+                        
+                // }
             }
         }   
     }
@@ -101,7 +116,7 @@ void AOBChecker::propagate(SVFIR* pag)
                 
                 // calculate offset
                 AccessPath ap = gepStmt->getAccessPath();
-                offset = cur.offset + ap.getConstantStructFldIdx();
+                offset = cur.offset + ap.computeConstantOffset();
                 
                 // in-bound checking
                 if(offset < 0 || static_cast<u64_t>(offset) >= cur.size)
@@ -118,7 +133,7 @@ void AOBChecker::propagate(SVFIR* pag)
                 // get destination node
                 SVFVar* dstNode = copyStmt->getLHSVar(); // copyStmt->getDstNode();
 
-                // calculate offset
+                // copy offset
                 offset = cur.offset;
 
                 // in-bound checking
@@ -129,7 +144,7 @@ void AOBChecker::propagate(SVFIR* pag)
                 this->worklist.push(BFSNode(dstNode, offset, cur.size));
             }
 
-            cout << "offset = " << offset << endl;
+            // cout << "offset = " << offset << endl;
         }
     }
 }
