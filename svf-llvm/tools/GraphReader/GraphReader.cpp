@@ -340,6 +340,13 @@ int main(int argc, char ** argv) {
                 } else {
                     fq.checkReturnPointer(loc->str());
                 }
+            } else if (cname == "check-always-return") {
+                auto func = cmd.getString("function_name");
+                if (!func) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'function_name'");
+                } else {
+                    fq.checkFunctionAlwaysReturn(func->str());
+                }
             } else if (cname == "find-store-cl") {
                 auto loc = cmd.getString("location");
                 if (!loc) {

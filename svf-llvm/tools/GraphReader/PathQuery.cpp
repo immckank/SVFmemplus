@@ -1847,6 +1847,22 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                                         }
                                     }
                                 }
+                                // 获取ActualParmVFGNode的位置
+                                // const CallICFGNode* callSite = actualParmNode->getCallSite();
+                                // if (callSite) {
+                                //     std::string callSiteLoc = callSite->getSourceLoc();
+                                //     const PAGNode* paramNode = actualParmNode->getParam();
+                                //     SVFUtil::errs() << "[Debug] ActualParmVFGNode ID=" << actualParmNode->getId()
+                                //                    << ", CallSite Location=" << callSiteLoc;
+                                //     // tostring
+                                //     SVFUtil::errs() << "Node Description: " << actualParmNode->toString() << "\n";
+                                //     if (paramNode) {
+                                //         SVFUtil::errs() << ", Param PAGNode ID=" << paramNode->getId();
+                                //     }
+                                //     SVFUtil::errs() << "\n";
+                                // }
+                                
+                                // shouldHideInOutput = false;
                             } else if (const GepVFGNode* gepNode = SVFUtil::dyn_cast<GepVFGNode>(svfgNode)) {
                                 // Filter out GEP operations on array objects
                                 // This operation doesn't affect memory ownership
@@ -2038,19 +2054,30 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
     }
 
     // Step F.5: Extract and filter branch information for each path group
-    // Structure: return ICFG -> (keySVFGSequence -> consistent branch nodes)
-    // Branch node info: ICFG node, edge, location, condition value, position in path
-    struct BranchNodeInfo {
+    // Use BranchCluster to group cascaded branches (e.g., if (a || b || c))
+    // Each cluster has an overall result (true/false) representing the compound condition
+    
+    struct BranchMember {
         const ICFGNode* srcNode;
         const IntraCFGEdge* edge;
-        llvm::json::Object branchInfo;
-        size_t positionInPath;  // Index in ICFG path where this branch occurs
-        std::string branchKey;  // Unique key: "location|condition_value|dst_node_id"
+        std::string conditionValue;  // "true" or "false"
+    };
+    
+    struct BranchCluster {
+        std::string location;           // Source location (filename:line)
+        NodeID dstNodeId;               // Common destination node
+        std::string clusterResult;      // Overall result: "true" or "false"
+        std::vector<BranchMember> members;  // Individual branches in this cluster
+        size_t positionInPath;          // Position in ICFG path
+        
+        std::string getClusterKey() const {
+            return location + "|" + std::to_string(dstNodeId);
+        }
     };
     
     std::map<const ICFGNode*, 
              std::map<std::vector<NodeID>, 
-                      std::vector<BranchNodeInfo>>> consistentBranchesByReturn;
+                      std::vector<BranchCluster>>> consistentClustersByReturn;
     
     for (const auto& [retICFG, pathGroups] : pathGroupsByReturn) {
         const auto& icfgPaths = pathsByReturn.at(retICFG);
@@ -2060,11 +2087,59 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                 continue;
             }
             
-            // Extract branch information from all paths in this group
-            // Map: branchKey -> set of condition values across all paths
-            std::map<std::string, std::set<std::string>> branchKeyToCondValues;
-            // Map: branchKey -> BranchNodeInfo (for reference)
-            std::map<std::string, BranchNodeInfo> branchKeyToInfo;
+            // Helper lambda to extract line number from branch edge
+            auto getLineNumber = [](const IntraCFGEdge* intraEdge) -> int {
+                llvm::json::Object brInfo = GraphReaderUtil::formatBranchInfo(intraEdge);
+                if (auto loc = brInfo.getString("location")) {
+                    std::string locStr = loc->str();
+                    size_t colonPos = locStr.rfind(':');
+                    if (colonPos != std::string::npos) {
+                        try {
+                            return std::stoi(locStr.substr(colonPos + 1));
+                        } catch (...) {
+                            return -1;
+                        }
+                    }
+                }
+                return -1;
+            };
+            
+            // Helper lambda to get location string from branch edge
+            auto getLocation = [](const IntraCFGEdge* intraEdge) -> std::string {
+                llvm::json::Object brInfo = GraphReaderUtil::formatBranchInfo(intraEdge);
+                if (auto loc = brInfo.getString("location")) {
+                    return loc->str();
+                }
+                return "unknown";
+            };
+            
+            // Helper lambda to get condition value from branch edge
+            auto getConditionValue = [](const IntraCFGEdge* intraEdge) -> std::string {
+                llvm::json::Object brInfo = GraphReaderUtil::formatBranchInfo(intraEdge);
+                if (auto cond = brInfo.getString("condition_value")) {
+                    return cond->str();
+                }
+                return "unknown";
+            };
+            
+            // Helper lambda to collect all branch edges leading to a destination node
+            auto collectBranchEdgesToDst = [](const ICFGNode* dstNode) 
+                -> std::vector<const IntraCFGEdge*> {
+                std::vector<const IntraCFGEdge*> branchEdges;
+                for (ICFGEdge* inEdge : dstNode->getInEdges()) {
+                    if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(inEdge)) {
+                        if (intraEdge->getCondition()) {
+                            branchEdges.push_back(intraEdge);
+                        }
+                    }
+                }
+                return branchEdges;
+            };
+            
+            // Step 1: Extract branch clusters from paths
+            // Map: clusterKey (location|dstNodeId) -> BranchCluster
+            std::map<std::string, BranchCluster> clusterMap;
+            std::set<const IntraCFGEdge*> processedEdges;
             
             for (int pathIdx : pathIndices) {
                 if (pathIdx < 0 || static_cast<size_t>(pathIdx) >= icfgPaths.size()) {
@@ -2072,128 +2147,181 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                 }
                 const auto& icfgPath = icfgPaths[pathIdx];
                 
-                // Extract branches from this ICFG path
                 for (size_t idx = 0; idx + 1 < icfgPath.size(); ++idx) {
                     const ICFGNode* srcNode = icfgPath[idx];
                     const ICFGNode* dstNode = icfgPath[idx + 1];
-                    const IntraCFGEdge* branchEdge = nullptr;
                     
-                    // Find the edge from srcNode to dstNode
+                    // Find the direct branch edge from srcNode to dstNode
+                    const IntraCFGEdge* directEdge = nullptr;
                     for (ICFGEdge* edge : srcNode->getOutEdges()) {
-                        if (edge->getDstNode() != dstNode) {
-                            continue;
-                        }
+                        if (edge->getDstNode() != dstNode) continue;
                         if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
                             if (intraEdge->getCondition()) {
-                                branchEdge = intraEdge;
+                                directEdge = intraEdge;
                                 break;
                             }
                         }
                     }
                     
-                    if (!branchEdge) {
+                    if (!directEdge || processedEdges.count(directEdge)) {
                         continue;
                     }
                     
-                    // Create branch info
-                    llvm::json::Object branchInfo = GraphReaderUtil::formatBranchInfo(branchEdge);
-                    std::string location = "unknown";
-                    std::string conditionValue = "unknown";
+                    // Get info from direct edge
+                    std::string location = getLocation(directEdge);
+                    int directLineNum = getLineNumber(directEdge);
+                    std::string clusterResult = getConditionValue(directEdge);
                     
-                    if (auto loc = branchInfo.getString("location")) {
-                        location = loc->str();
-                    }
-                    if (auto cond = branchInfo.getString("condition_value")) {
-                        conditionValue = cond->str();
-                    }
+                    // Collect ALL candidate branch nodes with adjacent line numbers
+                    // Look at ALL destinations of the current branch node, not just the traversed one
+                    // This handles cascaded OR/AND where branches go to different intermediate nodes
+                    // but share a common destination (e.g., the then-block)
+                    std::set<const ICFGNode*> allBranchSrcNodes;  // All branch source nodes in cluster
+                    std::set<int> clusterLineNumbers;
                     
-                    // Create unique key: location + condition_value + dst_node_id
-                    // This helps distinguish different branches at the same location
-                    std::string branchKey = location + "|" + conditionValue + "|" + 
-                                          std::to_string(dstNode->getId());
-                    
-                    // Store condition value for this branch key
-                    branchKeyToCondValues[branchKey].insert(conditionValue);
-                    
-                    // Store branch info (use first occurrence as reference)
-                    if (branchKeyToInfo.find(branchKey) == branchKeyToInfo.end()) {
-                        BranchNodeInfo info;
-                        info.srcNode = srcNode;
-                        info.edge = branchEdge;
-                        info.branchInfo = branchInfo;
-                        info.positionInPath = idx;
-                        info.branchKey = branchKey;
-                        branchKeyToInfo[branchKey] = info;
-                    }
-                }
-            }
-            
-            // Filter: only keep branches that are consistent across all paths in the group
-            // A branch is consistent if ALL paths in the group have the same branch (same location, same condition value)
-            std::vector<BranchNodeInfo> consistentBranches;
-            for (const auto& [branchKey, condValues] : branchKeyToCondValues) {
-                // If all paths have the same condition value, check if all paths have this branch
-                if (condValues.size() == 1 && pathIndices.size() > 0) {
-                    // Check if this branch appears in ALL paths with the same condition value
-                    int pathCountWithBranch = 0;
-                    
-                    for (int pathIdx : pathIndices) {
-                        if (pathIdx < 0 || static_cast<size_t>(pathIdx) >= icfgPaths.size()) {
-                            continue;
-                        }
-                        const auto& icfgPath = icfgPaths[pathIdx];
+                    if (directLineNum >= 0) {
+                        allBranchSrcNodes.insert(directEdge->getSrcNode());
+                        clusterLineNumbers.insert(directLineNum);
                         
-                        bool foundBranch = false;
-                        for (size_t idx = 0; idx + 1 < icfgPath.size(); ++idx) {
-                            const ICFGNode* srcNode = icfgPath[idx];
-                            const ICFGNode* dstNode = icfgPath[idx + 1];
-                            
-                            for (ICFGEdge* edge : srcNode->getOutEdges()) {
-                                if (edge->getDstNode() != dstNode) {
-                                    continue;
+                        // Get all destinations of the current branch node
+                        std::set<const ICFGNode*> allDestinations;
+                        for (ICFGEdge* outEdge : directEdge->getSrcNode()->getOutEdges()) {
+                            if (const IntraCFGEdge* ie = SVFUtil::dyn_cast<IntraCFGEdge>(outEdge)) {
+                                if (ie->getCondition()) {
+                                    allDestinations.insert(ie->getDstNode());
                                 }
-                                if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
-                                    if (intraEdge->getCondition()) {
-                                        llvm::json::Object brInfo = GraphReaderUtil::formatBranchInfo(intraEdge);
-                                        std::string loc = "unknown";
-                                        std::string condVal = "unknown";
-                                        if (auto l = brInfo.getString("location")) {
-                                            loc = l->str();
+                            }
+                        }
+                        
+                        // For each destination, collect incoming branch edges
+                        // and find other branch nodes with adjacent line numbers
+                        bool changed = true;
+                        while (changed) {
+                            changed = false;
+                            for (const ICFGNode* dest : allDestinations) {
+                                for (const IntraCFGEdge* inEdge : collectBranchEdgesToDst(dest)) {
+                                    const ICFGNode* branchNode = inEdge->getSrcNode();
+                                    if (allBranchSrcNodes.count(branchNode)) continue;
+                                    
+                                    int lineNum = getLineNumber(inEdge);
+                                    if (lineNum >= 0 && (clusterLineNumbers.count(lineNum) ||
+                                        clusterLineNumbers.count(lineNum - 1) ||
+                                        clusterLineNumbers.count(lineNum + 1))) {
+                                        allBranchSrcNodes.insert(branchNode);
+                                        clusterLineNumbers.insert(lineNum);
+                                        changed = true;
+                                        
+                                        // Also add this branch node's destinations to explore
+                                        for (ICFGEdge* outEdge : branchNode->getOutEdges()) {
+                                            if (const IntraCFGEdge* ie = SVFUtil::dyn_cast<IntraCFGEdge>(outEdge)) {
+                                                if (ie->getCondition()) {
+                                                    allDestinations.insert(ie->getDstNode());
+                                                }
+                                            }
                                         }
-                                        if (auto c = brInfo.getString("condition_value")) {
-                                            condVal = c->str();
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        allBranchSrcNodes.insert(directEdge->getSrcNode());
+                    }
+                    
+                    // Create cluster key based on location only (not destination)
+                    // since cascaded branches may go to different intermediate destinations
+                    std::string clusterKey = location;
+                    
+                    // Mark all branch nodes as processed (all their edges)
+                    for (const ICFGNode* branchNode : allBranchSrcNodes) {
+                        for (ICFGEdge* outEdge : branchNode->getOutEdges()) {
+                            if (const IntraCFGEdge* ie = SVFUtil::dyn_cast<IntraCFGEdge>(outEdge)) {
+                                if (ie->getCondition()) {
+                                    processedEdges.insert(ie);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Create or update cluster
+                    if (clusterMap.find(clusterKey) == clusterMap.end()) {
+                        BranchCluster cluster;
+                        cluster.location = location;
+                        cluster.dstNodeId = dstNode->getId();  // Use the traversed destination
+                        cluster.clusterResult = clusterResult;
+                        cluster.positionInPath = idx;
+                        
+                        // Add all branch nodes as members
+                        for (const ICFGNode* branchNode : allBranchSrcNodes) {
+                            // Find the edge that was actually traversed (if any)
+                            const IntraCFGEdge* traversedEdge = nullptr;
+                            for (ICFGEdge* outEdge : branchNode->getOutEdges()) {
+                                if (const IntraCFGEdge* ie = SVFUtil::dyn_cast<IntraCFGEdge>(outEdge)) {
+                                    if (ie->getCondition()) {
+                                        // Check if this edge's destination is in the path
+                                        // by seeing if branchNode→dest is consecutive in the path
+                                        for (size_t pi = 0; pi + 1 < icfgPath.size(); ++pi) {
+                                            if (icfgPath[pi] == branchNode && 
+                                                icfgPath[pi+1] == ie->getDstNode()) {
+                                                traversedEdge = ie;
+                                                break;
+                                            }
                                         }
-                                        std::string key = loc + "|" + condVal + "|" + 
-                                                         std::to_string(dstNode->getId());
-                                        if (key == branchKey) {
-                                            foundBranch = true;
-                                            pathCountWithBranch++;
+                                    }
+                                }
+                                if (traversedEdge) break;
+                            }
+                            
+                            // Use traversed edge if found, otherwise use any edge for info
+                            const IntraCFGEdge* edgeForInfo = traversedEdge;
+                            if (!edgeForInfo) {
+                                for (ICFGEdge* outEdge : branchNode->getOutEdges()) {
+                                    if (const IntraCFGEdge* ie = SVFUtil::dyn_cast<IntraCFGEdge>(outEdge)) {
+                                        if (ie->getCondition()) {
+                                            edgeForInfo = ie;
                                             break;
                                         }
                                     }
                                 }
                             }
-                            if (foundBranch) {
-                                break;
+                            
+                            if (edgeForInfo) {
+                                BranchMember member;
+                                member.srcNode = branchNode;
+                                member.edge = edgeForInfo;
+                                member.conditionValue = traversedEdge ? 
+                                    getConditionValue(traversedEdge) : "N/A";
+                                cluster.members.push_back(member);
                             }
                         }
-                    }
-                    
-                    // Only include branch if it appears in ALL paths in the group
-                    // This ensures we only keep branches that are completely consistent across the group
-                    if (pathCountWithBranch == static_cast<int>(pathIndices.size())) {
-                        consistentBranches.push_back(branchKeyToInfo[branchKey]);
+                        
+                        clusterMap[clusterKey] = cluster;
                     }
                 }
             }
             
-            // Sort branches by position in path (to maintain order)
-            std::sort(consistentBranches.begin(), consistentBranches.end(),
-                     [](const BranchNodeInfo& a, const BranchNodeInfo& b) {
+            // Step 2: Convert clusters to vector and sort by position
+            std::vector<BranchCluster> clusters;
+            for (auto& [key, cluster] : clusterMap) {
+                clusters.push_back(std::move(cluster));
+            }
+            
+            std::sort(clusters.begin(), clusters.end(),
+                     [](const BranchCluster& a, const BranchCluster& b) {
                          return a.positionInPath < b.positionInPath;
                      });
             
-            consistentBranchesByReturn[retICFG][keySVFGSequence] = std::move(consistentBranches);
+            // DEBUG: Summary of clusters
+            if (!clusters.empty()) {
+                SVFUtil::errs() << "[DEBUG-CLUSTER] Found " << clusters.size() << " branch clusters:";
+                for (const auto& c : clusters) {
+                    SVFUtil::errs() << " [" << c.location << "|" << c.dstNodeId 
+                                    << " result=" << c.clusterResult 
+                                    << " members=" << c.members.size() << "]";
+                }
+                SVFUtil::errs() << "\n";
+            }
+            
+            consistentClustersByReturn[retICFG][keySVFGSequence] = std::move(clusters);
         }
     }
 
@@ -2248,11 +2376,10 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
             startNodeObj["location"] = formatLocationString(startLocationObj);
             pathArray.push_back(std::move(startNodeObj));
             
-            // Get consistent branches for this path group
-            const auto& consistentBranches = consistentBranchesByReturn[retICFG][keySVFGSequence];
+            // Get branch clusters for this path group
+            const auto& clusters = consistentClustersByReturn[retICFG][keySVFGSequence];
             
             // Build a unified sequence of nodes (branches and SVFG nodes) in path order
-            // Use the first path in the group as reference for ordering
             struct PathNode {
                 enum Type { BRANCH, SVFG };
                 Type type;
@@ -2262,38 +2389,64 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
             
             std::vector<PathNode> orderedNodes;
             
-            // Add branch nodes
-            for (const auto& branchInfo : consistentBranches) {
+            // Add branch clusters
+            for (const auto& cluster : clusters) {
                 PathNode node;
                 node.type = PathNode::BRANCH;
-                node.position = branchInfo.positionInPath;
+                node.position = cluster.positionInPath;
                 
-                // Create branch node JSON object
-                llvm::json::Object branchObj;
-                branchObj["node"] = "branch";
-                
-                // Get branch description from ICFG node
-                std::string branchDesc = branchInfo.srcNode->toString();
-                if (branchDesc.empty()) {
-                    branchDesc = "Branch";
+                if (cluster.members.size() > 1) {
+                    // Multiple branches = cascaded OR condition
+                    // Create a branch_group node
+                    llvm::json::Object groupObj;
+                    groupObj["node"] = "branch_group";
+                    groupObj["location"] = cluster.location;
+                    groupObj["operator"] = "OR";
+                    groupObj["branch_count"] = static_cast<int64_t>(cluster.members.size());
+                    groupObj["dst_node_id"] = std::to_string(cluster.dstNodeId);
+                    groupObj["group_result"] = cluster.clusterResult;
+                    
+                    // Build node_desc as array of toString() for all branch nodes
+                    llvm::json::Array nodeDescArray;
+                    for (const auto& member : cluster.members) {
+                        std::string branchDesc = member.srcNode->toString();
+                        if (branchDesc.empty()) {
+                            branchDesc = "Branch node " + std::to_string(member.srcNode->getId());
+                        }
+                        nodeDescArray.push_back(branchDesc);
+                    }
+                    groupObj["node_desc"] = std::move(nodeDescArray);
+                    
+                    // Add individual branch details as array
+                    llvm::json::Array branchDetails;
+                    for (const auto& member : cluster.members) {
+                        llvm::json::Object detail;
+                        detail["src_node_id"] = static_cast<int64_t>(member.srcNode->getId());
+                        detail["condition_value"] = member.conditionValue;
+                        branchDetails.push_back(std::move(detail));
+                    }
+                    groupObj["branches"] = std::move(branchDetails);
+                    
+                    node.nodeObj = std::move(groupObj);
+                } else if (cluster.members.size() == 1) {
+                    // Single branch - output as regular branch node
+                    const auto& member = cluster.members[0];
+                    llvm::json::Object branchObj;
+                    branchObj["node"] = "branch";
+                    
+                    std::string branchDesc = member.srcNode->toString();
+                    if (branchDesc.empty()) {
+                        branchDesc = "Branch";
+                    }
+                    branchObj["node_desc"] = branchDesc;
+                    branchObj["location"] = cluster.location;
+                    branchObj["condition_value"] = cluster.clusterResult;
+                    
+                    node.nodeObj = std::move(branchObj);
+                } else {
+                    continue;  // Empty cluster, skip
                 }
-                branchObj["node_desc"] = branchDesc;
                 
-                // Get location from branch info
-                std::string branchLocation = "unknown";
-                if (auto loc = branchInfo.branchInfo.getString("location")) {
-                    branchLocation = loc->str();
-                }
-                branchObj["location"] = branchLocation;
-                
-                // Add condition value
-                std::string conditionValue = "unknown";
-                if (auto cond = branchInfo.branchInfo.getString("condition_value")) {
-                    conditionValue = cond->str();
-                }
-                branchObj["condition_value"] = conditionValue;
-                
-                node.nodeObj = std::move(branchObj);
                 orderedNodes.push_back(std::move(node));
             }
             
@@ -2426,8 +2579,9 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
     llvm::outs().flush();
 }
 
-// dst - 关联我关心的变量
-// src - 当前位置的变量 - 可能指向一个 store(右值) 或者 formalparm(parm)
+// dst - 关联我关心的变量 目标变量
+// src - 当前位置的变量 - 可能指向一个 store(右值) 或者 formalparm(parm) 源变量
+// 仅仅只沿着
 bool PathQuery::isValueFlowReachable(NodeID src, NodeID dst) {
     if (!svfg || !pag) {
         return false;
@@ -2473,8 +2627,11 @@ bool PathQuery::isValueFlowReachable(NodeID src, NodeID dst) {
                 usesSrc = true;
             }
             // For Store nodes, also check if src is the value being stored (RHS)
+            // store to 也可以吗？
             if (const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(stmtNode)) {
                 if (storeNode->getPAGSrcNode() && storeNode->getPAGSrcNode()->getId() == src) {
+                    usesSrc = true;
+                } else if (storeNode->getPAGDstNode() && storeNode->getPAGDstNode()->getId() == src) {
                     usesSrc = true;
                 }
             }
