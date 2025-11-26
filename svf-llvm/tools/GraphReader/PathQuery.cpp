@@ -2065,13 +2065,16 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
     
     struct BranchCluster {
         std::string location;           // Source location (filename:line)
-        NodeID dstNodeId;               // Common destination node
-        std::string clusterResult;      // Overall result: "true" or "false"
+        NodeID dstNodeId = 0;           // Destination observed along traversed path
+        std::string clusterResult;      // Consensus result after filtering
         std::vector<BranchMember> members;  // Individual branches in this cluster
-        size_t positionInPath;          // Position in ICFG path
+        size_t positionInPath = SIZE_MAX;   // Earliest position in ICFG path
+        std::map<int, std::string> pathResults; // Per-path results
+        std::set<NodeID> memberSrcIds;        // Track branch nodes already recorded
+        std::string operatorType = "UNKNOWN";  // "OR", "AND", or "MIXED" for complex logic
         
         std::string getClusterKey() const {
-            return location + "|" + std::to_string(dstNodeId);
+            return location;
         }
     };
     
@@ -2249,6 +2252,7 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                         cluster.dstNodeId = dstNode->getId();  // Use the traversed destination
                         cluster.clusterResult = clusterResult;
                         cluster.positionInPath = idx;
+                        cluster.pathResults.clear();
                         
                         // Add all branch nodes as members
                         for (const ICFGNode* branchNode : allBranchSrcNodes) {
@@ -2299,29 +2303,357 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                 }
             }
             
-            // Step 2: Convert clusters to vector and sort by position
+            // Step 2: Identify operator type (AND/OR/MIXED) for each cluster
+            // Strategy: Analyze then/else blocks by finding all conditional edges leading to them
+            // - If multiple edges (from adjacent line numbers) lead to same then block → OR relationship
+            // - If multiple edges (from adjacent line numbers) lead to same else block → AND relationship
+            for (auto& [key, cluster] : clusterMap) {
+                if (cluster.members.size() <= 1) {
+                    cluster.operatorType = "UNKNOWN";  // Single branch, no operator
+                    continue;
+                }
+                
+                // Collect all branch source nodes and their line numbers
+                std::map<const ICFGNode*, int> branchNodeToLineNum;
+                std::set<const ICFGNode*> memberSrcNodes;
+                for (const auto& member : cluster.members) {
+                    memberSrcNodes.insert(member.srcNode);
+                    int lineNum = getLineNumber(member.edge);
+                    if (lineNum >= 0) {
+                        branchNodeToLineNum[member.srcNode] = lineNum;
+                    }
+                }
+                
+                // Find all then blocks and else blocks by analyzing outgoing edges from branch nodes
+                // For each branch node, find where its true/false edges lead
+                std::map<const ICFGNode*, std::set<const ICFGNode*>> thenBlocks;  // then block -> set of source branch nodes
+                std::map<const ICFGNode*, std::set<const ICFGNode*>> elseBlocks;   // else block -> set of source branch nodes
+                
+                for (const auto& member : cluster.members) {
+                    const ICFGNode* branchNode = member.srcNode;
+                    
+                    // Check all outgoing edges from this branch node
+                    for (ICFGEdge* outEdge : branchNode->getOutEdges()) {
+                        if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(outEdge)) {
+                            if (!intraEdge->getCondition()) continue;
+                            
+                            const ICFGNode* dstNode = intraEdge->getDstNode();
+                            std::string condValue = getConditionValue(intraEdge);
+                            
+                            // True edge leads to then block (for both OR and AND)
+                            // False edge leads to else block (for both OR and AND)
+                            // But we need to distinguish: in OR, multiple branches' true edges go to same then block
+                            // In AND, multiple branches' false edges go to same else block
+                            
+                            if (condValue == "true") {
+                                // True edge: could be OR (multiple branches → same then block)
+                                // or AND (single branch → then block, or next branch in chain)
+                                // If dstNode is NOT another branch member, it's likely a then block
+                                if (!memberSrcNodes.count(dstNode)) {
+                                    thenBlocks[dstNode].insert(branchNode);
+                                }
+                            } else if (condValue == "false") {
+                                // False edge: could be OR (next branch in chain) or AND (else block)
+                                // If dstNode is NOT another branch member, it's likely an else block
+                                if (!memberSrcNodes.count(dstNode)) {
+                                    elseBlocks[dstNode].insert(branchNode);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Analyze then blocks: if multiple branches (with adjacent line numbers) lead to same then block → OR
+                int orEvidence = 0;
+                for (const auto& [thenBlock, sourceBranches] : thenBlocks) {
+                    if (sourceBranches.size() > 1) {
+                        // Multiple branches lead to this then block
+                        // Check if their line numbers are adjacent
+                        std::vector<int> lineNums;
+                        for (const ICFGNode* src : sourceBranches) {
+                            if (branchNodeToLineNum.count(src)) {
+                                lineNums.push_back(branchNodeToLineNum[src]);
+                            }
+                        }
+                        if (lineNums.size() > 1) {
+                            std::sort(lineNums.begin(), lineNums.end());
+                            bool adjacent = true;
+                            for (size_t i = 1; i < lineNums.size(); ++i) {
+                                if (lineNums[i] - lineNums[i-1] > 1) {
+                                    adjacent = false;
+                                    break;
+                                }
+                            }
+                            if (adjacent) {
+                                orEvidence += sourceBranches.size();
+                            }
+                        }
+                    }
+                }
+                
+                // Analyze else blocks: if multiple branches (with adjacent line numbers) lead to same else block → AND
+                int andEvidence = 0;
+                for (const auto& [elseBlock, sourceBranches] : elseBlocks) {
+                    if (sourceBranches.size() > 1) {
+                        // Multiple branches lead to this else block
+                        // Check if their line numbers are adjacent
+                        std::vector<int> lineNums;
+                        for (const ICFGNode* src : sourceBranches) {
+                            if (branchNodeToLineNum.count(src)) {
+                                lineNums.push_back(branchNodeToLineNum[src]);
+                            }
+                        }
+                        if (lineNums.size() > 1) {
+                            std::sort(lineNums.begin(), lineNums.end());
+                            bool adjacent = true;
+                            for (size_t i = 1; i < lineNums.size(); ++i) {
+                                if (lineNums[i] - lineNums[i-1] > 1) {
+                                    adjacent = false;
+                                    break;
+                                }
+                            }
+                            if (adjacent) {
+                                andEvidence += sourceBranches.size();
+                            }
+                        }
+                    }
+                }
+                
+                // Determine operator type based on evidence
+                if (orEvidence > 0 && andEvidence == 0) {
+                    cluster.operatorType = "OR";
+                } else if (andEvidence > 0 && orEvidence == 0) {
+                    cluster.operatorType = "AND";
+                } else if (orEvidence > 0 && andEvidence > 0) {
+                    cluster.operatorType = "MIXED";  // Complex AND/OR combination
+                } else {
+                    // No clear pattern found - default to OR for backward compatibility
+                    cluster.operatorType = "OR";
+                }
+            }
+            
+            // Step 2: Convert clusters to vector
             std::vector<BranchCluster> clusters;
             for (auto& [key, cluster] : clusterMap) {
                 clusters.push_back(std::move(cluster));
             }
             
-            std::sort(clusters.begin(), clusters.end(),
+            // Step 3: Filter clusters – keep only those whose result is consistent across all paths
+            // Filtering logic: For each path, if the branch group appears on the path and all paths
+            // have the same group_result, then keep the branch group. Otherwise, discard it.
+            std::vector<BranchCluster> filteredClusters;
+            filteredClusters.reserve(clusters.size());
+            
+            for (auto& cluster : clusters) {
+                bool consensusInitialized = false;
+                std::string consensusResult;
+                bool validCluster = true;
+                int pathsWithCluster = 0;  // Count paths where cluster appears
+                int totalPaths = 0;        // Total valid paths
+                
+                for (int pathIdx : pathIndices) {
+                    if (pathIdx < 0 || static_cast<size_t>(pathIdx) >= icfgPaths.size()) {
+                        continue;
+                    }
+                    totalPaths++;
+                    const auto& icfgPath = icfgPaths[pathIdx];
+                    
+                    bool foundOnPath = false;
+                    std::string pathResult;
+                    
+                    // Check if path passes through any branch node in the cluster
+                    // This handles short-circuiting: even if path doesn't traverse branch edges,
+                    // if it passes through a branch node, the cluster is relevant
+                    bool pathPassesThroughBranchNode = false;
+                    std::set<const ICFGNode*> clusterBranchNodes;
+                    for (const auto& member : cluster.members) {
+                        clusterBranchNodes.insert(member.srcNode);
+                    }
+                    
+                    for (const ICFGNode* node : icfgPath) {
+                        if (clusterBranchNodes.count(node)) {
+                            pathPassesThroughBranchNode = true;
+                            foundOnPath = true;  // Path passes through at least one branch node in cluster
+                            break;
+                        }
+                    }
+                    
+                    // Check if path reaches dstNodeId (could be then or else branch depending on path)
+                    bool pathReachesDstNode = false;
+                    for (const ICFGNode* node : icfgPath) {
+                        if (node->getId() == cluster.dstNodeId) {
+                            pathReachesDstNode = true;
+                            foundOnPath = true;  // Path is relevant to this cluster
+                            break;
+                        }
+                    }
+                    
+                    // Collect all branch members from this cluster that appear on this path
+                    // (i.e., paths that actually traverse branch edges, not just pass through nodes)
+                    std::vector<std::string> branchResultsOnPath;
+                    
+                    for (size_t idx = 0; idx + 1 < icfgPath.size(); ++idx) {
+                        const ICFGNode* srcNode = icfgPath[idx];
+                        const ICFGNode* dstNode = icfgPath[idx + 1];
+                        
+                        for (const auto& member : cluster.members) {
+                            if (member.srcNode == srcNode && 
+                                member.edge->getDstNode() == dstNode) {
+                                branchResultsOnPath.push_back(member.conditionValue);
+                                foundOnPath = true;  // Path traversed at least one branch member edge
+                                // Don't break here - continue to collect all branches on this path
+                            }
+                        }
+                    }
+                    
+                    if (!foundOnPath) {
+                        // Path bypassed this cluster completely
+                        // For strict filtering: if cluster doesn't appear on this path, mark as invalid
+                        // This ensures we only keep clusters that appear on ALL paths
+                        validCluster = false;
+                        break;
+                    }
+                    
+                    // Determine pathResult based on branch values and operator type
+                    if (!branchResultsOnPath.empty()) {
+                        // Path traversed at least one branch edge - use actual branch values
+                        if (cluster.operatorType == "OR") {
+                            // OR: if any branch is true, group_result = "true"
+                            // Otherwise (all branches false), group_result = "false"
+                            bool anyTrue = false;
+                            for (const auto& result : branchResultsOnPath) {
+                                if (result == "true") {
+                                    anyTrue = true;
+                                    break;
+                                }
+                            }
+                            pathResult = anyTrue ? "true" : "false";
+                        } else if (cluster.operatorType == "AND") {
+                            // AND: if all branches are true, group_result = "true"
+                            // Otherwise (any branch false), group_result = "false"
+                            bool allTrue = true;
+                            for (const auto& result : branchResultsOnPath) {
+                                if (result != "true") {
+                                    allTrue = false;
+                                    break;
+                                }
+                            }
+                            pathResult = allTrue ? "true" : "false";
+                        } else {
+                            // MIXED or UNKNOWN: use OR logic as default (backward compatibility)
+                            bool anyTrue = false;
+                            for (const auto& result : branchResultsOnPath) {
+                                if (result == "true") {
+                                    anyTrue = true;
+                                    break;
+                                }
+                            }
+                            pathResult = anyTrue ? "true" : "false";
+                        }
+                    } else if (pathPassesThroughBranchNode) {
+                        // Path passes through branch node but didn't traverse any branch edge
+                        // This happens when path is short-circuited
+                        // We need to infer the result based on which path was taken
+                        
+                        // For OR: if path passes through branch node but doesn't traverse edges,
+                        // it likely means the first branch was true (short-circuited to then block)
+                        // For AND: if path passes through branch node but doesn't traverse edges,
+                        // it likely means the first branch was false (short-circuited to else block)
+                        
+                        // However, we can't determine the exact result without knowing which edge was taken
+                        // So we'll try to infer from the path structure:
+                        // - If path reaches dstNodeId (else block), likely all false for OR, or all true for AND
+                        // - If path doesn't reach dstNodeId but passes through branch node, likely short-circuited
+                        
+                        if (pathReachesDstNode) {
+                            // Path reached dstNodeId (else block for OR, then block for AND)
+                            if (cluster.operatorType == "OR") {
+                                // Reached else block → all branches were false
+                                pathResult = "false";
+                            } else if (cluster.operatorType == "AND") {
+                                // Reached then block → all branches were true
+                                pathResult = "true";
+                            } else {
+                                // MIXED or UNKNOWN: can't determine, skip this path
+                                validCluster = false;
+                                break;
+                            }
+                        } else {
+                            // Path passes through branch node but doesn't reach dstNodeId
+                            // This means path was short-circuited
+                            if (cluster.operatorType == "OR") {
+                                // Short-circuited → at least one branch was true
+                                pathResult = "true";
+                            } else if (cluster.operatorType == "AND") {
+                                // Short-circuited → at least one branch was false
+                                pathResult = "false";
+                            } else {
+                                // MIXED or UNKNOWN: can't determine, skip this path
+                                validCluster = false;
+                                break;
+                            }
+                        }
+                    } else if (pathReachesDstNode) {
+                        // Path reached dstNodeId but didn't pass through any branch node
+                        // This shouldn't happen normally, but if it does, we can infer:
+                        if (cluster.operatorType == "OR") {
+                            // Reached else block → all branches were false
+                            pathResult = "false";
+                        } else if (cluster.operatorType == "AND") {
+                            // Reached then block → all branches were true
+                            pathResult = "true";
+                        } else {
+                            // MIXED or UNKNOWN: can't determine, skip this path
+                            validCluster = false;
+                            break;
+                        }
+                    } else {
+                        // Should not happen - foundOnPath is true but no branch results,
+                        // didn't pass through branch node, and didn't reach dstNodeId
+                        validCluster = false;
+                        break;
+                    }
+                    
+                    pathsWithCluster++;
+                    
+                    // Check if this path's result is consistent with previous paths
+                    if (!consensusInitialized) {
+                        consensusResult = pathResult;
+                        consensusInitialized = true;
+                    } else if (consensusResult != pathResult) {
+                        // Different paths have different results - invalid cluster
+                        validCluster = false;
+                        break;
+                    }
+                }
+                
+                // Only keep cluster if:
+                // 1. It appears on all paths (pathsWithCluster == totalPaths)
+                // 2. All paths have the same result (validCluster == true)
+                if (validCluster && pathsWithCluster > 0 && pathsWithCluster == totalPaths) {
+                    cluster.clusterResult = consensusResult;
+                    filteredClusters.push_back(std::move(cluster));
+                }
+            }
+            
+            // Sort clusters by position for output
+            std::sort(filteredClusters.begin(), filteredClusters.end(),
                      [](const BranchCluster& a, const BranchCluster& b) {
                          return a.positionInPath < b.positionInPath;
                      });
             
-            // DEBUG: Summary of clusters
-            if (!clusters.empty()) {
-                SVFUtil::errs() << "[DEBUG-CLUSTER] Found " << clusters.size() << " branch clusters:";
-                for (const auto& c : clusters) {
-                    SVFUtil::errs() << " [" << c.location << "|" << c.dstNodeId 
-                                    << " result=" << c.clusterResult 
+            // DEBUG: Summary of filtered clusters
+            if (!filteredClusters.empty()) {
+                SVFUtil::errs() << "[DEBUG-CLUSTER] Retained " << filteredClusters.size() 
+                                << " branch clusters after filtering:";
+                for (const auto& c : filteredClusters) {
+                    SVFUtil::errs() << " [" << c.location << " result=" << c.clusterResult 
                                     << " members=" << c.members.size() << "]";
                 }
                 SVFUtil::errs() << "\n";
             }
             
-            consistentClustersByReturn[retICFG][keySVFGSequence] = std::move(clusters);
+            consistentClustersByReturn[retICFG][keySVFGSequence] = std::move(filteredClusters);
         }
     }
 
@@ -2396,12 +2728,13 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                 node.position = cluster.positionInPath;
                 
                 if (cluster.members.size() > 1) {
-                    // Multiple branches = cascaded OR condition
+                    // Multiple branches = cascaded condition (OR/AND/MIXED)
                     // Create a branch_group node
                     llvm::json::Object groupObj;
                     groupObj["node"] = "branch_group";
                     groupObj["location"] = cluster.location;
-                    groupObj["operator"] = "OR";
+                    // Use detected operator type, default to "OR" if unknown
+                    groupObj["operator"] = (cluster.operatorType != "UNKNOWN") ? cluster.operatorType : "OR";
                     groupObj["branch_count"] = static_cast<int64_t>(cluster.members.size());
                     groupObj["dst_node_id"] = std::to_string(cluster.dstNodeId);
                     groupObj["group_result"] = cluster.clusterResult;
@@ -2416,16 +2749,6 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                         nodeDescArray.push_back(branchDesc);
                     }
                     groupObj["node_desc"] = std::move(nodeDescArray);
-                    
-                    // Add individual branch details as array
-                    llvm::json::Array branchDetails;
-                    for (const auto& member : cluster.members) {
-                        llvm::json::Object detail;
-                        detail["src_node_id"] = static_cast<int64_t>(member.srcNode->getId());
-                        detail["condition_value"] = member.conditionValue;
-                        branchDetails.push_back(std::move(detail));
-                    }
-                    groupObj["branches"] = std::move(branchDetails);
                     
                     node.nodeObj = std::move(groupObj);
                 } else if (cluster.members.size() == 1) {
