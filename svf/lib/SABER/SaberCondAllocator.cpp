@@ -606,6 +606,8 @@ SaberCondAllocator::Condition SaberCondAllocator::newCond(const ICFGNode* inst)
     Condition negCond = Condition::NEG(expr);
     setCondInst(expr, inst);
     setNegCondInst(negCond, inst);
+    idToConditionMap[expr.id()] = expr;
+    idToConditionMap[negCond.id()] = negCond;
     conditionVec.push_back(expr);
     conditionVec.push_back(negCond);
     return expr;
@@ -651,4 +653,28 @@ void SaberCondAllocator::extractSubConds(const Condition &condition, NodeBS &sup
         extractSubConds(expr, support);
     }
 
+}
+
+std::vector<SaberCondAllocator::ConditionInfo> SaberCondAllocator::getConditionsForNode(const ICFGNode* inst) const
+{
+    std::vector<ConditionInfo> conds;
+    if (inst == nullptr)
+        return conds;
+
+    for (const auto& entry : idToTermInstMap)
+    {
+        if (entry.second != inst)
+            continue;
+
+        auto condIt = idToConditionMap.find(entry.first);
+        if (condIt == idToConditionMap.end())
+            continue;
+
+        ConditionInfo info;
+        info.cond = condIt->second;
+        info.isNeg = isNegCond(entry.first);
+        conds.push_back(info);
+    }
+
+    return conds;
 }

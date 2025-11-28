@@ -1,4 +1,5 @@
 #include "GraphReaderUtil.h"
+#include "SABER/SaberCondAllocator.h"
 #include "SVF-LLVM/LLVMUtil.h"
 #include "SVF-LLVM/LLVMModule.h"
 #include "SVFIR/SVFIR.h"
@@ -19,6 +20,16 @@
 
 namespace SVF {
 namespace GraphReaderUtil {
+
+static SaberCondAllocator* GlobalSaberCondAllocator = nullptr;
+
+void setSaberCondAllocator(SaberCondAllocator* allocator) {
+    GlobalSaberCondAllocator = allocator;
+}
+
+SaberCondAllocator* getSaberCondAllocator() {
+    return GlobalSaberCondAllocator;
+}
 
 namespace {
 
@@ -1845,6 +1856,19 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
         
         // Show number of SVF statements
         SVF::SVFUtil::outs() << "  Number of SVF Statements: " << icfgNode->getSVFStmts().size() << "\n";
+
+        if (SaberCondAllocator* condAllocator = getSaberCondAllocator()) {
+            auto condInfos = condAllocator->getConditionsForNode(icfgNode);
+            if (!condInfos.empty()) {
+                SVF::SVFUtil::outs() << "  Z3 Conditions (" << condInfos.size() << "):\n";
+                for (size_t ci = 0; ci < condInfos.size(); ++ci) {
+                    const auto& info = condInfos[ci];
+                    SVF::SVFUtil::outs() << "    [" << ci << "] id=" << info.cond.id()
+                                         << ", neg=" << (info.isNeg ? "true" : "false") << "\n";
+                    SVF::SVFUtil::outs() << "        Expr: " << condAllocator->dumpCond(info.cond) << "\n";
+                }
+            }
+        }
         
         // Find and display all associated SVFG nodes
         std::vector<const SVFGNode*> associatedSVFGNodes;

@@ -6,6 +6,7 @@
 #include "Graphs/SVFG.h"
 #include "Graphs/CallGraph.h"
 #include "Graphs/ICFG.h"
+#include "SABER/SaberCondAllocator.h"
 #include "Util/Options.h"
 #include "Util/CDGBuilder.h"
 // #include "GraphReader/SVFGChecker.h"
@@ -15,6 +16,7 @@
 #include "FunctionQuery.h"
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/Support/JSON.h>
+#include <memory>
 
 using namespace llvm;
 using namespace SVF;
@@ -46,6 +48,10 @@ int main(int argc, char ** argv) {
     memSSA->setEnableSaberOptimizations(true);
     
     SVFG* svfg = memSSA->buildFullSVFG(ander);
+
+    auto saberCondAllocator = std::make_unique<SaberCondAllocator>();
+    saberCondAllocator->allocate();
+    SVF::GraphReaderUtil::setSaberCondAllocator(saberCondAllocator.get());
 
     FunctionQuery fq(icfg, pag, svfg);
     PathQuery pq(svfg, icfg);
