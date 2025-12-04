@@ -582,3 +582,57 @@ sepcial 左值是返回值的store case
 }
 
 {"command" : "check-always-return", "function_name" : "TIFFClampDoubleToInt16"}
+
+1. path_id: 1: store operations detected; ownership may be passed to parameters or return values variable is used as a call argument; ownership may transfer to the callee or be freed there
+  - Allocation start at tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type GepVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type StoreVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color); (memory likely stored into parameters/return value)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : condition "!img->redcmap" evaluated to false
+  - Node type ActualParmVFGNode tif_getimage.c:378 : _TIFFmemcpy( img->bluecmap, blue_orig, n_color * 2 ); (variable or alias used as call argument)
+  - Node type branch tif_getimage.c:481 : condition "img->isContig)" evaluated to true
+  - Node type MRSVFGNode tif_getimage.c:482 : if (!PickContigCase(img)) {
+  - Node type branch tif_getimage.c:482 : condition "!PickContigCase(img))" evaluated to true
+  - Node type MRSVFGNode tif_getimage.c:495 : TIFFRGBAImageEnd( img );
+  - return statement tif_getimage.c:496 : return 0;
+2. path_id: 2: store operations detected; ownership may be passed to parameters or return values variable is used as a call argument; ownership may transfer to the callee or be freed there
+  - Allocation start at tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type GepVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type StoreVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color); (memory likely stored into parameters/return value)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : condition "!img->redcmap" evaluated to false
+  - Node type ActualParmVFGNode tif_getimage.c:378 : _TIFFmemcpy( img->bluecmap, blue_orig, n_color * 2 ); (variable or alias used as call argument)
+  - Node type MRSVFGNode tif_getimage.c:495 : TIFFRGBAImageEnd( img );
+  - return statement tif_getimage.c:496 : return 0;
+3. path_id: 3: store operations detected; ownership may be passed to parameters or return values
+  - Allocation start at tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type GepVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type StoreVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color); (memory likely stored into parameters/return value)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to false)
+  - Node type MRSVFGNode tif_getimage.c:495 : TIFFRGBAImageEnd( img );
+  - return statement tif_getimage.c:496 : return 0;
+4. path_id: 4: store operations detected; ownership may be passed to parameters or return values variable is used as a call argument; ownership may transfer to the callee or be freed there
+  - Allocation start at tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type GepVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type StoreVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color); (memory likely stored into parameters/return value)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : condition "!img->redcmap" evaluated to false
+  - Node type ActualParmVFGNode tif_getimage.c:378 : _TIFFmemcpy( img->bluecmap, blue_orig, n_color * 2 ); (variable or alias used as call argument)
+  - Node type branch tif_getimage.c:481 : condition "img->isContig)" evaluated to false
+  - Node type branch tif_getimage.c:487 : condition "!PickSeparateCase(img))" evaluated to false
+  - return statement tif_getimage.c:492 : return 1;
+5. path_id: 5: store operations detected; ownership may be passed to parameters or return values variable is used as a call argument; ownership may transfer to the callee or be freed there
+  - Allocation start at tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type GepVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type StoreVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color); (memory likely stored into parameters/return value)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : condition "!img->redcmap" evaluated to false
+  - Node type ActualParmVFGNode tif_getimage.c:378 : _TIFFmemcpy( img->bluecmap, blue_orig, n_color * 2 ); (variable or alias used as call argument)
+  - Node type branch tif_getimage.c:481 : condition "img->isContig)" evaluated to true
+  - Node type MRSVFGNode tif_getimage.c:482 : if (!PickContigCase(img)) {
+  - Node type branch tif_getimage.c:482 : condition "!PickContigCase(img))" evaluated to false
+  - return statement tif_getimage.c:492 : return 1;

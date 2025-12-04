@@ -13,6 +13,7 @@
 #include "SVFIR/SVFType.h"
 #include "MemoryModel/PointerAnalysis.h"
 #include "MemoryModel/PointsTo.h"
+#include "SABER/SaberCondAllocator.h"
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/Function.h>
@@ -843,6 +844,163 @@ void PathQuery::findICFGPaths(const ICFGNode* startICFG, const ICFGNode* targetI
     }
 }
 
+/*!
+ * Helper function to collect Z3 conditions along an ICFG path.
+ * Returns the combined path condition (AND of all branch conditions).
+ * Returns true condition if no conditions are found or condAllocator is null.
+ */
+static SaberCondAllocator::Condition collectPathCondition(
+    const std::vector<const ICFGNode*>& path,
+    SaberCondAllocator* condAllocator) {
+    
+    if (!condAllocator || path.size() < 2) {
+        // If no allocator or path too short, return true condition (feasible)
+        return condAllocator ? condAllocator->getTrueCond() : SaberCondAllocator::Condition::getTrueCond();
+    }
+    
+    SaberCondAllocator::Condition pathCond = condAllocator->getTrueCond();
+    bool hasCondition = false;
+    
+    // Iterate through consecutive pairs of nodes in the path
+    for (size_t i = 0; i < path.size() - 1; ++i) {
+        const ICFGNode* srcNode = path[i];
+        const ICFGNode* dstNode = path[i + 1];
+        
+        // Get basic blocks - skip if nodes don't have basic blocks (e.g., call/return nodes)
+        const SVFBasicBlock* srcBB = srcNode->getBB();
+        const SVFBasicBlock* dstBB = dstNode->getBB();
+        
+        if (!srcBB || !dstBB) {
+            // Skip nodes without basic blocks (call/return nodes, etc.)
+            continue;
+        }
+        
+        
+        // Only process if both nodes are in the same basic block or there's an edge between them
+        // Check if there's an edge from srcNode to dstNode
+        ICFGEdge* edge = nullptr;
+        for (ICFGEdge* outEdge : srcNode->getOutEdges()) {
+            if (outEdge->getDstNode() == dstNode) {
+                edge = outEdge;
+                break;
+            }
+        }
+        
+        if (!edge) {
+            // No direct edge found, skip
+            continue;
+        }
+        
+        // Only process intra-procedural edges (skip call/return edges)
+        if (!SVFUtil::isa<IntraCFGEdge>(edge)) {
+            continue;
+        }
+        
+        // Get branch condition for this edge
+        // Check if srcBB has multiple successors (conditional branch)
+        if (srcBB->getNumSuccessors() > 1) {
+            // Check if dstBB is actually a successor of srcBB
+            bool isSuccessor = false;
+            for (const SVFBasicBlock* succ : srcBB->getSuccessors()) {
+                if (succ == dstBB) {
+                    isSuccessor = true;
+                    break;
+                }
+            }
+            
+            if (isSuccessor) {
+                // Only process conditional branches - check if the last node in srcBB is a branch instruction
+                if (!srcBB->getICFGNodeList().empty()) {
+                    const ICFGNode* branchNode = srcBB->back();
+                    if (branchNode) {
+                        // Check if this node has a conditional BranchStmt
+                        // Only conditional branches have Z3 conditions
+                        bool isConditionalBranch = false;
+                        for (const SVFStmt* stmt : branchNode->getSVFStmts()) {
+                            if (const BranchStmt* branchStmt = SVFUtil::dyn_cast<BranchStmt>(stmt)) {
+                                // Only process conditional branches (unconditional branches don't have Z3 conditions)
+                                if (branchStmt->isConditional()) {
+                                    isConditionalBranch = true;
+                                }
+                                break;
+                            }
+                        }
+                        
+                        // Only proceed if this is a conditional branch instruction
+                        if (isConditionalBranch) {
+                            // Get all conditions associated with this branch node
+                            auto condInfos = condAllocator->getConditionsForNode(branchNode);
+                            
+                            if (!condInfos.empty()) {
+                                // Get the successor position to determine which condition to use
+                                u32_t succPos = srcBB->getBBSuccessorPos(dstBB);
+                                
+                                SaberCondAllocator::Condition edgeCond = condAllocator->getTrueCond();
+                                bool foundCond = false;
+                                
+                                // For 2-way branches (if/else), we typically have:
+                                // - successor 0 (true branch) -> positive condition (isNeg = false)
+                                // - successor 1 (false branch) -> negative condition (isNeg = true)
+                                if (srcBB->getNumSuccessors() == 2 && condInfos.size() >= 2) {
+                                    for (const auto& info : condInfos) {
+                                        // Match based on successor position and negation flag
+                                        if ((succPos == 0 && !info.isNeg) || (succPos == 1 && info.isNeg)) {
+                                            edgeCond = info.cond;
+                                            foundCond = true;
+                                            break;
+                                        }
+                                    }
+                                } else if (!condInfos.empty()) {
+                                    // For other cases (switch, etc.), try to find matching condition
+                                    // or use the first one as fallback
+                                    for (const auto& info : condInfos) {
+                                        edgeCond = info.cond;
+                                        foundCond = true;
+                                        break; // Use first condition found
+                                    }
+                                }
+                                
+                                if (foundCond) {
+                                    // Check if condition is equivalent to TRUE
+                                    bool isTrueCond = false;
+                                    try {
+                                        isTrueCond = condAllocator->isEquivalentBranchCond(edgeCond, condAllocator->getTrueCond());
+                                    } catch (...) {
+                                        isTrueCond = false;
+                                    }
+                                    
+                                    if (!isTrueCond) {
+                                        // Combine with existing path condition using AND
+                                        // Wrap in try-catch to handle potential Z3 exceptions
+                                        try {
+                                            pathCond = condAllocator->condAnd(pathCond, edgeCond);
+                                            hasCondition = true;
+                                        } catch (const z3::exception& e) {
+                                            // If Z3 throws an exception during AND operation,
+                                            // skip this condition and continue
+                                            continue;
+                                        } catch (...) {
+                                            // Catch any other exceptions
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // If no conditions were found, return true condition (path is feasible)
+    if (!hasCondition) {
+        return condAllocator->getTrueCond();
+    }
+    
+    return pathCond;
+}
+
 void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
     // DEBUG
     SVFUtil::outs() << "\n========================================\n";
@@ -1639,10 +1797,58 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
     // Find all ICFG paths to each return location
     std::map<const ICFGNode*, std::vector<std::vector<const ICFGNode*>>> pathsByReturn;
 
+    // Get Z3 condition allocator for path feasibility checking
+    SaberCondAllocator* condAllocator = GraphReaderUtil::getSaberCondAllocator();
+
     for (const ICFGNode* retLocation : returnLocations) {
         std::vector<std::vector<const ICFGNode*>> pathsToThisReturn;
         findICFGPaths(startNode, retLocation, function, pathsToThisReturn);
-        pathsByReturn[retLocation] = pathsToThisReturn;
+        
+        // Filter paths using Z3 satisfiability checking
+        if (condAllocator) {
+            std::vector<std::vector<const ICFGNode*>> feasiblePaths;
+            
+            for (const auto& path : pathsToThisReturn) {
+                // Collect path condition
+                SaberCondAllocator::Condition pathCond = collectPathCondition(path, condAllocator);
+                
+                // Check if path is feasible (satisfiable)
+                // For TRUE condition, it's always satisfiable, no need to call Z3
+                bool isTrueCond = false;
+                try {
+                    isTrueCond = condAllocator->isEquivalentBranchCond(pathCond, condAllocator->getTrueCond());
+                } catch (...) {
+                    isTrueCond = false;
+                }
+                
+                bool isSat = false;
+                if (isTrueCond) {
+                    isSat = true;
+                } else {
+                    // Wrap in try-catch to handle Z3 exceptions gracefully
+                    try {
+                        isSat = condAllocator->isSatisfiable(pathCond);
+                    } catch (const z3::exception& e) {
+                        // If Z3 throws an exception (e.g., invalid expression), skip this path
+                        // This can happen if the condition is malformed or too complex
+                        // In this case, we conservatively filter out the path
+                        continue;
+                    } catch (...) {
+                        // Catch any other exceptions and skip this path
+                        continue;
+                    }
+                }
+                
+                if (isSat) {
+                    feasiblePaths.push_back(path);
+                }
+            }
+            
+            pathsByReturn[retLocation] = feasiblePaths;
+        } else {
+            // No condAllocator available, keep all paths
+            pathsByReturn[retLocation] = pathsToThisReturn;
+        }
     }
 
     // Step E & F: For each path, collect keySVFGNode sequence and group by sequence
@@ -1831,6 +2037,129 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                      [](const BranchNodeInfo& a, const BranchNodeInfo& b) {
                          return a.positionInPath < b.positionInPath;
                      });
+            
+            // Extract Z3 conditions from consistent branch nodes and verify feasibility
+            // This is more efficient than verifying each path individually
+            if (condAllocator && !consistentBranches.empty()) {
+                SaberCondAllocator::Condition combinedCond = condAllocator->getTrueCond();
+                bool hasValidCondition = false;
+                bool isFeasible = true;
+                
+                for (const auto& branchInfo : consistentBranches) {
+                    const ICFGNode* branchNode = branchInfo.srcNode;
+                    if (!branchNode) {
+                        continue;
+                    }
+                    
+                    // Get the basic block for this branch node
+                    const SVFBasicBlock* branchBB = branchNode->getBB();
+                    if (!branchBB) {
+                        continue;
+                    }
+                    
+                    // Check if this is a conditional branch
+                    bool isConditionalBranch = false;
+                    for (const SVFStmt* stmt : branchNode->getSVFStmts()) {
+                        if (const BranchStmt* branchStmt = SVFUtil::dyn_cast<BranchStmt>(stmt)) {
+                            if (branchStmt->isConditional()) {
+                                isConditionalBranch = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (!isConditionalBranch) {
+                        continue;
+                    }
+                    
+                    // Get conditions for this branch node
+                    auto condInfos = condAllocator->getConditionsForNode(branchNode);
+                    if (condInfos.empty()) {
+                        continue;
+                    }
+                    
+                    // Determine which condition to use based on the edge
+                    // Get the destination node from the edge
+                    const ICFGNode* dstNode = branchInfo.edge->getDstNode();
+                    if (!dstNode) {
+                        continue;
+                    }
+                    
+                    const SVFBasicBlock* dstBB = dstNode->getBB();
+                    if (!dstBB || branchBB->getNumSuccessors() <= 1) {
+                        continue;
+                    }
+                    
+                    // Get successor position
+                    u32_t succPos = branchBB->getBBSuccessorPos(dstBB);
+                    SaberCondAllocator::Condition edgeCond = condAllocator->getTrueCond();
+                    bool foundCond = false;
+                    
+                    // Match condition based on successor position
+                    if (branchBB->getNumSuccessors() == 2 && condInfos.size() >= 2) {
+                        for (const auto& info : condInfos) {
+                            if ((succPos == 0 && !info.isNeg) || (succPos == 1 && info.isNeg)) {
+                                edgeCond = info.cond;
+                                foundCond = true;
+                                break;
+                            }
+                        }
+                    } else if (!condInfos.empty()) {
+                        edgeCond = condInfos[0].cond;
+                        foundCond = true;
+                    }
+                    
+                    if (foundCond) {
+                        // Check if condition is equivalent to TRUE
+                        bool isTrueCond = false;
+                        try {
+                            isTrueCond = condAllocator->isEquivalentBranchCond(edgeCond, condAllocator->getTrueCond());
+                        } catch (...) {
+                            isTrueCond = false;
+                        }
+                        
+                        if (!isTrueCond) {
+                            // Combine with existing condition using AND
+                            try {
+                                combinedCond = condAllocator->condAnd(combinedCond, edgeCond);
+                                hasValidCondition = true;
+                            } catch (const z3::exception& e) {
+                                // If Z3 throws an exception, mark as infeasible
+                                isFeasible = false;
+                                break;
+                            } catch (...) {
+                                isFeasible = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // Verify satisfiability of combined condition
+                if (hasValidCondition && isFeasible) {
+                    bool isTrueCond = false;
+                    try {
+                        isTrueCond = condAllocator->isEquivalentBranchCond(combinedCond, condAllocator->getTrueCond());
+                    } catch (...) {
+                        isTrueCond = false;
+                    }
+                    
+                    if (!isTrueCond) {
+                        try {
+                            isFeasible = condAllocator->isSatisfiable(combinedCond);
+                        } catch (const z3::exception& e) {
+                            isFeasible = false;
+                        } catch (...) {
+                            isFeasible = false;
+                        }
+                    }
+                }
+                
+                // Filter out infeasible path groups
+                if (!isFeasible) {
+                    continue; // Skip this path group
+                }
+            }
             
             consistentBranchesByReturn[retICFG][keySVFGSequence] = std::move(consistentBranches);
         }

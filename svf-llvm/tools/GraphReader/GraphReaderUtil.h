@@ -17,8 +17,15 @@ namespace SVF {
 
 class SVFIR; // Forward declaration
 class SVFG;  // Forward declaration
+class SaberCondAllocator;
 
 namespace GraphReaderUtil {
+
+    /// Register a global SaberCondAllocator instance for debug utilities
+    void setSaberCondAllocator(SaberCondAllocator* allocator);
+
+    /// Retrieve the currently registered SaberCondAllocator instance
+    SaberCondAllocator* getSaberCondAllocator();
 
     /*!
      * \brief Finds an ICFGNode based on a source code location string.
