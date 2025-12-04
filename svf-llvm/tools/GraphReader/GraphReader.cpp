@@ -47,6 +47,9 @@ int main(int argc, char ** argv) {
     
     SVFG* svfg = memSSA->buildFullSVFG(ander);
 
+    // Pre-compute all functions that call free (silently, no output)
+    SVF::GraphReaderUtil::findAllFreeCallers(pag, true);
+
     FunctionQuery fq(icfg, pag, svfg);
     PathQuery pq(svfg, icfg);
     {
@@ -263,6 +266,52 @@ int main(int argc, char ** argv) {
                     startSVFGNodes.push_back(storeNode);
                 }
                 pq.getValueSensitiveReturnInsidePathDetailed(loc->str(), startSVFGNodes);
+            } else if (cname == "find-lvalue-key_svfgnode") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                    continue;
+                }
+                int eqPosition = -1;
+                try {
+                    eqPosition = std::stoi(eqPositionStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
+                    continue;
+                }
+                pq.findLvalueKeySVFGNodes(loc->str(), eqPosition);
+            } else if (cname == "find-formal_arg-key_svfgnode") {
+                auto functionName = cmd.getString("function_name");
+                auto argIndexStr = cmd.getString("arg_index");
+                if (!functionName || !argIndexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'function_name' or 'arg_index'");
+                    continue;
+                }
+                int argIndex = -1;
+                try {
+                    argIndex = std::stoi(argIndexStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + argIndexStr->str());
+                    continue;
+                }
+                pq.findFormalArgKeySVFGNodes(functionName->str(), argIndex);
+            } else if (cname == "find-actual_arg-key_svfgnode") {
+                auto loc = cmd.getString("location");
+                auto calleeFuncName = cmd.getString("callee_function_name");
+                auto argIndexStr = cmd.getString("arg_index");
+                if (!loc || !calleeFuncName || !argIndexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'callee_function_name' or 'arg_index'");
+                    continue;
+                }
+                int argIndex = -1;
+                try {
+                    argIndex = std::stoi(argIndexStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + argIndexStr->str());
+                    continue;
+                }
+                pq.findActualArgKeySVFGNodes(loc->str(), calleeFuncName->str(), argIndex);
             } else if (cname == "find-call-arg-value-path-inside") {
                 auto loc = cmd.getString("location");
                 auto calleeFuncName = cmd.getString("callee_function_name");
@@ -381,6 +430,72 @@ int main(int argc, char ** argv) {
                     SVF::GraphReaderUtil::sendJsonError("missing 'location'");
                 } else {
                     SVF::GraphReaderUtil::showCodeLineDebugInfo(svfg, icfg, loc->str());
+                }
+            } else if (cname == "find-all-free-caller") {
+                llvm::json::Object result = SVF::GraphReaderUtil::findAllFreeCallers(pag);
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                llvm::outs().flush();
+            } else if (cname == "show-return-locations") {
+                auto n = cmd.getString("name");
+                if (!n) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'name'");
+                } else {
+                    std::string functionName = n->str();
+                    const FunObjVar* function = pag->getFunObjVar(functionName);
+                    if (!function) {
+                        SVF::GraphReaderUtil::sendJsonError("Function '" + functionName + "' not found.");
+                    } else {
+                        // Find all return locations using the helper function
+                        std::vector<const ICFGNode*> returnNodes = findActualReturnICFGNodes(icfg, function);
+                        
+                        // Helper function to format location JSON object to "filename:line" string
+                        auto formatLocationString = [](const llvm::json::Object& locObj) -> std::string {
+                            std::string filename;
+                            int64_t line = 0;
+                            
+                            if (auto fl = locObj.getString("fl")) {
+                                filename = fl->str();
+                            }
+                            if (auto ln = locObj.getInteger("ln")) {
+                                line = *ln;
+                            }
+                            
+                            if (filename.empty() && line == 0) {
+                                return "";
+                            } else if (filename.empty()) {
+                                return std::to_string(line);
+                            } else if (line == 0) {
+                                return filename;
+                            } else {
+                                return filename + ":" + std::to_string(line);
+                            }
+                        };
+                        
+                        // Build JSON output
+                        llvm::json::Object result;
+                        llvm::json::Array returnLocationsArray;
+                        
+                        for (const ICFGNode* node : returnNodes) {
+                            llvm::json::Object locationObj;
+                            
+                            // Get node description
+                            std::string nodeDesc = node->toString();
+                            if (nodeDesc.empty()) {
+                                nodeDesc = "Return location";
+                            }
+                            locationObj["node_desc"] = nodeDesc;
+                            
+                            // Get location from node description
+                            llvm::json::Object locationInfo = SVF::GraphReaderUtil::parseSourceLocation(nodeDesc);
+                            locationObj["location"] = formatLocationString(locationInfo);
+                            
+                            returnLocationsArray.push_back(std::move(locationObj));
+                        }
+                        
+                        result["return_locations"] = std::move(returnLocationsArray);
+                        llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                        llvm::outs().flush();
+                    }
                 }
             } else if (cname == "exit") {
                 shouldExit = true;

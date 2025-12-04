@@ -4,6 +4,8 @@
 #include "SVFIR/SVFIR.h"
 #include "Graphs/SVFG.h"
 #include "Graphs/SVFGNode.h"
+#include "Graphs/CallGraph.h"
+#include "SABER/SaberCheckerAPI.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -16,9 +18,13 @@
 #include <map>
 #include <queue>
 #include <unordered_set>
+#include <set>
 
 namespace SVF {
 namespace GraphReaderUtil {
+
+// Global set to store all functions that call free (directly or indirectly)
+static Set<std::string> g_allFreeCallers;
 
 namespace {
 
@@ -183,9 +189,7 @@ static bool reachesFormalParameter(SVFG* svfg, const SVFVar* startVar, unsigned 
 
 } // anonymous namespace
 
-bool parseCommandsLine(const std::string& jsonStr,
-                       std::vector<llvm::json::Object>& outCmds,
-                       std::string& errMsg) {
+bool parseCommandsLine(const std::string& jsonStr, std::vector<llvm::json::Object>& outCmds, std::string& errMsg) {
     outCmds.clear();
 
     auto parsed = llvm::json::parse(jsonStr);
@@ -270,6 +274,29 @@ std::string getSVFGNodeKindString(const SVFGNode* node, bool detailed) {
     }
     if (SVFUtil::isa<ActualRetVFGNode>(node)) {
         return pickName("ARet", "ActualRetVFGNode");
+    }
+    // Check MRSVFGNode subclasses before checking MRSVFGNode itself
+    // (most specific to least specific order)
+    if (SVFUtil::isa<IntraMSSAPHISVFGNode>(node)) {
+        return pickName("IntraMPhi", "IntraMSSAPHISVFGNode");
+    }
+    if (SVFUtil::isa<InterMSSAPHISVFGNode>(node)) {
+        return pickName("InterMPhi", "InterMSSAPHISVFGNode");
+    }
+    if (SVFUtil::isa<FormalOUTSVFGNode>(node)) {
+        return pickName("FOut", "FormalOUTSVFGNode");
+    }
+    if (SVFUtil::isa<FormalINSVFGNode>(node)) {
+        return pickName("FIn", "FormalINSVFGNode");
+    }
+    if (SVFUtil::isa<ActualOUTSVFGNode>(node)) {
+        return pickName("AOut", "ActualOUTSVFGNode");
+    }
+    if (SVFUtil::isa<ActualINSVFGNode>(node)) {
+        return pickName("AIn", "ActualINSVFGNode");
+    }
+    if (SVFUtil::isa<MSSAPHISVFGNode>(node)) {
+        return pickName("MPhi", "MSSAPHISVFGNode");
     }
     if (SVFUtil::isa<MRSVFGNode>(node)) {
         return "MRSVFGNode";
@@ -1012,11 +1039,7 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
     return storedValuePAG;
 }
 
-llvm::json::Object analyzeStoreLValue(SVFG* svfg,
-                                      ICFG* icfg,
-                                      SVFIR* pag,
-                                      const std::string& location,
-                                      int eqPosition) {
+llvm::json::Object analyzeStoreLValue(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
     llvm::json::Object result;
     result["command"] = "analysis-lvar";
     result["location"] = location;
@@ -1948,6 +1971,290 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
     result["location"] = location;
     result["icfg_nodes_count"] = static_cast<int64_t>(allICFGNodes.size());
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+}
+
+llvm::json::Object checkFunctionCallsFree(SVFIR* pag, const std::string& functionName) {
+    llvm::json::Object result;
+    
+    if (!pag) {
+        result["isReachable"] = false;
+        result["callchains"] = llvm::json::Array{};
+        result["error"] = "PAG is null";
+        return result;
+    }
+    
+    // Get the function object
+    const FunObjVar* startFun = pag->getFunObjVar(functionName);
+    if (!startFun) {
+        result["isReachable"] = false;
+        result["callchains"] = llvm::json::Array{};
+        result["error"] = "Function '" + functionName + "' not found";
+        return result;
+    }
+    
+    // Get call graph
+    const CallGraph* callGraph = pag->getCallGraph();
+    if (!callGraph) {
+        result["isReachable"] = false;
+        result["callchains"] = llvm::json::Array{};
+        result["error"] = "CallGraph is null";
+        return result;
+    }
+    
+    const CallGraphNode* startNode = callGraph->getCallGraphNode(startFun);
+    if (!startNode) {
+        result["isReachable"] = false;
+        result["callchains"] = llvm::json::Array{};
+        result["error"] = "Could not find CallGraphNode for function '" + functionName + "'";
+        return result;
+    }
+    
+    // Get SaberCheckerAPI to check for free functions
+    SaberCheckerAPI* checkerAPI = SaberCheckerAPI::getCheckerAPI();
+    if (!checkerAPI) {
+        result["isReachable"] = false;
+        result["callchains"] = llvm::json::Array{};
+        result["error"] = "SaberCheckerAPI is null";
+        return result;
+    }
+    
+    // BFS traversal with path tracking
+    struct WorkItem {
+        const CallGraphNode* node;
+        std::vector<std::string> path;  // Call chain from start function to current function
+    };
+    
+    std::queue<WorkItem> worklist;
+    Set<const CallGraphNode*> visited;  // To avoid cycles
+    llvm::json::Array callchains;
+    bool isReachable = false;
+    
+    // Initialize with start function
+    std::vector<std::string> initialPath;
+    initialPath.push_back(functionName);
+    worklist.push({startNode, initialPath});
+    visited.insert(startNode);
+    
+    // Check if start function itself is a free function
+    if (checkerAPI->isMemDealloc(startFun)) {
+        isReachable = true;
+        llvm::json::Array chain;
+        chain.push_back(functionName);
+        callchains.push_back(std::move(chain));
+    }
+    
+    // BFS traversal
+    while (!worklist.empty()) {
+        WorkItem current = worklist.front();
+        worklist.pop();
+        
+        const CallGraphNode* currentNode = current.node;
+        
+        // Traverse all callees
+        for (const CallGraphEdge* edge : currentNode->getOutEdges()) {
+            const CallGraphNode* calleeNode = edge->getDstNode();
+            const FunObjVar* calleeFun = calleeNode->getFunction();
+            
+            if (!calleeFun) {
+                continue;
+            }
+            
+            // Build new path
+            std::vector<std::string> newPath = current.path;
+            newPath.push_back(calleeFun->getName());
+            
+            // Check if callee is a free function
+            if (checkerAPI->isMemDealloc(calleeFun)) {
+                isReachable = true;
+                // Add this call chain to results
+                llvm::json::Array chain;
+                for (const std::string& funcName : newPath) {
+                    chain.push_back(funcName);
+                }
+                callchains.push_back(std::move(chain));
+            }
+            
+            // Continue traversal if not visited (avoid infinite loops)
+            if (visited.find(calleeNode) == visited.end()) {
+                visited.insert(calleeNode);
+                worklist.push({calleeNode, newPath});
+            }
+        }
+    }
+    
+    result["isReachable"] = isReachable;
+    result["callchains"] = std::move(callchains);
+    return result;
+}
+
+llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
+    llvm::json::Object result;
+    
+    // Clear the global set first
+    g_allFreeCallers.clear();
+    
+    if (!pag) {
+        result["all_free_callers"] = llvm::json::Array{};
+        result["error"] = "PAG is null";
+        return result;
+    }
+    
+    // Get call graph
+    const CallGraph* callGraph = pag->getCallGraph();
+    if (!callGraph) {
+        result["all_free_callers"] = llvm::json::Array{};
+        result["error"] = "CallGraph is null";
+        return result;
+    }
+    
+    // Get SaberCheckerAPI to identify free functions
+    SaberCheckerAPI* checkerAPI = SaberCheckerAPI::getCheckerAPI();
+    if (!checkerAPI) {
+        result["all_free_callers"] = llvm::json::Array{};
+        result["error"] = "SaberCheckerAPI is null";
+        return result;
+    }
+    
+    // Step 1: Find all free functions in the program
+    Set<const FunObjVar*> freeFunctions;
+    for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it) {
+        const PAGNode* node = it->second;
+        if (const FunObjVar* fun = SVFUtil::dyn_cast<FunObjVar>(node)) {
+            if (checkerAPI->isMemDealloc(fun)) {
+                freeFunctions.insert(fun);
+            }
+        }
+    }
+    
+    if (freeFunctions.empty()) {
+        result["all_free_callers"] = llvm::json::Array{};
+        result["message"] = "No free functions found in the program";
+        result["iteration_info"] = llvm::json::Array{};
+        return result;
+    }
+    
+    // Step 2: Bottom-up iterative analysis
+    // currentLevel: functions that call free (directly or indirectly) at current iteration
+    // nextLevel: functions that call currentLevel functions (to be processed in next iteration)
+    Set<const FunObjVar*> allFreeCallers;  // All functions that eventually call free
+    Set<const FunObjVar*> currentLevel = freeFunctions;  // Start with free functions themselves
+    allFreeCallers.insert(freeFunctions.begin(), freeFunctions.end());
+    
+    llvm::json::Array iterationInfo;
+    int iteration = 0;
+    
+    // Iteration 0: Free functions themselves (starting point)
+    {
+        llvm::json::Object iterObj;
+        iterObj["iteration"] = iteration;
+        iterObj["new_functions"] = llvm::json::Array{};
+        llvm::json::Array freeFuncNames;
+        for (const FunObjVar* freeFun : freeFunctions) {
+            freeFuncNames.push_back(freeFun->getName());
+        }
+        iterObj["free_functions"] = std::move(freeFuncNames);
+        iterObj["total_functions"] = static_cast<int64_t>(allFreeCallers.size());
+        iterObj["note"] = "Starting point: free functions found in program";
+        iterationInfo.push_back(std::move(iterObj));
+        if (!silent) {
+            SVFUtil::outs() << "[findAllFreeCallers] Iteration 0: Found " << freeFunctions.size() 
+                            << " free function(s) in the program (starting point)\n";
+            for (const FunObjVar* freeFun : freeFunctions) {
+                SVFUtil::outs() << "  - " << freeFun->getName() << "\n";
+            }
+        }
+    }
+    
+    // Iterations: Find callers of current level functions
+    while (true) {
+        iteration++;
+        Set<const FunObjVar*> nextLevel;
+        
+        // For each function in current level, find all its callers
+        for (const FunObjVar* callee : currentLevel) {
+            const CallGraphNode* calleeNode = callGraph->getCallGraphNode(callee);
+            if (!calleeNode) {
+                continue;
+            }
+            
+            // Traverse incoming edges (callers)
+            for (const CallGraphEdge* edge : calleeNode->getInEdges()) {
+                const CallGraphNode* callerNode = edge->getSrcNode();
+                const FunObjVar* callerFun = callerNode->getFunction();
+                
+                if (!callerFun) {
+                    continue;
+                }
+                
+                // If not already in allFreeCallers, add to next level
+                if (allFreeCallers.find(callerFun) == allFreeCallers.end()) {
+                    nextLevel.insert(callerFun);
+                    allFreeCallers.insert(callerFun);
+                }
+            }
+        }
+        
+        // Debug output for this iteration
+        llvm::json::Object iterObj;
+        iterObj["iteration"] = iteration;
+        llvm::json::Array newFuncNames;
+        for (const FunObjVar* newFun : nextLevel) {
+            newFuncNames.push_back(newFun->getName());
+        }
+        iterObj["new_functions"] = std::move(newFuncNames);
+        iterObj["new_count"] = static_cast<int64_t>(nextLevel.size());
+        iterObj["total_functions"] = static_cast<int64_t>(allFreeCallers.size());
+        iterationInfo.push_back(std::move(iterObj));
+        
+        // Output debug information (only if not silent)
+        if (!silent) {
+            SVFUtil::outs() << "[findAllFreeCallers] Iteration " << iteration 
+                            << ": Found " << nextLevel.size() 
+                            << " new function(s) that call free (directly or indirectly)\n";
+            if (!nextLevel.empty()) {
+                SVFUtil::outs() << "[findAllFreeCallers] New functions in iteration " << iteration << ":\n";
+                for (const FunObjVar* newFun : nextLevel) {
+                    SVFUtil::outs() << "  - " << newFun->getName() << "\n";
+                }
+            }
+            SVFUtil::outs() << "[findAllFreeCallers] Total functions found so far: " << allFreeCallers.size() << "\n";
+        }
+        
+        // Check for convergence: if no new functions found, we're done
+        if (nextLevel.empty()) {
+            if (!silent) {
+                SVFUtil::outs() << "[findAllFreeCallers] Convergence reached after " << iteration << " iteration(s)\n";
+            }
+            break;
+        }
+        
+        // Prepare for next iteration
+        currentLevel = nextLevel;
+    }
+    
+    // Build final result: exclude free functions themselves, only keep callers
+    llvm::json::Array allCallersArray;
+    for (const FunObjVar* caller : allFreeCallers) {
+        // Exclude free functions themselves from the result
+        if (freeFunctions.find(caller) == freeFunctions.end()) {
+            std::string funcName = caller->getName();
+            allCallersArray.push_back(funcName);
+            // Store in global set
+            g_allFreeCallers.insert(funcName);
+        }
+    }
+    
+    result["all_free_callers"] = std::move(allCallersArray);
+    result["total_count"] = static_cast<int64_t>(allCallersArray.size());
+    result["free_functions_count"] = static_cast<int64_t>(freeFunctions.size());
+    result["iteration_info"] = std::move(iterationInfo);
+    result["total_iterations"] = iteration;
+    
+    return result;
+}
+
+const Set<std::string>& getAllFreeCallers() {
+    return g_allFreeCallers;
 }
 
 } // namespace GraphReaderUtil

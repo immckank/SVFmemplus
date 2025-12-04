@@ -196,6 +196,30 @@ namespace GraphReaderUtil {
                                           const std::string& location,
                                           int eqPosition);
 
+    /*!
+     * \brief Checks if a function eventually calls any free function through the call graph.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param functionName The name of the function to check.
+     * \return A JSON object with isReachable (true/false) and callchains (array of function name arrays).
+     */
+    llvm::json::Object checkFunctionCallsFree(SVFIR* pag, const std::string& functionName);
+
+    /*!
+     * \brief Finds all functions that call free functions (directly or indirectly) using bottom-up analysis.
+     * Uses iterative approach until convergence: finds direct callers of free functions, then callers of those callers, etc.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param silent If true, suppresses all debug output. Default is false.
+     * \return A JSON object with all_free_callers (array of function names) and iteration_info (array of iteration details).
+     */
+    llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent = false);
+
+    /*!
+     * \brief Gets the set of all functions that call free (directly or indirectly).
+     * This set is populated by calling findAllFreeCallers.
+     * \return A reference to the set of function names.
+     */
+    const Set<std::string>& getAllFreeCallers();
+
 } // namespace GraphReaderUtil
 } // namespace SVF
 
