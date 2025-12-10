@@ -640,53 +640,53 @@ protected:
     /// Add an llvm PHI VFG node
     inline void addIntraPHIVFGNode(const MultiOpndStmt* edge)
     {
-        IntraPHIVFGNode* sNode = new IntraPHIVFGNode(totalVFGNode++,edge->getRes());
+        IntraPHIVFGNode* sNode = new IntraPHIVFGNode(totalVFGNode++,static_cast<const PAGNode*>(edge->getRes()));
         u32_t pos = 0;
         for(auto var : edge->getOpndVars())
         {
-            sNode->setOpVerAndBB(pos, var, edge->getICFGNode());
+            sNode->setOpVerAndBB(pos, static_cast<const PAGNode*>(var), edge->getICFGNode());
             pos++;
         }
         addVFGNode(sNode,edge->getICFGNode());
-        setDef(edge->getRes(),sNode);
-        PAGNodeToIntraPHIVFGNodeMap[edge->getRes()] = sNode;
+        setDef(static_cast<const PAGNode*>(edge->getRes()),sNode);
+        PAGNodeToIntraPHIVFGNodeMap[static_cast<const PAGNode*>(edge->getRes())] = sNode;
     }
     /// Add a Compare VFG node
     inline void addCmpVFGNode(const CmpStmt* edge)
     {
-        CmpVFGNode* sNode = new CmpVFGNode(totalVFGNode++, edge->getRes());
+        CmpVFGNode* sNode = new CmpVFGNode(totalVFGNode++, static_cast<const PAGNode*>(edge->getRes()));
         u32_t pos = 0;
         for(auto var : edge->getOpndVars())
         {
-            sNode->setOpVer(pos, var);
+            sNode->setOpVer(pos, static_cast<const PAGNode*>(var));
             pos++;
         }
         addVFGNode(sNode,edge->getICFGNode());
-        setDef(edge->getRes(),sNode);
-        PAGNodeToCmpVFGNodeMap[edge->getRes()] = sNode;
+        setDef(static_cast<const PAGNode*>(edge->getRes()),sNode);
+        PAGNodeToCmpVFGNodeMap[static_cast<const PAGNode*>(edge->getRes())] = sNode;
     }
     /// Add a BinaryOperator VFG node
     inline void addBinaryOPVFGNode(const BinaryOPStmt* edge)
     {
-        BinaryOPVFGNode* sNode = new BinaryOPVFGNode(totalVFGNode++, edge->getRes());
+        BinaryOPVFGNode* sNode = new BinaryOPVFGNode(totalVFGNode++, static_cast<const PAGNode*>(edge->getRes()));
         u32_t pos = 0;
         for(auto var : edge->getOpndVars())
         {
-            sNode->setOpVer(pos, var);
+            sNode->setOpVer(pos, static_cast<const PAGNode*>(var));
             pos++;
         }
         addVFGNode(sNode,edge->getICFGNode());
-        setDef(edge->getRes(),sNode);
-        PAGNodeToBinaryOPVFGNodeMap[edge->getRes()] = sNode;
+        setDef(static_cast<const PAGNode*>(edge->getRes()),sNode);
+        PAGNodeToBinaryOPVFGNodeMap[static_cast<const PAGNode*>(edge->getRes())] = sNode;
     }
     /// Add a UnaryOperator VFG node
     inline void addUnaryOPVFGNode(const UnaryOPStmt* edge)
     {
-        UnaryOPVFGNode* sNode = new UnaryOPVFGNode(totalVFGNode++, edge->getRes());
+        UnaryOPVFGNode* sNode = new UnaryOPVFGNode(totalVFGNode++, static_cast<const PAGNode*>(edge->getRes()));
         sNode->setOpVer(0, edge->getOpVar());
         addVFGNode(sNode,edge->getICFGNode());
-        setDef(edge->getRes(),sNode);
-        PAGNodeToUnaryOPVFGNodeMap[edge->getRes()] = sNode;
+        setDef(static_cast<const PAGNode*>(edge->getRes()),sNode);
+        PAGNodeToUnaryOPVFGNodeMap[static_cast<const PAGNode*>(edge->getRes())] = sNode;
     }
     /// Add a BranchVFGNode
     inline void addBranchVFGNode(const BranchStmt* edge)
