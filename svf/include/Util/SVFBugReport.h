@@ -57,7 +57,10 @@ public:
         Caller = 0x2,
         CallSite = 0x3,
         Loop = 0x4,
-        SourceInst = 0x5
+        SourceInst = 0x5,
+        Free = 0x6,
+        Use = 0x7,
+        PotentialLoop = 0x8
     };
 
 protected:
@@ -83,7 +86,7 @@ public:
     typedef std::vector<SVFBugEvent> EventStack;
 
 public:
-    enum BugType {FULLBUFOVERFLOW, PARTIALBUFOVERFLOW, NEVERFREE, PARTIALLEAK, DOUBLEFREE, FILENEVERCLOSE, FILEPARTIALCLOSE, FULLNULLPTRDEREFERENCE, PARTIALNULLPTRDEREFERENCE, USEAFTERFREE};
+    enum BugType {FULLBUFOVERFLOW, PARTIALBUFOVERFLOW, NEVERFREE, PARTIALLEAK, DOUBLEFREE, FILENEVERCLOSE, FILEPARTIALCLOSE, FULLNULLPTRDEREFERENCE, PARTIALNULLPTRDEREFERENCE, USEAFTERFREE, UNINIT};
     static const std::map<GenericBug::BugType, std::string> BugType2Str;
 
 protected:
@@ -301,6 +304,22 @@ public:
     }
 };
 
+class UninitBug : public GenericBug
+{
+public:
+    UninitBug(const EventStack &bugEventStack):
+        GenericBug(GenericBug::UNINIT, bugEventStack) { }
+
+    cJSON *getBugDescription() const;
+    void printBugToTerminal() const;
+
+    /// ClassOf
+    static inline bool classof(const GenericBug *bug)
+    {
+        return bug->getBugType() == GenericBug::UNINIT;
+    }
+};
+
 class SVFBugReport
 {
 public:
@@ -366,7 +385,13 @@ public:
         }
         case GenericBug::USEAFTERFREE:
         {
-            newBug = new FilePartialCloseBug(eventStack);
+            newBug = new UseAfterFreeBug(eventStack);
+            bugSet.insert(newBug);
+            break;
+        }
+        case GenericBug::UNINIT:
+        {
+            newBug = new UninitBug(eventStack);
             bugSet.insert(newBug);
             break;
         }

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 //===- SVFVariables.h -- SVF Variables------------------------//
 //
 //                     SVF: Static Value-Flow Analysis

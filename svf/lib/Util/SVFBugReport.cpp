@@ -45,7 +45,9 @@ const std::map<GenericBug::BugType, std::string> GenericBug::BugType2Str =
     {GenericBug::FILEPARTIALCLOSE, "File Partial Close"},
     {GenericBug::DOUBLEFREE, "Double Free"},
     {GenericBug::FULLNULLPTRDEREFERENCE, "Full Null Ptr Dereference"},
-    {GenericBug::PARTIALNULLPTRDEREFERENCE, "Partial Null Ptr Dereference"}
+    {GenericBug::PARTIALNULLPTRDEREFERENCE, "Partial Null Ptr Dereference"},
+    {GenericBug::USEAFTERFREE, "Use After Free"},
+    {GenericBug::UNINIT, "Use of Uninitalized Struct"}
 };
 
 const std::string GenericBug::getLoc() const
@@ -228,14 +230,67 @@ void UseAfterFreeBug::printBugToTerminal() const
     SVFUtil::errs() << SVFUtil::bugMsg2("\t Use After Free :") <<  " memory allocation at : ("
                     << GenericBug::getLoc() << ")\n";
 
-    SVFUtil::errs() << "\t\t use after free path: \n";
     auto lastBranchEventIt = bugEventStack.end() - 1;
     for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
     {
-        SVFUtil::errs() << "\t\t  --> (" << (*eventIt).getEventLoc() << "|" << (*eventIt).getEventDescription() << ") \n";
+        u32_t eventType = (*eventIt).getEventType();
+
+        if(eventType == SVFBugEvent::Free){
+            SVFUtil::errs() << "\n\t  Free at : ("<< (*eventIt).getEventLoc() << ")  \n";
+            SVFUtil::errs() << "\t  free path: \n";
+        }
+        else if(eventType == SVFBugEvent::Use){
+            SVFUtil::errs() << "\t  Use at : ("<< (*eventIt).getEventLoc() << ")  \n";
+            SVFUtil::errs() << "\t  use path: \n";
+        }
+        else if(eventType == SVFBugEvent::PotentialLoop){
+            SVFUtil::errs() << "\t  The above pair might be a false-positive report due to loop\n";
+        }
+        else SVFUtil::errs() << "\t\t  --> (" << (*eventIt).getEventLoc() << "|" << (*eventIt).getEventDescription() << ") \n";
     }
     SVFUtil::errs() << "\n";
 }
+cJSON * UninitBug::getBugDescription() const
+{
+    cJSON *bugDescription = cJSON_CreateObject();
+
+    cJSON *pathInfo = cJSON_CreateArray();
+    auto lastBranchEventIt = bugEventStack.end() - 1;
+    for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
+    {
+        cJSON *newBranch = cJSON_CreateObject();
+        cJSON *branchLoc = cJSON_Parse((*eventIt).getEventLoc().c_str());
+        if(branchLoc == nullptr) branchLoc = cJSON_CreateObject();
+        cJSON *branchCondition = cJSON_CreateString((*eventIt).getEventDescription().c_str());
+
+        cJSON_AddItemToObject(newBranch, "BranchLoc", branchLoc);
+        cJSON_AddItemToObject(newBranch, "BranchCond", branchCondition);
+
+        cJSON_AddItemToArray(pathInfo, newBranch);
+    }
+    cJSON_AddItemToObject(bugDescription, "UninitPath", pathInfo);
+
+    return bugDescription;
+}
+
+void UninitBug::printBugToTerminal() const
+{
+    SVFUtil::errs() << SVFUtil::bugMsg2("\t Uninit use :") <<  " memory allocation at : ("
+                    << GenericBug::getLoc() << ")\n";
+
+    auto lastBranchEventIt = bugEventStack.end() - 1;
+    for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
+    {
+        u32_t eventType = (*eventIt).getEventType();
+
+        if(eventType == SVFBugEvent::Use){
+            SVFUtil::errs() << "\t  Use at : ("<< (*eventIt).getEventLoc() << ")  \n";
+        }
+        else SVFUtil::errs() << "\t\t  --> (" << (*eventIt).getEventLoc() << "|" << (*eventIt).getEventDescription() << ") \n";
+    }
+    SVFUtil::errs() << "\n";
+}
+
 
 cJSON * FileNeverCloseBug::getBugDescription() const
 {
@@ -354,6 +409,14 @@ const std::string SVFBugEvent::getEventDescription() const
         break;
     }
     case SVFBugEvent::SourceInst:
+    {
+        return "None";
+    }
+    case SVFBugEvent::Free:
+    {
+        return "None";
+    }
+    case SVFBugEvent::Use:
     {
         return "None";
     }
