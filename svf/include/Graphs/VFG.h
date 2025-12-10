@@ -693,8 +693,8 @@ protected:
     {
         BranchVFGNode* sNode = new BranchVFGNode(totalVFGNode++, edge);
         addVFGNode(sNode,edge->getICFGNode());
-        setDef(edge->getBranchInst(),sNode);
-        PAGNodeToBranchVFGNodeMap[edge->getBranchInst()] = sNode;
+        setDef(static_cast<const PAGNode*>(edge->getBranchInst()),sNode);
+        PAGNodeToBranchVFGNodeMap[static_cast<const PAGNode*>(edge->getBranchInst())] = sNode;
     }
 };
 

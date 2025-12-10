@@ -30,6 +30,7 @@
 #ifndef SVFG_H_
 #define SVFG_H_
 
+#include "Graphs/IRGraph.h"
 #include "Graphs/VFG.h"
 #include "Graphs/SVFGNode.h"
 
