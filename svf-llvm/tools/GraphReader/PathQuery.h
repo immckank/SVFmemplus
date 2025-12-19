@@ -152,7 +152,8 @@ public:
     std::set<const SVFGNode*> identifyKeySVFGNodesInFunction(
         const FunObjVar* function,
         const SVFGNode* startSVFGNode,
-        bool isTool = true
+        bool isTool = true,
+        const std::vector<std::string>& offsets = {}
     );
 
     /*!
@@ -164,8 +165,9 @@ public:
      *
      * \param location Source code location string (e.g., "file.c:123").
      * \param eqPosition The equation position (column) to match.
+     * \param offsets Optional list of GEP offsets to filter nodes (e.g., ["1", "2"]).
      */
-    void findLvalueKeySVFGNodes(const std::string& location, int eqPosition);
+    void findLvalueKeySVFGNodes(const std::string& location, int eqPosition, const std::vector<std::string>& offsets = {});
 
     /*!
      * \brief Finds key SVFG nodes for a formal parameter at a specific function and argument index.
@@ -176,8 +178,9 @@ public:
      *
      * \param functionName The name of the function.
      * \param argIndex The argument index (0-based) of the formal parameter.
+     * \param offsets Optional list of GEP offsets to filter nodes (e.g., ["1", "2"]).
      */
-    void findFormalArgKeySVFGNodes(const std::string& functionName, int argIndex);
+    void findFormalArgKeySVFGNodes(const std::string& functionName, int argIndex, const std::vector<std::string>& offsets = {});
 
     /*!
      * \brief Finds key SVFG nodes for an actual argument at a specific call site.
@@ -189,8 +192,9 @@ public:
      * \param location Source code location string (e.g., "file.c:123") of the call site.
      * \param calleeFunctionName The name of the called function.
      * \param argIndex The argument index (0-based) of the actual parameter.
+     * \param offsets Optional list of GEP offsets to filter nodes (e.g., ["1", "2"]).
      */
-    void findActualArgKeySVFGNodes(const std::string& location, const std::string& calleeFunctionName, int argIndex);
+    void findActualArgKeySVFGNodes(const std::string& location, const std::string& calleeFunctionName, int argIndex, const std::vector<std::string>& offsets = {});
 
 private:
 

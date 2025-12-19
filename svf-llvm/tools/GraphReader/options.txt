@@ -214,6 +214,9 @@ command for test
 {"command" : "find-lvalue-key_svfgnode", "location": "tif_getimage.c:370", "eq_position": "18"}
 
 {"command" : "find-formal_arg-key_svfgnode", "function_name" : "TIFFReadBufferSetup", "arg_index" : "0"}
+{"command" : "find-formal_arg-key_svfgnode", "function_name" : "TIFFRGBAImageEnd", "arg_index" : "0", "offsets":["13"]}
+
+
 
 {"command" : "find-actual_arg-key_svfgnode", "location": "tif_dirwrite.c:839", "callee_function_name" : "TIFFReadBufferSetup", "arg_index" : "0"}
 {"command" : "find-actual_arg-key_svfgnode", "location": "tif_dirread.c:5432", "callee_function_name" : "TIFFReadDirEntrySbyteArray", "arg_index" : "2"}

@@ -1772,7 +1772,7 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
 
     // Use identifyKeySVFGNodesInFunction for each start node and merge results
     for (const SVFGNode* startSVFGNode : validStartNodes) {
-        std::set<const SVFGNode*> keyNodes = identifyKeySVFGNodesInFunction(function, startSVFGNode, true);
+        std::set<const SVFGNode*> keyNodes = identifyKeySVFGNodesInFunction(function, startSVFGNode, true, {});
         keySVFGNodesSet.insert(keyNodes.begin(), keyNodes.end());
     }
 
@@ -2626,7 +2626,7 @@ bool PathQuery::isLvarReachesReturn(SVFG* svfg, SVFIR* pag, const PAGNode* pagNo
     return false;
 }
 
-std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObjVar* function, const SVFGNode* startSVFGNode, bool isTool) {
+std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObjVar* function, const SVFGNode* startSVFGNode, bool isTool, const std::vector<std::string>& offsets) {
     std::set<const SVFGNode*> result;
     
     // Validate inputs
@@ -2642,16 +2642,24 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
     // Step 1: BFS Collection - collect all reachable SVFG nodes within the function
     Set<const SVFGNode*> allReachableNodes;
     std::queue<const SVFGNode*> worklist;
+    // Map to track offset match index for each node (how many offsets have been matched so far)
+    Map<const SVFGNode*, size_t> nodeOffsetMatchIndex;
     
     // Start BFS from the start node
+    // If offsets are provided, start with match index 0 (no offsets matched yet)
+    // If offsets are empty, all nodes are reachable (no filtering)
+    nodeOffsetMatchIndex[startSVFGNode] = 0;
     if (allReachableNodes.insert(startSVFGNode).second) {
         worklist.push(startSVFGNode);
     }
     
-    // Perform BFS traversal
+    // Perform BFS traversal with GEP offset filtering
     while (!worklist.empty()) {
         const SVFGNode* currentNode = worklist.front();
         worklist.pop();
+        
+        // Get current offset match index for this node
+        size_t currentMatchIndex = nodeOffsetMatchIndex[currentNode];
         
         // Traverse all out-edges
         for (const SVFGEdge* edge : currentNode->getOutEdges()) {
@@ -2660,9 +2668,98 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
             if (nextNode->getFun() != function) {
                 continue;
             }
-            if (allReachableNodes.insert(nextNode).second) {
-                worklist.push(nextNode);
+            
+            // Check if offsets filtering is enabled (non-empty offsets list)
+            bool shouldIncludeNode = true;
+            size_t nextMatchIndex = currentMatchIndex;
+            
+            if (!offsets.empty()) {
+                // Check if next node is a GEP node
+                if (const GepVFGNode* gepNode = SVFUtil::dyn_cast<GepVFGNode>(nextNode)) {
+                    const GepStmt* gepStmt = SVFUtil::dyn_cast<GepStmt>(gepNode->getPAGEdge());
+                    if (gepStmt && gepStmt->isConstantOffset() && !gepStmt->isVariantFieldGep()) {
+                        // Extract offset - try multiple methods
+                        APOffset flattenedOffset = gepStmt->getConstantStructFldIdx();
+                        std::string flattenedOffsetStr = std::to_string(flattenedOffset);
+                        
+                        // Try to extract original struct field index from offsetVarAndGepTypePairVec
+                        std::string originalFieldIdxStr = "";
+                        const AccessPath::IdxOperandPairs& typePairs = gepStmt->getOffsetVarAndGepTypePairVec();
+                        for (const auto& pair : typePairs) {
+                            const SVFVar* idxVar = pair.first;
+                            const SVFType* idxType = pair.second;
+                            
+                            // Check if this is a struct field access
+                            if (SVFUtil::isa<SVFStructType>(idxType) || idxType->isStructTy()) {
+                                // Try to get the original field index (not flattened)
+                                if (const ConstIntValVar* constIntVar = SVFUtil::dyn_cast<ConstIntValVar>(idxVar)) {
+                                    APOffset origIdx = constIntVar->getSExtValue();
+                                    originalFieldIdxStr = std::to_string(origIdx);
+                                    break; // Use the first struct field index we find
+                                }
+                            }
+                        }
+                        
+                        // Check if we have more offsets to match
+                        if (currentMatchIndex < offsets.size()) {
+                            std::string expectedOffset = offsets[currentMatchIndex];
+                            bool offsetMatches = false;
+                            
+                            // Try matching with original field index first (if available)
+                            if (!originalFieldIdxStr.empty() && originalFieldIdxStr == expectedOffset) {
+                                offsetMatches = true;
+                            }
+                            // Fall back to flattened offset if original doesn't match
+                            else if (flattenedOffsetStr == expectedOffset) {
+                                offsetMatches = true;
+                            }
+                            
+                            if (offsetMatches) {
+                                // Match found: increment match index
+                                nextMatchIndex = currentMatchIndex + 1;
+                                shouldIncludeNode = true;
+                            } else {
+                                // Offset doesn't match: 
+                                // 1. Don't include this GEP node (shouldIncludeNode = false)
+                                // 2. Don't explore from it (won't be added to worklist)
+                                // 3. Effectively "retreat" to the node before this GEP
+                                shouldIncludeNode = false;
+                            }
+                        } else {
+                            // All offsets already matched: skip additional GEP nodes
+                            // This GEP node should not be included
+                            shouldIncludeNode = false;
+                        }
+                    } else {
+                        // Non-constant or variant GEP: treat as non-matching
+                        // Don't include this GEP node
+                        shouldIncludeNode = false;
+                    }
+                } else {
+                    // Non-GEP node: preserve current match index
+                    nextMatchIndex = currentMatchIndex;
+                    shouldIncludeNode = true;
+                }
             }
+            
+            // Add node to reachable set and worklist if it should be included
+            // If shouldIncludeNode is false (e.g., mismatched GEP), the node will not be:
+            // 1. Added to allReachableNodes (so it won't appear in results)
+            // 2. Added to worklist (so we won't explore from it, effectively "retreating" to before the GEP)
+            // This ensures that mismatched GEP nodes and all nodes reachable from them are excluded
+            if (shouldIncludeNode) {
+                // Only add node if it's not already in the set (to avoid duplicate processing)
+                if (allReachableNodes.insert(nextNode).second) {
+                    // New node: add to worklist and track match index
+                    nodeOffsetMatchIndex[nextNode] = nextMatchIndex;
+                    worklist.push(nextNode);
+                }
+                // If node already exists, we don't need to process it again
+                // (it was already added via another valid path)
+            }
+            // If shouldIncludeNode is false (mismatched GEP), we skip this node entirely
+            // This effectively "retreats" to the node before the GEP, and the GEP node itself
+            // will not be included in the results
         }
     }
     
@@ -3150,7 +3247,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
     return result;
 }
 
-void PathQuery::findLvalueKeySVFGNodes(const std::string& location, int eqPosition) {
+void PathQuery::findLvalueKeySVFGNodes(const std::string& location, int eqPosition, const std::vector<std::string>& offsets) {
     if (!icfg || !svfg || !pag) {
         GraphReaderUtil::sendJsonError("ICFG, SVFG, or PAG is null!");
         return;
@@ -3183,10 +3280,10 @@ void PathQuery::findLvalueKeySVFGNodes(const std::string& location, int eqPositi
     }
 
     // Step 4: Use identifyKeySVFGNodesInFunction with isTool=false to output JSON
-    identifyKeySVFGNodesInFunction(function, startSVFGNode, false);
+    identifyKeySVFGNodesInFunction(function, startSVFGNode, false, offsets);
 }
 
-void PathQuery::findFormalArgKeySVFGNodes(const std::string& functionName, int argIndex) {
+void PathQuery::findFormalArgKeySVFGNodes(const std::string& functionName, int argIndex, const std::vector<std::string>& offsets) {
     if (!icfg || !svfg || !pag) {
         GraphReaderUtil::sendJsonError("ICFG, SVFG, or PAG is null!");
         return;
@@ -3219,10 +3316,10 @@ void PathQuery::findFormalArgKeySVFGNodes(const std::string& functionName, int a
     }
 
     // Step 4: Use identifyKeySVFGNodesInFunction with isTool=false to output JSON
-    identifyKeySVFGNodesInFunction(function, startSVFGNode, false);
+    identifyKeySVFGNodesInFunction(function, startSVFGNode, false, offsets);
 }
 
-void PathQuery::findActualArgKeySVFGNodes(const std::string& location, const std::string& calleeFunctionName, int argIndex) {
+void PathQuery::findActualArgKeySVFGNodes(const std::string& location, const std::string& calleeFunctionName, int argIndex, const std::vector<std::string>& offsets) {
     if (!icfg || !svfg || !pag) {
         GraphReaderUtil::sendJsonError("ICFG, SVFG, or PAG is null!");
         return;
@@ -3315,7 +3412,7 @@ void PathQuery::findActualArgKeySVFGNodes(const std::string& location, const std
     }
 
     // Step 7: Use identifyKeySVFGNodesInFunction with isTool=false to output JSON
-    identifyKeySVFGNodesInFunction(callerFunction, startSVFGNode, false);
+    identifyKeySVFGNodesInFunction(callerFunction, startSVFGNode, false, offsets);
 }
 
 }// namespace SVF

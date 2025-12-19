@@ -286,7 +286,19 @@ int main(int argc, char ** argv) {
                     SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
                     continue;
                 }
-                pq.findLvalueKeySVFGNodes(loc->str(), eqPosition);
+                // Parse optional offsets array
+                std::vector<std::string> offsets;
+                if (auto offsetsArray = cmd.getArray("offsets")) {
+                    for (const auto& offsetVal : *offsetsArray) {
+                        if (auto offsetStr = offsetVal.getAsString()) {
+                            offsets.push_back(offsetStr->str());
+                        } else {
+                            SVF::GraphReaderUtil::sendJsonError("invalid offset value in 'offsets' array (must be strings)");
+                            continue;
+                        }
+                    }
+                }
+                pq.findLvalueKeySVFGNodes(loc->str(), eqPosition, offsets);
             } else if (cname == "find-formal_arg-key_svfgnode") {
                 auto functionName = cmd.getString("function_name");
                 auto argIndexStr = cmd.getString("arg_index");
@@ -301,7 +313,19 @@ int main(int argc, char ** argv) {
                     SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + argIndexStr->str());
                     continue;
                 }
-                pq.findFormalArgKeySVFGNodes(functionName->str(), argIndex);
+                // Parse optional offsets array
+                std::vector<std::string> offsets;
+                if (auto offsetsArray = cmd.getArray("offsets")) {
+                    for (const auto& offsetVal : *offsetsArray) {
+                        if (auto offsetStr = offsetVal.getAsString()) {
+                            offsets.push_back(offsetStr->str());
+                        } else {
+                            SVF::GraphReaderUtil::sendJsonError("invalid offset value in 'offsets' array (must be strings)");
+                            continue;
+                        }
+                    }
+                }
+                pq.findFormalArgKeySVFGNodes(functionName->str(), argIndex, offsets);
             } else if (cname == "find-actual_arg-key_svfgnode") {
                 auto loc = cmd.getString("location");
                 auto calleeFuncName = cmd.getString("callee_function_name");
@@ -317,7 +341,19 @@ int main(int argc, char ** argv) {
                     SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + argIndexStr->str());
                     continue;
                 }
-                pq.findActualArgKeySVFGNodes(loc->str(), calleeFuncName->str(), argIndex);
+                // Parse optional offsets array
+                std::vector<std::string> offsets;
+                if (auto offsetsArray = cmd.getArray("offsets")) {
+                    for (const auto& offsetVal : *offsetsArray) {
+                        if (auto offsetStr = offsetVal.getAsString()) {
+                            offsets.push_back(offsetStr->str());
+                        } else {
+                            SVF::GraphReaderUtil::sendJsonError("invalid offset value in 'offsets' array (must be strings)");
+                            continue;
+                        }
+                    }
+                }
+                pq.findActualArgKeySVFGNodes(loc->str(), calleeFuncName->str(), argIndex, offsets);
             } else if (cname == "find-call-arg-value-path-inside") {
                 auto loc = cmd.getString("location");
                 auto calleeFuncName = cmd.getString("callee_function_name");
