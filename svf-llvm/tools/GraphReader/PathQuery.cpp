@@ -3137,6 +3137,41 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                         }
                     }
                 } // End of base object checks
+
+                // Final guard: drop GEPs whose pointer operand/base object does not alias the start variable
+                if (!shouldHideInOutput && pta && !startNodeLHSPointers.empty()) {
+                    bool isRelatedToStart = false;
+                    auto checkPointerRelation = [&](const PAGNode* ptrNode) {
+                        if (!ptrNode || isRelatedToStart || !ptrNode->isPointer()) {
+                            return;
+                        }
+                        NodeID ptrId = ptrNode->getId();
+                        for (NodeID lhsPtrId : startNodeLHSPointers) {
+                            if (pta->alias(ptrId, lhsPtrId) != AliasResult::NoAlias ||
+                                isValueFlowReachable(ptrId, lhsPtrId)) {
+                                isRelatedToStart = true;
+                                break;
+                            }
+                        }
+                    };
+
+                    checkPointerRelation(gepStmt->getLHSVar());
+                    checkPointerRelation(gepStmt->getRHSVar());
+
+                    if (!isRelatedToStart && baseObj) {
+                        NodeID baseId = baseObj->getId();
+                        for (NodeID lhsPtrId : startNodeLHSPointers) {
+                            if (pta->alias(baseId, lhsPtrId) != AliasResult::NoAlias) {
+                                isRelatedToStart = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!isRelatedToStart) {
+                        shouldHideInOutput = true;
+                    }
+                }
             }
         } else if (const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(svfgNode)) {
             const PAGNode* dstNode = storeNode->getPAGDstNode();
