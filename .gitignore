@@ -27,4 +27,5 @@ cmake-build-debug/
 compile_commands.json
 Release-build/
 *.dot
+*.txt
 /PUT
