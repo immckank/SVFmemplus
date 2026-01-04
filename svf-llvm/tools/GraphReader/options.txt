@@ -42,31 +42,6 @@ no branch not void
 
 {"command" : "get-constrain-inside", "location" : "tif_jpeg.c:558"}
 
-{
-    "common_constraint_count":1,
-    "common_constraints":[
-        {
-            "condition_value":"false",
-            "dst_icfg_node_id":32014,
-            "location":"tif_jpeg.c:551",
-            "src_icfg_node_id":32012,
-            "type":"branch"
-            }
-        ],"error":false,"function":"TIFFjpeg_tables_dest",
-        "path_count":2,
-        "paths":[
-            {
-                "constraints":[
-                    {
-                        "condition_value":"false",
-                        "dst_icfg_node_id":31991,
-                        "location":"tif_jpeg.c:547","src_icfg_node_id":31989,"type":"branch"},{"condition_value":"false","dst_icfg_node_id":32014,"location":"tif_jpeg.c:551","src_icfg_node_id":32012,"type":"branch"}],"node_count":40,"path_id":1},{"constraints":[{"condition_value":"true","dst_icfg_node_id":31990,"location":"tif_jpeg.c:547","src_icfg_node_id":31989,"type":"branch"},{"condition_value":"false","dst_icfg_node_id":32014,"location":"tif_jpeg.c:551","src_icfg_node_id":32012,"type":"branch"}],"node_count":46,"path_id":2}],"target_icfg_node_id":32035,"target_location":{"cl":2,"fl":"tif_jpeg.c","ln":558}}
-
-
-isCCITTCompression
-
-TIFFRGBAImageEnd
-
 {"command": "find-all-function-call-sites", "name": "TIFFWriteBufferSetup"}
 
 path
@@ -102,6 +77,20 @@ path
 {"command": "show-code-line", "location": "tif_dirwrite.c:2348"}
 {"command": "show-code-line", "location": "tif_getimage.c:368"}
 {"command": "show-code-line", "location": "tif_read.c:932"}
+
+{"command": "show-code-line", "location": "tif_dirread.c:5607"}
+{"command": "show-code-line", "location": "tif_dirread.c:2524"}
+
+{"command": "show-code-line", "location": "tif_dirread.c:811"}
+{"command": "show-code-line", "location": "tif_dirread.c:4349"}
+{"command": "show-code-line", "location": "tif_dirread.c:4995"}
+{"command": "show-code-line", "location": "tif_dirread.c:4997"}
+{"command": "show-code-line", "location": "tif_dirread.c:5731"}
+{"command": "show-code-line", "location": "tif_dirread.c:5796"}
+{"command": "show-code-line", "location": "tif_dirread.c:5801"}
+{"command": "show-code-line", "location": "tif_getimage.c:371"}
+
+
 Node String: GepVFGNode ID: 23723 GepStmt: [Var87447 <-- Var87446]
 ValVar ID: 87447
    %197 = getelementptr inbounds %struct._TIFFRGBAImage, ptr %196, i32 0, i32 11, !dbg !12359 { "ln": 368, "cl": 9, "fl": "tif_getimage.c" }
@@ -198,6 +187,48 @@ command for test
 { "command" : "find-lvalue-path-inside", "location" : "tif_dirread.c:1855", "eq_position" : "6"}
 { "command" : "find-lvalue-path-inside", "location" : "tif_dirread.c:4992", "eq_position" : "11"}
 { "command" : "find-lvalue-path-inside", "location" : "tif_dirwrite.c:1746", "eq_position" : "7"}
+{ "command" : "find-lvalue-path-inside", "location" : "tif_dirread.c:2323", "eq_position" : "6"}
+
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirread.c:4981", "eq_position" : "9"}
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirwrite.c:1746", "eq_position" : "7"}
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirwrite.c:1934", "eq_position" : "4"}
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirread.c:1855", "eq_position" : "6"}
+{ "command" : "find-lvalue-detail-path-inside", "location": "tif_getimage.c:370", "eq_position": "18"}
+369 368 370 类似
+{ "command" : "find-lvalue-detail-path-inside", "location": "tif_dirread.c:2797", "eq_position": "6"}
+{ "command" : "find-lvalue-detail-path-inside", "location": "tif_dirread.c:2568", "eq_position": "6"}
+{ "command" : "find-lvalue-detail-path-inside", "location": "tif_jpeg.c:2057", "eq_position": "20"}
+{ "command" : "find-lvalue-detail-path-inside", "location": "tif_dirread.c:1519", "eq_position": "6"}
+{ "command" : "find-lvalue-detail-path-inside", "location": "tif_read.c:1421", "eq_position": "20"}
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirread.c:2323", "eq_position" : "6"}
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirwrite.c:839", "eq_position" : "8"}
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirread.c:1686", "eq_position" : "6"}
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirread.c:2188", "eq_position" : "6"}
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirread.c:1166", "eq_position" : "6"}
+{ "command" : "find-lvalue-detail-path-inside", "location": "tif_write.c:658", "eq_position": "6"}
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirwrite.c:1688", "eq_position" : "7"}
+
+
+{"command" : "find-lvalue-key_svfgnode", "location" : "tif_dirwrite.c:839", "eq_position" : "8"}
+{"command" : "find-lvalue-key_svfgnode", "location" : "tif_dirwrite.c:839", "eq_position" : "8"}
+{"command" : "find-lvalue-key_svfgnode", "location": "tif_getimage.c:370", "eq_position": "18"}
+
+{"command" : "find-formal_arg-key_svfgnode", "function_name" : "TIFFReadBufferSetup", "arg_index" : "0"}
+{"command" : "find-formal_arg-key_svfgnode", "function_name" : "TIFFRGBAImageEnd", "arg_index" : "0", "offsets":["13"]}
+
+
+
+{"command" : "find-actual_arg-key_svfgnode", "location": "tif_dirwrite.c:839", "callee_function_name" : "TIFFReadBufferSetup", "arg_index" : "0"}
+{"command" : "find-actual_arg-key_svfgnode", "location": "tif_dirread.c:5432", "callee_function_name" : "TIFFReadDirEntrySbyteArray", "arg_index" : "2"}
+
+
+{"command" : "find-gep-cl", "location": "tif_getimage.c:370"}
+
+
+sepcial 左值是返回值的store case
+{ "command" : "find-lvalue-detail-path-inside", "location" : "tif_dirread.c:4333", "eq_position" : "8"}
+4333 8
+
 
 { "command" : "find-lvalue-path-inside", "location" : "tif_getimage.c:368", "eq_position" : "17"}
 
@@ -207,41 +238,404 @@ command for test
 { "command": "find-icfg-return-paths", "location": "tif_dirwrite.c:1720" }
 
 
-65890,43515,105059,102526,43516,65893,117732,117734,43564,89016,106019,102533,(43517,79422,145128),117741,43518,21677,79436,146543,43519,79440
-65890,43515,105059,102526,43516,65893,117732,117734,43564,89016,106019,102533,117741,43518,21677,79436,146543,43519,79440
+对应2057 jpeg可能出现内存泄漏
+{
+    "path_number":"4",
+    "paths":[
+        [
+            {
+                "location":"tif_jpeg.c:2057","node":"start","node_desc":"IntraICFGNode30564 {fun: JPEGEncode{ \"ln\": 2057, \"cl\": 60, \"fl\": \"tif_jpeg.c\" }}\nLoadStmt: [Var36275 <-- Var36171]\t\nValVar ID: 36275\n   %88 = load i32, ptr %14, align 4, !dbg !12221 { \"ln\": 2057, \"cl\": 60, \"fl\": \"tif_jpeg.c\" }"
+            },
+            {
+                "location":"tif_jpeg.c:2104","node":"return","node_desc":"IntraICFGNode30596 {fun: JPEGEncode{ \"ln\": 2104, \"cl\": 2, \"fl\": \"tif_jpeg.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode30602   \nValVar ID: 36414\n   br label %195, !dbg !12332 { \"ln\": 2104, \"cl\": 2, \"fl\": \"tif_jpeg.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_jpeg.c:2057","node":"start","node_desc":"IntraICFGNode30564 {fun: JPEGEncode{ \"ln\": 2057, \"cl\": 60, \"fl\": \"tif_jpeg.c\" }}\nLoadStmt: [Var36275 <-- Var36171]\t\nValVar ID: 36275\n   %88 = load i32, ptr %14, align 4, !dbg !12221 { \"ln\": 2057, \"cl\": 60, \"fl\": \"tif_jpeg.c\" }"
+            },
+            {
+                "location":"tif_jpeg.c:2101","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 73907 CS[CallICFGNode: { \"ln\": 2101, \"cl\": 13, \"fl\": \"tif_jpeg.c\" }]ValVar ID: 36409\n   %193 = load ptr, ptr %13, align 8, !dbg !12328 { \"ln\": 2101, \"cl\": 24, \"fl\": \"tif_jpeg.c\" }"
+            },
+            {
+                "location":"tif_jpeg.c:2104","node":"return","node_desc":"IntraICFGNode30596 {fun: JPEGEncode{ \"ln\": 2104, \"cl\": 2, \"fl\": \"tif_jpeg.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode30602   \nValVar ID: 36414\n   br label %195, !dbg !12332 { \"ln\": 2104, \"cl\": 2, \"fl\": \"tif_jpeg.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_jpeg.c:2057","node":"start","node_desc":"IntraICFGNode30564 {fun: JPEGEncode{ \"ln\": 2057, \"cl\": 60, \"fl\": \"tif_jpeg.c\" }}\nLoadStmt: [Var36275 <-- Var36171]\t\nValVar ID: 36275\n   %88 = load i32, ptr %14, align 4, !dbg !12221 { \"ln\": 2057, \"cl\": 60, \"fl\": \"tif_jpeg.c\" }"
+            },
+            {
+                "location":"tif_jpeg.c:2064","node":"return","node_desc":"IntraICFGNode30626 {fun: JPEGEncode{ \"ln\": 2064, \"cl\": 17, \"fl\": \"tif_jpeg.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode30602   \nValVar ID: 36288\n   br label %195, !dbg !12232 { \"ln\": 2064, \"cl\": 17, \"fl\": \"tif_jpeg.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_jpeg.c:2057","node":"start","node_desc":"IntraICFGNode30564 {fun: JPEGEncode{ \"ln\": 2057, \"cl\": 60, \"fl\": \"tif_jpeg.c\" }}\nLoadStmt: [Var36275 <-- Var36171]\t\nValVar ID: 36275\n   %88 = load i32, ptr %14, align 4, !dbg !12221 { \"ln\": 2057, \"cl\": 60, \"fl\": \"tif_jpeg.c\" }"
+            },
+            {
+                "location":"tif_jpeg.c:2093","node":"return","node_desc":"IntraICFGNode30633 {fun: JPEGEncode{ \"ln\": 2093, \"cl\": 17, \"fl\": \"tif_jpeg.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode30602   \nValVar ID: 36385\n   br label %195, !dbg !12309 { \"ln\": 2093, \"cl\": 17, \"fl\": \"tif_jpeg.c\" }"
+            }
+        ]
+    ]
+}
 
 
-  Associated SVFG Nodes:
-  ---
-  SVFG Node #1:
-    SVFG Node ID: 19817
-    SVFG Node Type: GepVFGNode
-    Node String: GepVFGNode ID: 19817 GepStmt: [Var51767 <-- Var51766]
-ValVar ID: 51767
-   %103 = getelementptr inbounds %struct.tiff, ptr %102, i32 0, i32 45, !dbg !12232 { "ln": 411, "cl": 19, "fl": "tif_dirwrite.c" }
-    Incoming Edges: 1
-    Outgoing Edges: 1
+{
+    "path_number":"15",
+    "paths":[
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:853","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74414 CS[CallICFGNode: { \"ln\": 853, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53600\n   %1674 = load ptr, ptr %29, align 8, !dbg !13504 { \"ln\": 853, \"cl\": 27, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:853","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 145458 at callsite:    call void @TIFFSwabShort(ptr noundef %1674), !dbg !13505 CallICFGNode: { \"ln\": 853, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_21)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 853, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:880","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78506 CS[CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53702\n   %1749 = load ptr, ptr %29, align 8, !dbg !13577 { \"ln\": 880, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:880","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 145429 at callsite:    call void @_TIFFmemcpy(ptr noundef %1749, ptr noundef %30, i64 noundef 4), !dbg !13578 CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_24)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:921","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78546 CS[CallICFGNode: { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53841\n   %1853 = load ptr, ptr %13, align 8, !dbg !13678 { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:926","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74334 CS[CallICFGNode: { \"ln\": 926, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53854\n   %1865 = load ptr, ptr %13, align 8, !dbg !13686 { \"ln\": 926, \"cl\": 12, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:939","node":"return","node_desc":"IntraICFGNode45068 {fun: TIFFWriteDirectorySec{ \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53884\n   br label %1896, !dbg !13707 { \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:853","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74414 CS[CallICFGNode: { \"ln\": 853, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53600\n   %1674 = load ptr, ptr %29, align 8, !dbg !13504 { \"ln\": 853, \"cl\": 27, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:853","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 145458 at callsite:    call void @TIFFSwabShort(ptr noundef %1674), !dbg !13505 CallICFGNode: { \"ln\": 853, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_21)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 853, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:879","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 142415 at callsite:    call void @TIFFSwabLong(ptr noundef %30), !dbg !13576 CallICFGNode: { \"ln\": 879, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_23)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 879, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:880","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78506 CS[CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53702\n   %1749 = load ptr, ptr %29, align 8, !dbg !13577 { \"ln\": 880, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:880","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 145429 at callsite:    call void @_TIFFmemcpy(ptr noundef %1749, ptr noundef %30, i64 noundef 4), !dbg !13578 CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_24)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:921","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78546 CS[CallICFGNode: { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53841\n   %1853 = load ptr, ptr %13, align 8, !dbg !13678 { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:926","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74334 CS[CallICFGNode: { \"ln\": 926, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53854\n   %1865 = load ptr, ptr %13, align 8, !dbg !13686 { \"ln\": 926, \"cl\": 12, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:939","node":"return","node_desc":"IntraICFGNode45068 {fun: TIFFWriteDirectorySec{ \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53884\n   br label %1896, !dbg !13707 { \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:889","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74552 CS[CallICFGNode: { \"ln\": 889, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53720\n   %1761 = load ptr, ptr %32, align 8, !dbg !13595 { \"ln\": 889, \"cl\": 27, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:889","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 145518 at callsite:    call void @TIFFSwabLong8(ptr noundef %1761), !dbg !13596 CallICFGNode: { \"ln\": 889, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_47)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 889, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78525 CS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53805\n   %1823 = load ptr, ptr %32, align 8, !dbg !13656 { \"ln\": 910, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 143645 at callsite:    call void @_TIFFmemcpy(ptr noundef %1823, ptr noundef %1825, i64 noundef 8), !dbg !13659 CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_49)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:912","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 75693 CS[CallICFGNode: { \"ln\": 912, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53815\n   %1832 = load ptr, ptr %32, align 8, !dbg !13665 { \"ln\": 912, \"cl\": 27, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:921","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78546 CS[CallICFGNode: { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53841\n   %1853 = load ptr, ptr %13, align 8, !dbg !13678 { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:926","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74334 CS[CallICFGNode: { \"ln\": 926, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53854\n   %1865 = load ptr, ptr %13, align 8, !dbg !13686 { \"ln\": 926, \"cl\": 12, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:939","node":"return","node_desc":"IntraICFGNode45068 {fun: TIFFWriteDirectorySec{ \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53884\n   br label %1896, !dbg !13707 { \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:889","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74552 CS[CallICFGNode: { \"ln\": 889, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53720\n   %1761 = load ptr, ptr %32, align 8, !dbg !13595 { \"ln\": 889, \"cl\": 27, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:889","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 145518 at callsite:    call void @TIFFSwabLong8(ptr noundef %1761), !dbg !13596 CallICFGNode: { \"ln\": 889, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_47)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 889, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78525 CS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53805\n   %1823 = load ptr, ptr %32, align 8, !dbg !13656 { \"ln\": 910, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 143645 at callsite:    call void @_TIFFmemcpy(ptr noundef %1823, ptr noundef %1825, i64 noundef 8), !dbg !13659 CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_49)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:921","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78546 CS[CallICFGNode: { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53841\n   %1853 = load ptr, ptr %13, align 8, !dbg !13678 { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:926","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74334 CS[CallICFGNode: { \"ln\": 926, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53854\n   %1865 = load ptr, ptr %13, align 8, !dbg !13686 { \"ln\": 926, \"cl\": 12, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:939","node":"return","node_desc":"IntraICFGNode45068 {fun: TIFFWriteDirectorySec{ \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53884\n   br label %1896, !dbg !13707 { \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:880","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78506 CS[CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53702\n   %1749 = load ptr, ptr %29, align 8, !dbg !13577 { \"ln\": 880, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:880","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 145429 at callsite:    call void @_TIFFmemcpy(ptr noundef %1749, ptr noundef %30, i64 noundef 4), !dbg !13578 CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_24)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:921","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78546 CS[CallICFGNode: { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53841\n   %1853 = load ptr, ptr %13, align 8, !dbg !13678 { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:926","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74334 CS[CallICFGNode: { \"ln\": 926, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53854\n   %1865 = load ptr, ptr %13, align 8, !dbg !13686 { \"ln\": 926, \"cl\": 12, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:939","node":"return","node_desc":"IntraICFGNode45068 {fun: TIFFWriteDirectorySec{ \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53884\n   br label %1896, !dbg !13707 { \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78525 CS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53805\n   %1823 = load ptr, ptr %32, align 8, !dbg !13656 { \"ln\": 910, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 143645 at callsite:    call void @_TIFFmemcpy(ptr noundef %1823, ptr noundef %1825, i64 noundef 8), !dbg !13659 CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_49)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:912","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 75693 CS[CallICFGNode: { \"ln\": 912, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53815\n   %1832 = load ptr, ptr %32, align 8, !dbg !13665 { \"ln\": 912, \"cl\": 27, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:921","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78546 CS[CallICFGNode: { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53841\n   %1853 = load ptr, ptr %13, align 8, !dbg !13678 { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:926","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74334 CS[CallICFGNode: { \"ln\": 926, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53854\n   %1865 = load ptr, ptr %13, align 8, !dbg !13686 { \"ln\": 926, \"cl\": 12, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:939","node":"return","node_desc":"IntraICFGNode45068 {fun: TIFFWriteDirectorySec{ \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53884\n   br label %1896, !dbg !13707 { \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78525 CS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53805\n   %1823 = load ptr, ptr %32, align 8, !dbg !13656 { \"ln\": 910, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 143645 at callsite:    call void @_TIFFmemcpy(ptr noundef %1823, ptr noundef %1825, i64 noundef 8), !dbg !13659 CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_49)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:921","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78546 CS[CallICFGNode: { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53841\n   %1853 = load ptr, ptr %13, align 8, !dbg !13678 { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:926","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74334 CS[CallICFGNode: { \"ln\": 926, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53854\n   %1865 = load ptr, ptr %13, align 8, !dbg !13686 { \"ln\": 926, \"cl\": 12, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:939","node":"return","node_desc":"IntraICFGNode45068 {fun: TIFFWriteDirectorySec{ \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53884\n   br label %1896, !dbg !13707 { \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:879","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 142415 at callsite:    call void @TIFFSwabLong(ptr noundef %30), !dbg !13576 CallICFGNode: { \"ln\": 879, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_23)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 879, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:880","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78506 CS[CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53702\n   %1749 = load ptr, ptr %29, align 8, !dbg !13577 { \"ln\": 880, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:880","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 145429 at callsite:    call void @_TIFFmemcpy(ptr noundef %1749, ptr noundef %30, i64 noundef 4), !dbg !13578 CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_24)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:921","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78546 CS[CallICFGNode: { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53841\n   %1853 = load ptr, ptr %13, align 8, !dbg !13678 { \"ln\": 921, \"cl\": 7, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:926","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74334 CS[CallICFGNode: { \"ln\": 926, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53854\n   %1865 = load ptr, ptr %13, align 8, !dbg !13686 { \"ln\": 926, \"cl\": 12, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:939","node":"return","node_desc":"IntraICFGNode45068 {fun: TIFFWriteDirectorySec{ \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53884\n   br label %1896, !dbg !13707 { \"ln\": 939, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:945","node":"return","node_desc":"IntraICFGNode44078 {fun: TIFFWriteDirectorySec{ \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53901\n   br label %1896, !dbg !13722 { \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:889","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 74552 CS[CallICFGNode: { \"ln\": 889, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53720\n   %1761 = load ptr, ptr %32, align 8, !dbg !13595 { \"ln\": 889, \"cl\": 27, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:889","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 145518 at callsite:    call void @TIFFSwabLong8(ptr noundef %1761), !dbg !13596 CallICFGNode: { \"ln\": 889, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_47)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 889, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78525 CS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53805\n   %1823 = load ptr, ptr %32, align 8, !dbg !13656 { \"ln\": 910, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 143645 at callsite:    call void @_TIFFmemcpy(ptr noundef %1823, ptr noundef %1825, i64 noundef 8), !dbg !13659 CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_49)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:945","node":"return","node_desc":"IntraICFGNode44078 {fun: TIFFWriteDirectorySec{ \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53901\n   br label %1896, !dbg !13722 { \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:880","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78506 CS[CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53702\n   %1749 = load ptr, ptr %29, align 8, !dbg !13577 { \"ln\": 880, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:880","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 145429 at callsite:    call void @_TIFFmemcpy(ptr noundef %1749, ptr noundef %30, i64 noundef 4), !dbg !13578 CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_24)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 880, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:945","node":"return","node_desc":"IntraICFGNode44078 {fun: TIFFWriteDirectorySec{ \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53901\n   br label %1896, !dbg !13722 { \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78525 CS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53805\n   %1823 = load ptr, ptr %32, align 8, !dbg !13656 { \"ln\": 910, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 143645 at callsite:    call void @_TIFFmemcpy(ptr noundef %1823, ptr noundef %1825, i64 noundef 8), !dbg !13659 CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_49)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:945","node":"return","node_desc":"IntraICFGNode44078 {fun: TIFFWriteDirectorySec{ \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53901\n   br label %1896, !dbg !13722 { \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78525 CS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53805\n   %1823 = load ptr, ptr %32, align 8, !dbg !13656 { \"ln\": 910, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 143645 at callsite:    call void @_TIFFmemcpy(ptr noundef %1823, ptr noundef %1825, i64 noundef 8), !dbg !13659 CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_49)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:912","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 75693 CS[CallICFGNode: { \"ln\": 912, \"cl\": 4, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53815\n   %1832 = load ptr, ptr %32, align 8, !dbg !13665 { \"ln\": 912, \"cl\": 27, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:945","node":"return","node_desc":"IntraICFGNode44078 {fun: TIFFWriteDirectorySec{ \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53901\n   br label %1896, !dbg !13722 { \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78525 CS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53805\n   %1823 = load ptr, ptr %32, align 8, !dbg !13656 { \"ln\": 910, \"cl\": 15, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:910","node":"MRSVFGNode","node_desc":"ActualINSVFGNode ID: 143645 at callsite:    call void @_TIFFmemcpy(ptr noundef %1823, ptr noundef %1825, i64 noundef 8), !dbg !13659 CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" } {fun: TIFFWriteDirectorySec}CSMU(67V_49)\npts{3742 }\nCS[CallICFGNode: { \"ln\": 910, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]"
+            },
+            {
+                "location":"tif_dirwrite.c:944","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78564 CS[CallICFGNode: { \"ln\": 944, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53896\n   %1894 = load ptr, ptr %13, align 8, !dbg !13720 { \"ln\": 944, \"cl\": 13, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:945","node":"return","node_desc":"IntraICFGNode44078 {fun: TIFFWriteDirectorySec{ \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53901\n   br label %1896, !dbg !13722 { \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ],
+        [
+            {
+                "location":"tif_dirwrite.c:839","node":"start","node_desc":"IntraICFGNode43967 {fun: TIFFWriteDirectorySec{ \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }}\nLoadStmt: [Var53567 <-- Var51631]\t\nValVar ID: 53567\n   %1648 = load i32, ptr %12, align 4, !dbg !13469 { \"ln\": 839, \"cl\": 21, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:944","node":"ActualParmVFGNode","node_desc":"ActualParmVFGNode ID: 78564 CS[CallICFGNode: { \"ln\": 944, \"cl\": 3, \"fl\": \"tif_dirwrite.c\" }]ValVar ID: 53896\n   %1894 = load ptr, ptr %13, align 8, !dbg !13720 { \"ln\": 944, \"cl\": 13, \"fl\": \"tif_dirwrite.c\" }"
+            },
+            {
+                "location":"tif_dirwrite.c:945","node":"return","node_desc":"IntraICFGNode44078 {fun: TIFFWriteDirectorySec{ \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }}\nBranchStmt: [ Unconditional branch]\nSuccessor 0 ICFGNode43836   \nValVar ID: 53901\n   br label %1896, !dbg !13722 { \"ln\": 945, \"cl\": 2, \"fl\": \"tif_dirwrite.c\" }"
+            }
+        ]
+    ]
+}
 
-  Associated SVFG Nodes:
-  ---
-  SVFG Node #1:
-    SVFG Node ID: 19818
-    SVFG Node Type: GepVFGNode
-    Node String: GepVFGNode ID: 19818 GepStmt: [Var51771 <-- Var51770]
-ValVar ID: 51771
-   %106 = getelementptr inbounds %struct.tiff, ptr %105, i32 0, i32 45, !dbg !12235 { "ln": 412, "cl": 9, "fl": "tif_dirwrite.c" }
-    Incoming Edges: 1
-    Outgoing Edges: 1
+{"command" : "check-always-return", "function_name" : "TIFFClampDoubleToInt16"}
 
-  Associated SVFG Nodes:
-  ---
-  SVFG Node #1:
-    SVFG Node ID: 19819
-    SVFG Node Type: GepVFGNode
-    Node String: GepVFGNode ID: 19819 GepStmt: [Var51774 <-- Var51773]
-ValVar ID: 51774
-   %108 = getelementptr inbounds %struct.tiff, ptr %107, i32 0, i32 50, !dbg !12238 { "ln": 413, "cl": 9, "fl": "tif_dirwrite.c" }
-    Incoming Edges: 1
-    Outgoing Edges: 1
-
-{"command" : "find-gep-cl", "location" : "tif_dirwrite.c:411"}
+1. path_id: 1: store operations detected; ownership may be passed to parameters or return values variable is used as a call argument; ownership may transfer to the callee or be freed there
+  - Allocation start at tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type GepVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type StoreVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color); (memory likely stored into parameters/return value)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : condition "!img->redcmap" evaluated to false
+  - Node type ActualParmVFGNode tif_getimage.c:378 : _TIFFmemcpy( img->bluecmap, blue_orig, n_color * 2 ); (variable or alias used as call argument)
+  - Node type branch tif_getimage.c:481 : condition "img->isContig)" evaluated to true
+  - Node type MRSVFGNode tif_getimage.c:482 : if (!PickContigCase(img)) {
+  - Node type branch tif_getimage.c:482 : condition "!PickContigCase(img))" evaluated to true
+  - Node type MRSVFGNode tif_getimage.c:495 : TIFFRGBAImageEnd( img );
+  - return statement tif_getimage.c:496 : return 0;
+2. path_id: 2: store operations detected; ownership may be passed to parameters or return values variable is used as a call argument; ownership may transfer to the callee or be freed there
+  - Allocation start at tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type GepVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type StoreVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color); (memory likely stored into parameters/return value)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : condition "!img->redcmap" evaluated to false
+  - Node type ActualParmVFGNode tif_getimage.c:378 : _TIFFmemcpy( img->bluecmap, blue_orig, n_color * 2 ); (variable or alias used as call argument)
+  - Node type MRSVFGNode tif_getimage.c:495 : TIFFRGBAImageEnd( img );
+  - return statement tif_getimage.c:496 : return 0;
+3. path_id: 3: store operations detected; ownership may be passed to parameters or return values
+  - Allocation start at tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type GepVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type StoreVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color); (memory likely stored into parameters/return value)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to false)
+  - Node type MRSVFGNode tif_getimage.c:495 : TIFFRGBAImageEnd( img );
+  - return statement tif_getimage.c:496 : return 0;
+4. path_id: 4: store operations detected; ownership may be passed to parameters or return values variable is used as a call argument; ownership may transfer to the callee or be freed there
+  - Allocation start at tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type GepVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type StoreVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color); (memory likely stored into parameters/return value)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : condition "!img->redcmap" evaluated to false
+  - Node type ActualParmVFGNode tif_getimage.c:378 : _TIFFmemcpy( img->bluecmap, blue_orig, n_color * 2 ); (variable or alias used as call argument)
+  - Node type branch tif_getimage.c:481 : condition "img->isContig)" evaluated to false
+  - Node type branch tif_getimage.c:487 : condition "!PickSeparateCase(img))" evaluated to false
+  - return statement tif_getimage.c:492 : return 1;
+5. path_id: 5: store operations detected; ownership may be passed to parameters or return values variable is used as a call argument; ownership may transfer to the callee or be freed there
+  - Allocation start at tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type GepVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color);
+  - Node type StoreVFGNode tif_getimage.c:370 : img->bluecmap = (uint16 *) _TIFFmalloc(sizeof(uint16)*n_color); (memory likely stored into parameters/return value)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : if( !img->redcmap || !img->greencmap || !img->bluecmap ) { (condition evaluated to true)
+  - Node type branch tif_getimage.c:371 : condition "!img->redcmap" evaluated to false
+  - Node type ActualParmVFGNode tif_getimage.c:378 : _TIFFmemcpy( img->bluecmap, blue_orig, n_color * 2 ); (variable or alias used as call argument)
+  - Node type branch tif_getimage.c:481 : condition "img->isContig)" evaluated to true
+  - Node type MRSVFGNode tif_getimage.c:482 : if (!PickContigCase(img)) {
+  - Node type branch tif_getimage.c:482 : condition "!PickContigCase(img))" evaluated to false
+  - return statement tif_getimage.c:492 : return 1;

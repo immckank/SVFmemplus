@@ -17,8 +17,15 @@ namespace SVF {
 
 class SVFIR; // Forward declaration
 class SVFG;  // Forward declaration
+class SaberCondAllocator;
 
 namespace GraphReaderUtil {
+
+    /// Register a global SaberCondAllocator instance for debug utilities
+    void setSaberCondAllocator(SaberCondAllocator* allocator);
+
+    /// Retrieve the currently registered SaberCondAllocator instance
+    SaberCondAllocator* getSaberCondAllocator();
 
     /*!
      * \brief Finds an ICFGNode based on a source code location string.
@@ -144,6 +151,23 @@ namespace GraphReaderUtil {
     void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode);
 
     /*!
+     * \brief Returns true if the given PAG node (l-value or r-value) can be traced back to a FormalParmVFGNode.
+     *        This function can handle arbitrary statement types, including:
+     *        - Store statements: checks if the destination (LHS) traces to a formal parameter
+     *        - GEP statements: checks if the LHS or RHS (source object) traces to a formal parameter
+     *        - Load statements: traces back through the loaded address and its stores
+     *        - Copy statements: traces back through the RHS
+     *        - Addr statements: checks if the alloca stores a parameter
+     *        This performs a lightweight backward walk similar to tracePAGStore, but stops as soon
+     *        as a formal parameter is discovered.
+     * \param svfg Pointer to the SVFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param pagNode The PAG node to check (can be LHS or RHS of any statement).
+     * \return true if the node can be traced back to a FormalParmVFGNode, false otherwise.
+     */
+    bool isLvarFormalParm(SVFG* svfg, SVFIR* pag, const PAGNode* pagNode);
+
+    /*!
      * \brief Shows all ICFG nodes and their corresponding SVFG nodes at a given source location.
      * \param svfg Pointer to the SVFG.
      * \param icfg Pointer to the ICFG.
@@ -178,6 +202,30 @@ namespace GraphReaderUtil {
                                           SVFIR* pag,
                                           const std::string& location,
                                           int eqPosition);
+
+    /*!
+     * \brief Checks if a function eventually calls any free function through the call graph.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param functionName The name of the function to check.
+     * \return A JSON object with isReachable (true/false) and callchains (array of function name arrays).
+     */
+    llvm::json::Object checkFunctionCallsFree(SVFIR* pag, const std::string& functionName);
+
+    /*!
+     * \brief Finds all functions that call free functions (directly or indirectly) using bottom-up analysis.
+     * Uses iterative approach until convergence: finds direct callers of free functions, then callers of those callers, etc.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param silent If true, suppresses all debug output. Default is false.
+     * \return A JSON object with all_free_callers (array of function names) and iteration_info (array of iteration details).
+     */
+    llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent = false);
+
+    /*!
+     * \brief Gets the set of all functions that call free (directly or indirectly).
+     * This set is populated by calling findAllFreeCallers.
+     * \return A reference to the set of function names.
+     */
+    const Set<std::string>& getAllFreeCallers();
 
 } // namespace GraphReaderUtil
 } // namespace SVF

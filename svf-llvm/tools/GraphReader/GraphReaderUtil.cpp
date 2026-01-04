@@ -1,9 +1,12 @@
 #include "GraphReaderUtil.h"
+#include "SABER/SaberCondAllocator.h"
 #include "SVF-LLVM/LLVMUtil.h"
 #include "SVF-LLVM/LLVMModule.h"
 #include "SVFIR/SVFIR.h"
 #include "Graphs/SVFG.h"
 #include "Graphs/SVFGNode.h"
+#include "Graphs/CallGraph.h"
+#include "SABER/SaberCheckerAPI.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -16,9 +19,23 @@
 #include <map>
 #include <queue>
 #include <unordered_set>
+#include <set>
 
 namespace SVF {
 namespace GraphReaderUtil {
+
+// Global set to store all functions that call free (directly or indirectly)
+static Set<std::string> g_allFreeCallers;
+
+static SaberCondAllocator* GlobalSaberCondAllocator = nullptr;
+
+void setSaberCondAllocator(SaberCondAllocator* allocator) {
+    GlobalSaberCondAllocator = allocator;
+}
+
+SaberCondAllocator* getSaberCondAllocator() {
+    return GlobalSaberCondAllocator;
+}
 
 namespace {
 
@@ -183,9 +200,7 @@ static bool reachesFormalParameter(SVFG* svfg, const SVFVar* startVar, unsigned 
 
 } // anonymous namespace
 
-bool parseCommandsLine(const std::string& jsonStr,
-                       std::vector<llvm::json::Object>& outCmds,
-                       std::string& errMsg) {
+bool parseCommandsLine(const std::string& jsonStr, std::vector<llvm::json::Object>& outCmds, std::string& errMsg) {
     outCmds.clear();
 
     auto parsed = llvm::json::parse(jsonStr);
@@ -270,6 +285,29 @@ std::string getSVFGNodeKindString(const SVFGNode* node, bool detailed) {
     }
     if (SVFUtil::isa<ActualRetVFGNode>(node)) {
         return pickName("ARet", "ActualRetVFGNode");
+    }
+    // Check MRSVFGNode subclasses before checking MRSVFGNode itself
+    // (most specific to least specific order)
+    if (SVFUtil::isa<IntraMSSAPHISVFGNode>(node)) {
+        return pickName("IntraMPhi", "IntraMSSAPHISVFGNode");
+    }
+    if (SVFUtil::isa<InterMSSAPHISVFGNode>(node)) {
+        return pickName("InterMPhi", "InterMSSAPHISVFGNode");
+    }
+    if (SVFUtil::isa<FormalOUTSVFGNode>(node)) {
+        return pickName("FOut", "FormalOUTSVFGNode");
+    }
+    if (SVFUtil::isa<FormalINSVFGNode>(node)) {
+        return pickName("FIn", "FormalINSVFGNode");
+    }
+    if (SVFUtil::isa<ActualOUTSVFGNode>(node)) {
+        return pickName("AOut", "ActualOUTSVFGNode");
+    }
+    if (SVFUtil::isa<ActualINSVFGNode>(node)) {
+        return pickName("AIn", "ActualINSVFGNode");
+    }
+    if (SVFUtil::isa<MSSAPHISVFGNode>(node)) {
+        return pickName("MPhi", "MSSAPHISVFGNode");
     }
     if (SVFUtil::isa<MRSVFGNode>(node)) {
         return "MRSVFGNode";
@@ -1012,11 +1050,7 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
     return storedValuePAG;
 }
 
-llvm::json::Object analyzeStoreLValue(SVFG* svfg,
-                                      ICFG* icfg,
-                                      SVFIR* pag,
-                                      const std::string& location,
-                                      int eqPosition) {
+llvm::json::Object analyzeStoreLValue(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
     llvm::json::Object result;
     result["command"] = "analysis-lvar";
     result["location"] = location;
@@ -1565,6 +1599,179 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
 }
 
+bool isLvarFormalParm(SVFG* svfg, SVFIR* pag, const PAGNode* pagNode) {
+    if (!svfg || !pag || !pagNode) {
+        return false;
+    }
+
+    const SVFVar* current = SVFUtil::dyn_cast<SVFVar>(pagNode);
+    if (!current) {
+        return false;
+    }
+
+    constexpr int MAX_TRACE_DEPTH = 16;
+    int depth = 0;
+
+    while (current && depth < MAX_TRACE_DEPTH) {
+        // First, check if current is a GepValVar or GepObjVar, and directly trace to its base
+        // This handles the case where a Store's LHS is a GEP result (e.g., store to a struct field)
+        if (const GepValVar* gepValVar = SVFUtil::dyn_cast<GepValVar>(current)) {
+            // For GepValVar, get the base ValVar and continue tracing from there
+            const ValVar* baseValVar = gepValVar->getBaseNode();
+            if (baseValVar) {
+                current = baseValVar;
+                ++depth;
+                continue;
+            }
+        } else if (const GepObjVar* gepObjVar = SVFUtil::dyn_cast<GepObjVar>(current)) {
+            // For GepObjVar, get the base BaseObjVar and continue tracing from there
+            const BaseObjVar* baseObjVar = gepObjVar->getBaseObj();
+            if (baseObjVar) {
+                current = baseObjVar;
+                ++depth;
+                continue;
+            }
+        }
+
+        if (!svfg->hasDefSVFGNode(current)) {
+            break;
+        }
+
+        const SVFGNode* defNode = svfg->getDefSVFGNode(current);
+        if (!defNode) {
+            break;
+        }
+
+        // Check if this node directly defines a formal parameter
+        if (SVFUtil::isa<FormalParmVFGNode>(defNode)) {
+            return true;
+        }
+
+        // Handle GepVFGNode: trace back through the RHS (source object) of the GEP
+        // This handles the case where the current node is defined by a GEP operation
+        if (const GepVFGNode* gepNode = SVFUtil::dyn_cast<GepVFGNode>(defNode)) {
+            const SVFStmt* stmt = gepNode->getPAGEdge();
+            if (const GepStmt* gepStmt = SVFUtil::dyn_cast<GepStmt>(stmt)) {
+                const SVFVar* rhsVar = gepStmt->getRHSVar();
+                if (rhsVar) {
+                    // Recursively check if the RHS (source object) traces to a formal parameter
+                    current = rhsVar;
+                    ++depth;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        // Handle CopyVFGNode: trace back through the RHS of the copy
+        if (const CopyVFGNode* copyNode = SVFUtil::dyn_cast<CopyVFGNode>(defNode)) {
+            const SVFStmt* stmt = copyNode->getPAGEdge();
+            if (const CopyStmt* copyStmt = SVFUtil::dyn_cast<CopyStmt>(stmt)) {
+                const SVFVar* rhsVar = copyStmt->getRHSVar();
+                if (rhsVar) {
+                    current = rhsVar;
+                    ++depth;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        // Handle LoadVFGNode: trace back through the loaded address and its stores
+        if (const LoadVFGNode* loadNode = SVFUtil::dyn_cast<LoadVFGNode>(defNode)) {
+            const SVFStmt* stmt = loadNode->getPAGEdge();
+            const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(stmt);
+            if (!loadStmt) {
+                break;
+            }
+
+            const SVFVar* loadFromPAG = loadStmt->getRHSVar();
+            if (!loadFromPAG) {
+                break;
+            }
+
+            // If the loaded address has a def node (e.g., alloca), check whether any store to it originates from a formal parameter.
+            if (svfg->hasDefSVFGNode(loadFromPAG)) {
+                const SVFGNode* addrDefNode = svfg->getDefSVFGNode(loadFromPAG);
+                if (SVFUtil::isa<AddrVFGNode>(addrDefNode)) {
+                    // Check if this alloca is used to store a function parameter (parameter shadow copy)
+                    for (auto it = loadFromPAG->getInEdges().begin(); it != loadFromPAG->getInEdges().end(); ++it) {
+                        const SVFStmt* inStmt = *it;
+                        if (const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(inStmt)) {
+                            const SVFVar* storedValue = storeStmt->getRHSVar();
+                            if (storedValue && svfg->hasDefSVFGNode(storedValue)) {
+                                const SVFGNode* storedDefNode = svfg->getDefSVFGNode(storedValue);
+                                if (SVFUtil::isa<FormalParmVFGNode>(storedDefNode)) {
+                                    return true;
+                                }
+                                // Continue tracing from the stored value
+                                current = storedValue;
+                                ++depth;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Try to find a Store that writes to this address and trace back through it
+            bool advanced = false;
+            for (auto it = loadFromPAG->getInEdges().begin(); it != loadFromPAG->getInEdges().end(); ++it) {
+                const SVFStmt* inStmt = *it;
+                if (const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(inStmt)) {
+                    const SVFVar* storedValue = storeStmt->getRHSVar();
+                    if (storedValue) {
+                        current = storedValue;
+                        advanced = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!advanced) {
+                // If no store found, try to trace from the address itself
+                current = loadFromPAG;
+                ++depth;
+                continue;
+            }
+
+            ++depth;
+            continue;
+        }
+
+        // Handle AddrVFGNode: if it's an alloca, check if it stores a parameter
+        if (SVFUtil::isa<AddrVFGNode>(defNode)) {
+            // For AddrVFGNode (alloca), check incoming Store edges
+            bool advanced = false;
+            for (auto it = current->getInEdges().begin(); it != current->getInEdges().end(); ++it) {
+                const SVFStmt* inStmt = *it;
+                if (const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(inStmt)) {
+                    const SVFVar* storedValue = storeStmt->getRHSVar();
+                    if (storedValue && svfg->hasDefSVFGNode(storedValue)) {
+                        if (SVFUtil::isa<FormalParmVFGNode>(svfg->getDefSVFGNode(storedValue))) {
+                            return true;
+                        }
+                        // Continue tracing from the stored value
+                        current = storedValue;
+                        advanced = true;
+                        ++depth;
+                        break;
+                    }
+                }
+            }
+            if (!advanced) {
+                break;
+            }
+            continue;
+        }
+
+        // For other node types (ActualRetVFGNode, etc.), stop tracing
+        break;
+    }
+
+    return false;
+}
+
 void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) {
     // DEBUG
     // 重要功能 可以一直保留
@@ -1672,6 +1879,19 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
         
         // Show number of SVF statements
         SVF::SVFUtil::outs() << "  Number of SVF Statements: " << icfgNode->getSVFStmts().size() << "\n";
+
+        if (SaberCondAllocator* condAllocator = getSaberCondAllocator()) {
+            auto condInfos = condAllocator->getConditionsForNode(icfgNode);
+            if (!condInfos.empty()) {
+                SVF::SVFUtil::outs() << "  Z3 Conditions (" << condInfos.size() << "):\n";
+                for (size_t ci = 0; ci < condInfos.size(); ++ci) {
+                    const auto& info = condInfos[ci];
+                    SVF::SVFUtil::outs() << "    [" << ci << "] id=" << info.cond.id()
+                                         << ", neg=" << (info.isNeg ? "true" : "false") << "\n";
+                    SVF::SVFUtil::outs() << "        Expr: " << condAllocator->dumpCond(info.cond) << "\n";
+                }
+            }
+        }
         
         // Find and display all associated SVFG nodes
         std::vector<const SVFGNode*> associatedSVFGNodes;
@@ -1775,6 +1995,290 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
     result["location"] = location;
     result["icfg_nodes_count"] = static_cast<int64_t>(allICFGNodes.size());
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+}
+
+llvm::json::Object checkFunctionCallsFree(SVFIR* pag, const std::string& functionName) {
+    llvm::json::Object result;
+    
+    if (!pag) {
+        result["isReachable"] = false;
+        result["callchains"] = llvm::json::Array{};
+        result["error"] = "PAG is null";
+        return result;
+    }
+    
+    // Get the function object
+    const FunObjVar* startFun = pag->getFunObjVar(functionName);
+    if (!startFun) {
+        result["isReachable"] = false;
+        result["callchains"] = llvm::json::Array{};
+        result["error"] = "Function '" + functionName + "' not found";
+        return result;
+    }
+    
+    // Get call graph
+    const CallGraph* callGraph = pag->getCallGraph();
+    if (!callGraph) {
+        result["isReachable"] = false;
+        result["callchains"] = llvm::json::Array{};
+        result["error"] = "CallGraph is null";
+        return result;
+    }
+    
+    const CallGraphNode* startNode = callGraph->getCallGraphNode(startFun);
+    if (!startNode) {
+        result["isReachable"] = false;
+        result["callchains"] = llvm::json::Array{};
+        result["error"] = "Could not find CallGraphNode for function '" + functionName + "'";
+        return result;
+    }
+    
+    // Get SaberCheckerAPI to check for free functions
+    SaberCheckerAPI* checkerAPI = SaberCheckerAPI::getCheckerAPI();
+    if (!checkerAPI) {
+        result["isReachable"] = false;
+        result["callchains"] = llvm::json::Array{};
+        result["error"] = "SaberCheckerAPI is null";
+        return result;
+    }
+    
+    // BFS traversal with path tracking
+    struct WorkItem {
+        const CallGraphNode* node;
+        std::vector<std::string> path;  // Call chain from start function to current function
+    };
+    
+    std::queue<WorkItem> worklist;
+    Set<const CallGraphNode*> visited;  // To avoid cycles
+    llvm::json::Array callchains;
+    bool isReachable = false;
+    
+    // Initialize with start function
+    std::vector<std::string> initialPath;
+    initialPath.push_back(functionName);
+    worklist.push({startNode, initialPath});
+    visited.insert(startNode);
+    
+    // Check if start function itself is a free function
+    if (checkerAPI->isMemDealloc(startFun)) {
+        isReachable = true;
+        llvm::json::Array chain;
+        chain.push_back(functionName);
+        callchains.push_back(std::move(chain));
+    }
+    
+    // BFS traversal
+    while (!worklist.empty()) {
+        WorkItem current = worklist.front();
+        worklist.pop();
+        
+        const CallGraphNode* currentNode = current.node;
+        
+        // Traverse all callees
+        for (const CallGraphEdge* edge : currentNode->getOutEdges()) {
+            const CallGraphNode* calleeNode = edge->getDstNode();
+            const FunObjVar* calleeFun = calleeNode->getFunction();
+            
+            if (!calleeFun) {
+                continue;
+            }
+            
+            // Build new path
+            std::vector<std::string> newPath = current.path;
+            newPath.push_back(calleeFun->getName());
+            
+            // Check if callee is a free function
+            if (checkerAPI->isMemDealloc(calleeFun)) {
+                isReachable = true;
+                // Add this call chain to results
+                llvm::json::Array chain;
+                for (const std::string& funcName : newPath) {
+                    chain.push_back(funcName);
+                }
+                callchains.push_back(std::move(chain));
+            }
+            
+            // Continue traversal if not visited (avoid infinite loops)
+            if (visited.find(calleeNode) == visited.end()) {
+                visited.insert(calleeNode);
+                worklist.push({calleeNode, newPath});
+            }
+        }
+    }
+    
+    result["isReachable"] = isReachable;
+    result["callchains"] = std::move(callchains);
+    return result;
+}
+
+llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
+    llvm::json::Object result;
+    
+    // Clear the global set first
+    g_allFreeCallers.clear();
+    
+    if (!pag) {
+        result["all_free_callers"] = llvm::json::Array{};
+        result["error"] = "PAG is null";
+        return result;
+    }
+    
+    // Get call graph
+    const CallGraph* callGraph = pag->getCallGraph();
+    if (!callGraph) {
+        result["all_free_callers"] = llvm::json::Array{};
+        result["error"] = "CallGraph is null";
+        return result;
+    }
+    
+    // Get SaberCheckerAPI to identify free functions
+    SaberCheckerAPI* checkerAPI = SaberCheckerAPI::getCheckerAPI();
+    if (!checkerAPI) {
+        result["all_free_callers"] = llvm::json::Array{};
+        result["error"] = "SaberCheckerAPI is null";
+        return result;
+    }
+    
+    // Step 1: Find all free functions in the program
+    Set<const FunObjVar*> freeFunctions;
+    for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it) {
+        const PAGNode* node = it->second;
+        if (const FunObjVar* fun = SVFUtil::dyn_cast<FunObjVar>(node)) {
+            if (checkerAPI->isMemDealloc(fun)) {
+                freeFunctions.insert(fun);
+            }
+        }
+    }
+    
+    if (freeFunctions.empty()) {
+        result["all_free_callers"] = llvm::json::Array{};
+        result["message"] = "No free functions found in the program";
+        result["iteration_info"] = llvm::json::Array{};
+        return result;
+    }
+    
+    // Step 2: Bottom-up iterative analysis
+    // currentLevel: functions that call free (directly or indirectly) at current iteration
+    // nextLevel: functions that call currentLevel functions (to be processed in next iteration)
+    Set<const FunObjVar*> allFreeCallers;  // All functions that eventually call free
+    Set<const FunObjVar*> currentLevel = freeFunctions;  // Start with free functions themselves
+    allFreeCallers.insert(freeFunctions.begin(), freeFunctions.end());
+    
+    llvm::json::Array iterationInfo;
+    int iteration = 0;
+    
+    // Iteration 0: Free functions themselves (starting point)
+    {
+        llvm::json::Object iterObj;
+        iterObj["iteration"] = iteration;
+        iterObj["new_functions"] = llvm::json::Array{};
+        llvm::json::Array freeFuncNames;
+        for (const FunObjVar* freeFun : freeFunctions) {
+            freeFuncNames.push_back(freeFun->getName());
+        }
+        iterObj["free_functions"] = std::move(freeFuncNames);
+        iterObj["total_functions"] = static_cast<int64_t>(allFreeCallers.size());
+        iterObj["note"] = "Starting point: free functions found in program";
+        iterationInfo.push_back(std::move(iterObj));
+        if (!silent) {
+            SVFUtil::outs() << "[findAllFreeCallers] Iteration 0: Found " << freeFunctions.size() 
+                            << " free function(s) in the program (starting point)\n";
+            for (const FunObjVar* freeFun : freeFunctions) {
+                SVFUtil::outs() << "  - " << freeFun->getName() << "\n";
+            }
+        }
+    }
+    
+    // Iterations: Find callers of current level functions
+    while (true) {
+        iteration++;
+        Set<const FunObjVar*> nextLevel;
+        
+        // For each function in current level, find all its callers
+        for (const FunObjVar* callee : currentLevel) {
+            const CallGraphNode* calleeNode = callGraph->getCallGraphNode(callee);
+            if (!calleeNode) {
+                continue;
+            }
+            
+            // Traverse incoming edges (callers)
+            for (const CallGraphEdge* edge : calleeNode->getInEdges()) {
+                const CallGraphNode* callerNode = edge->getSrcNode();
+                const FunObjVar* callerFun = callerNode->getFunction();
+                
+                if (!callerFun) {
+                    continue;
+                }
+                
+                // If not already in allFreeCallers, add to next level
+                if (allFreeCallers.find(callerFun) == allFreeCallers.end()) {
+                    nextLevel.insert(callerFun);
+                    allFreeCallers.insert(callerFun);
+                }
+            }
+        }
+        
+        // Debug output for this iteration
+        llvm::json::Object iterObj;
+        iterObj["iteration"] = iteration;
+        llvm::json::Array newFuncNames;
+        for (const FunObjVar* newFun : nextLevel) {
+            newFuncNames.push_back(newFun->getName());
+        }
+        iterObj["new_functions"] = std::move(newFuncNames);
+        iterObj["new_count"] = static_cast<int64_t>(nextLevel.size());
+        iterObj["total_functions"] = static_cast<int64_t>(allFreeCallers.size());
+        iterationInfo.push_back(std::move(iterObj));
+        
+        // Output debug information (only if not silent)
+        if (!silent) {
+            SVFUtil::outs() << "[findAllFreeCallers] Iteration " << iteration 
+                            << ": Found " << nextLevel.size() 
+                            << " new function(s) that call free (directly or indirectly)\n";
+            if (!nextLevel.empty()) {
+                SVFUtil::outs() << "[findAllFreeCallers] New functions in iteration " << iteration << ":\n";
+                for (const FunObjVar* newFun : nextLevel) {
+                    SVFUtil::outs() << "  - " << newFun->getName() << "\n";
+                }
+            }
+            SVFUtil::outs() << "[findAllFreeCallers] Total functions found so far: " << allFreeCallers.size() << "\n";
+        }
+        
+        // Check for convergence: if no new functions found, we're done
+        if (nextLevel.empty()) {
+            if (!silent) {
+                SVFUtil::outs() << "[findAllFreeCallers] Convergence reached after " << iteration << " iteration(s)\n";
+            }
+            break;
+        }
+        
+        // Prepare for next iteration
+        currentLevel = nextLevel;
+    }
+    
+    // Build final result: exclude free functions themselves, only keep callers
+    llvm::json::Array allCallersArray;
+    for (const FunObjVar* caller : allFreeCallers) {
+        // Exclude free functions themselves from the result
+        if (freeFunctions.find(caller) == freeFunctions.end()) {
+            std::string funcName = caller->getName();
+            allCallersArray.push_back(funcName);
+            // Store in global set
+            g_allFreeCallers.insert(funcName);
+        }
+    }
+    
+    result["all_free_callers"] = std::move(allCallersArray);
+    result["total_count"] = static_cast<int64_t>(allCallersArray.size());
+    result["free_functions_count"] = static_cast<int64_t>(freeFunctions.size());
+    result["iteration_info"] = std::move(iterationInfo);
+    result["total_iterations"] = iteration;
+    
+    return result;
+}
+
+const Set<std::string>& getAllFreeCallers() {
+    return g_allFreeCallers;
 }
 
 } // namespace GraphReaderUtil

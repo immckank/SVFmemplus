@@ -86,16 +86,139 @@ public:
     void getValueSensitiveReturnInsidePath(const std::string& startLocation,
                                            const std::vector<const SVFGNode*>& startSVFGNodes);
 
+    /*!
+     * \brief Performs value-sensitive path analysis with detailed path output format.
+     *
+     * This method has the same logic as getValueSensitiveReturnInsidePath but outputs
+     * paths in a detailed format where each path includes start node, key SVFG nodes,
+     * and return node with full location information.
+     *
+     * \param startLocation Source code location string (e.g., "file.c:123").
+     * \param startSVFGNodes Optional vector of starting SVFG nodes.
+     */
+    void getValueSensitiveReturnInsidePathDetailed(const std::string& startLocation,
+                                                   const std::vector<const SVFGNode*>& startSVFGNodes);
+
     void findICFGPaths(const ICFGNode* startICFG,
                        const ICFGNode* targetICFG,
                        const FunObjVar* function,
                        std::vector<std::vector<const ICFGNode*>>& allICFGPaths);
+
+    /*!
+     * \brief Check if there is a value flow path from src PAGNode to dst PAGNode using backward traversal.
+     *
+     * This method performs backward traversal on SVFG starting from nodes that use src,
+     * and checks if we can reach any node that defines dst. It outputs debug information
+     * for each node visited during traversal.
+     *
+     * \param src Source PAGNode ID (the value being used).
+     * \param dst Target PAGNode ID (the value we want to reach).
+     * \return true if there is a value flow path, false otherwise.
+     */
+    bool isValueFlowReachable(NodeID src, NodeID dst);
+
+    /*!
+     * \brief Check if a left value can reach the return value of the current function.
+     *
+     * This method checks if the given PAGNode (left value) can traverse forward
+     * to reach the return value of the function containing it. It finds actual return
+     * locations using findActualReturnICFGNodes, extracts LoadVFGNode statements at
+     * those locations, and checks if the PAGNode can reach the RHS (right value) of
+     * those load statements using isValueFlowReachable.
+     *
+     * \param svfg Pointer to the SVFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param pagNode The PAG node to check (left value).
+     * \return true if the node can reach a return value load's RHS, false otherwise.
+     *         Returns false if function return type is not pointer, or if no load
+     *         operations are found at return locations.
+     */
+    bool isLvarReachesReturn(SVFG* svfg, SVFIR* pag, const PAGNode* pagNode);
+
+    /*!
+     * \brief Identifies all key SVFG nodes within a function that are reachable from a start node.
+     *
+     * This method performs BFS traversal from the start SVFG node to collect all reachable
+     * SVFG nodes within the specified function, then applies filtering logic to determine
+     * which nodes are "key" nodes (nodes that affect memory/data flow).
+     *
+     * \param function The function object representing the function to search within.
+     * \param startSVFGNode The starting SVFG node for BFS traversal.
+     * \param isTool If true, function is used as a tool function and returns the result set.
+     *               If false, function outputs a JSON with format:
+     *               {"key_svfgs": [{"node_type": "...", "location": "...", "node_desc": "..."}, ...]}
+     * \return A set of key SVFG nodes that pass all filtering criteria.
+     */
+    std::set<const SVFGNode*> identifyKeySVFGNodesInFunction(
+        const FunObjVar* function,
+        const SVFGNode* startSVFGNode,
+        bool isTool = true,
+        const std::vector<std::string>& offsets = {}
+    );
+
+    /*!
+     * \brief Finds key SVFG nodes for a left value at a specific location and equation position.
+     *
+     * This method finds the PAGNode for a left value at the given location and eq_position,
+     * gets its corresponding SVFGNode, and then uses identifyKeySVFGNodesInFunction to
+     * identify all key SVFG nodes within the function.
+     *
+     * \param location Source code location string (e.g., "file.c:123").
+     * \param eqPosition The equation position (column) to match.
+     * \param offsets Optional list of GEP offsets to filter nodes (e.g., ["1", "2"]).
+     */
+    void findLvalueKeySVFGNodes(const std::string& location, int eqPosition, const std::vector<std::string>& offsets = {});
+
+    /*!
+     * \brief Finds key SVFG nodes for a formal parameter at a specific function and argument index.
+     *
+     * This method finds the PAGNode for a formal parameter at the given function name and arg_index,
+     * gets its corresponding SVFGNode, and then uses identifyKeySVFGNodesInFunction to
+     * identify all key SVFG nodes within the function.
+     *
+     * \param functionName The name of the function.
+     * \param argIndex The argument index (0-based) of the formal parameter.
+     * \param offsets Optional list of GEP offsets to filter nodes (e.g., ["1", "2"]).
+     */
+    void findFormalArgKeySVFGNodes(const std::string& functionName, int argIndex, const std::vector<std::string>& offsets = {});
+
+    /*!
+     * \brief Finds key SVFG nodes for an actual argument at a specific call site.
+     *
+     * This method finds the PAGNode for an actual argument at the given location, callee function name,
+     * and arg_index, gets its corresponding ActualParmVFGNode, and then uses identifyKeySVFGNodesInFunction
+     * to identify all key SVFG nodes within the caller function.
+     *
+     * \param location Source code location string (e.g., "file.c:123") of the call site.
+     * \param calleeFunctionName The name of the called function.
+     * \param argIndex The argument index (0-based) of the actual parameter.
+     * \param offsets Optional list of GEP offsets to filter nodes (e.g., ["1", "2"]).
+     */
+    void findActualArgKeySVFGNodes(const std::string& location, const std::string& calleeFunctionName, int argIndex, const std::vector<std::string>& offsets = {});
+
 private:
+
+    bool backwardValueFlowReachable(const Set<const SVFGNode*>& seedNodes,
+                                    const Set<const SVFGNode*>& targetDefNodes);
+
     SVFG* svfg;
     ICFG* icfg;
     SVFIR* pag;
     SaberCheckerAPI* saberApi;
 };
+
+/*!
+ * \brief Helper function to find actual return statement ICFG nodes (not wrapper nodes).
+ * 
+ * This function finds all actual return locations in a function by traversing the ICFG
+ * and identifying return instruction nodes, then following their predecessors to find
+ * the actual return statements (which may be unconditional branches before return instructions).
+ * 
+ * \param icfg Pointer to the ICFG.
+ * \param function Pointer to the FunObjVar representing the function.
+ * \return A vector of ICFG nodes representing actual return locations.
+ */
+std::vector<const ICFGNode*> findActualReturnICFGNodes(ICFG* icfg, const FunObjVar* function);
 
 } // namespace SVF
 

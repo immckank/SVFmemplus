@@ -5,6 +5,7 @@
 #include "SVF-LLVM/LLVMModule.h"
 #include "Graphs/SVFG.h"
 #include "Graphs/SVFGNode.h"
+#include <llvm/ADT/StringRef.h>
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/FormatVariadic.h>
 #include <llvm/IR/Instructions.h>
@@ -191,6 +192,166 @@ void SVF::FunctionQuery::findAllCalleesByName(const std::string& functionName) {
     result["error"] = false;
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
     llvm::outs().flush();
+}
+
+void SVF::FunctionQuery::checkFunctionAlwaysReturn(const std::string& functionName) {
+    const FunObjVar* targetFunction = pag->getFunObjVar(functionName);
+    if (!targetFunction) {
+        GraphReaderUtil::sendJsonError("Function '" + functionName + "' not found.");
+        return;
+    }
+
+    FunEntryICFGNode* entryNode = icfg->getFunEntryICFGNode(targetFunction);
+    FunExitICFGNode* exitNode = icfg->getFunExitICFGNode(targetFunction);
+
+    if (!entryNode || !exitNode) {
+        GraphReaderUtil::sendJsonError("Could not locate entry/exit nodes for function '" + functionName + "'.");
+        return;
+    }
+
+    std::vector<const CallICFGNode*> callNodes;
+    bool hasFunctionNodes = false;
+
+    auto isInFunction = [&](const ICFGNode* node) -> bool {
+        return node && node->getFun() == targetFunction;
+    };
+
+    for (ICFG::const_iterator it = icfg->begin(), eit = icfg->end(); it != eit; ++it) {
+        const ICFGNode* node = it->second;
+        if (!isInFunction(node)) {
+            continue;
+        }
+        hasFunctionNodes = true;
+        if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(node)) {
+            callNodes.push_back(callNode);
+        }
+    }
+
+    if (!hasFunctionNodes) {
+        GraphReaderUtil::sendJsonError("Function '" + functionName + "' has no associated ICFG nodes.");
+        return;
+    }
+
+    auto formatLocation = [](const ICFGNode* node) -> std::string {
+        if (!node) {
+            return std::string("unknown");
+        }
+        std::string rawLoc = node->getSourceLoc();
+        if (rawLoc.empty()) {
+            return std::string("unknown");
+        }
+        std::string formatted = "unknown";
+        llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(rawLoc);
+        if (auto file = locInfo.getString("fl")) {
+            formatted = file->str();
+            if (auto line = locInfo.getInteger("ln")) {
+                formatted += ":" + std::to_string(*line);
+            }
+        }
+        return formatted;
+    };
+
+    auto emitResult = [&](bool alwaysReturn, const std::string& location) {
+        llvm::json::Object result;
+        result["always_return"] = alwaysReturn ? "true" : "false";
+        if (alwaysReturn) {
+            result["error_loction"] = nullptr;
+        } else {
+            result["error_loction"] = location;
+        }
+        result["error"] = false;
+        llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+        llvm::outs().flush();
+    };
+
+    auto isTerminationCallName = [](llvm::StringRef name) -> bool {
+        static const char* exactMatches[] = {
+            "exit", "_exit", "_Exit", "abort", "quick_exit", "std::terminate"
+        };
+        for (const char* exact : exactMatches) {
+            if (name.equals(exact)) {
+                return true;
+            }
+        }
+        if (name.startswith("exec") || name.startswith("_exec")) {
+            return true;
+        }
+        return false;
+    };
+
+    // Strategy 1: Detect explicit termination calls (exit/exec/abort).
+    for (const CallICFGNode* callNode : callNodes) {
+        const FunObjVar* callee = callNode->getCalledFunction();
+        if (!callee) {
+            continue;
+        }
+        llvm::StringRef calleeName = callee->getName();
+        if (isTerminationCallName(calleeName)) {
+            emitResult(false, formatLocation(callNode) + " (terminating call: " + calleeName.str() + ")");
+            return;
+        }
+    }
+
+    // Strategy 2: Ensure all reachable paths from entry can reach the function exit.
+    Set<const ICFGNode*> reachable;
+    std::queue<const ICFGNode*> worklist;
+    worklist.push(entryNode);
+    reachable.insert(entryNode);
+
+    while (!worklist.empty()) {
+        const ICFGNode* current = worklist.front();
+        worklist.pop();
+        for (ICFGEdge* edge : current->getOutEdges()) {
+            const ICFGNode* succ = edge->getDstNode();
+            if (!isInFunction(succ)) {
+                continue;
+            }
+            if (reachable.insert(succ).second) {
+                worklist.push(succ);
+            }
+        }
+    }
+
+    if (reachable.find(exitNode) == reachable.end()) {
+        emitResult(false, formatLocation(entryNode) + " (function exit unreachable)");
+        return;
+    }
+
+    Set<const ICFGNode*> canReachExit;
+    std::queue<const ICFGNode*> backward;
+    backward.push(exitNode);
+    canReachExit.insert(exitNode);
+
+    while (!backward.empty()) {
+        const ICFGNode* current = backward.front();
+        backward.pop();
+        for (ICFGEdge* edge : current->getInEdges()) {
+            const ICFGNode* pred = edge->getSrcNode();
+            if (!isInFunction(pred)) {
+                continue;
+            }
+            if (canReachExit.insert(pred).second) {
+                backward.push(pred);
+            }
+        }
+    }
+
+    for (const ICFGNode* node : reachable) {
+        if (canReachExit.find(node) != canReachExit.end()) {
+            continue;
+        }
+        bool inLoop = icfg->isInLoop(node);
+        std::string location = formatLocation(node);
+        if (inLoop) {
+            location += " (possible infinite loop)";
+        } else {
+            location += " (no path to return)";
+        }
+        emitResult(false, location);
+        return;
+    }
+
+    emitResult(true, "");
 }
 
 void SVF::FunctionQuery::checkReturnPointer(const std::string& location) {

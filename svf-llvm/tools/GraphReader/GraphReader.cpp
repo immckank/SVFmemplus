@@ -6,6 +6,7 @@
 #include "Graphs/SVFG.h"
 #include "Graphs/CallGraph.h"
 #include "Graphs/ICFG.h"
+#include "SABER/SaberCondAllocator.h"
 #include "Util/Options.h"
 #include "Util/CDGBuilder.h"
 // #include "GraphReader/SVFGChecker.h"
@@ -15,6 +16,7 @@
 #include "FunctionQuery.h"
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/Support/JSON.h>
+#include <memory>
 
 using namespace llvm;
 using namespace SVF;
@@ -46,6 +48,13 @@ int main(int argc, char ** argv) {
     memSSA->setEnableSaberOptimizations(true);
     
     SVFG* svfg = memSSA->buildFullSVFG(ander);
+
+    // Pre-compute all functions that call free (silently, no output)
+    SVF::GraphReaderUtil::findAllFreeCallers(pag, true);
+    
+    auto saberCondAllocator = std::make_unique<SaberCondAllocator>();
+    saberCondAllocator->allocate();
+    SVF::GraphReaderUtil::setSaberCondAllocator(saberCondAllocator.get());
 
     FunctionQuery fq(icfg, pag, svfg);
     PathQuery pq(svfg, icfg);
@@ -175,19 +184,176 @@ int main(int argc, char ** argv) {
                         SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
                         continue;
                     }
-                    const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
-                    if (!startPAGNode) {
-                        SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
-                        continue;
+                    std::vector<const SVFGNode*> startSVFGNodes;
+                    if (eqPosition != -1) {
+                        const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
+                        if (!startPAGNode) {
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
+                            continue;
+                        }
+                        const SVFGNode* startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
+                        if (!startSVFGNode) {
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find SVFGNode for PAGNode " + std::to_string(startPAGNode->getId()));
+                            continue;
+                        }
+                        startSVFGNodes.push_back(startSVFGNode);
                     }
-                    const SVFGNode* startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
-                    if (!startSVFGNode) {
-                        SVF::GraphReaderUtil::sendJsonError("Cannot find SVFGNode for PAGNode " + std::to_string(startPAGNode->getId()));
-                        continue;
-                    }
-                    std::vector<const SVFGNode*> startSVFGNodes{startSVFGNode};
                     pq.getValueSensitiveReturnInsidePath(loc->str(), startSVFGNodes);
                 }
+            } else if (cname == "find-lvalue-detail-path-inside") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                } else {
+                    int eqPosition = -1;
+                    try {
+                        eqPosition = std::stoi(eqPositionStr->str());
+                    } catch (...) {
+                        SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
+                        continue;
+                    }
+                    std::vector<const SVFGNode*> startSVFGNodes;
+                    if (eqPosition != -1) {
+                        const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
+                        if (!startPAGNode) {
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
+                            continue;
+                        }
+                        const SVFGNode* startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
+                        if (!startSVFGNode) {
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find SVFGNode for PAGNode " + std::to_string(startPAGNode->getId()));
+                            continue;
+                        }
+                        startSVFGNodes.push_back(startSVFGNode);
+                    }
+                    pq.getValueSensitiveReturnInsidePathDetailed(loc->str(), startSVFGNodes);
+                }
+            } else if (cname == "find-lvalue-detail-path-inside-store") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                    continue;
+                }
+                int eqPosition = -1;
+                try {
+                    eqPosition = std::stoi(eqPositionStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
+                    continue;
+                }
+                // 直接寻找cl的store路径
+                std::vector<const ICFGNode*> nodes = SVF::GraphReaderUtil::findAllICFGNodesByLocation(icfg, loc->str());
+                const ICFGNode* matchedNode = nullptr;
+                for (const ICFGNode* node : nodes) {
+                    if (!SVFUtil::isa<IntraICFGNode>(node)) {
+                        continue;
+                    }
+                    llvm::json::Object locInfo = SVF::GraphReaderUtil::parseSourceLocation(node->getSourceLoc());
+                    if (auto col = locInfo.getInteger("cl")) {
+                        if (*col == eqPosition) {
+                            matchedNode = node;
+                            break;
+                        }
+                    }
+                }
+                std::vector<const SVFGNode*> storeNodes;
+                for (auto& pair : *svfg) {
+                    SVFGNode* svfgNode = pair.second;
+                    if (svfgNode->getICFGNode() == matchedNode) {
+                        if (auto storeNode = SVFUtil::dyn_cast<StoreVFGNode>(svfgNode)) {
+                            storeNodes.push_back(storeNode);
+                        }
+                    }
+                }
+                std::vector<const SVFGNode*> startSVFGNodes;
+                for (const SVFGNode* storeNode : storeNodes) {
+                    startSVFGNodes.push_back(storeNode);
+                }
+                pq.getValueSensitiveReturnInsidePathDetailed(loc->str(), startSVFGNodes);
+            } else if (cname == "find-lvalue-key_svfgnode") {
+                auto loc = cmd.getString("location");
+                auto eqPositionStr = cmd.getString("eq_position");
+                if (!loc || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                    continue;
+                }
+                int eqPosition = -1;
+                try {
+                    eqPosition = std::stoi(eqPositionStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
+                    continue;
+                }
+                // Parse optional offsets array
+                std::vector<std::string> offsets;
+                if (auto offsetsArray = cmd.getArray("offsets")) {
+                    for (const auto& offsetVal : *offsetsArray) {
+                        if (auto offsetStr = offsetVal.getAsString()) {
+                            offsets.push_back(offsetStr->str());
+                        } else {
+                            SVF::GraphReaderUtil::sendJsonError("invalid offset value in 'offsets' array (must be strings)");
+                            continue;
+                        }
+                    }
+                }
+                pq.findLvalueKeySVFGNodes(loc->str(), eqPosition, offsets);
+            } else if (cname == "find-formal_arg-key_svfgnode") {
+                auto functionName = cmd.getString("function_name");
+                auto argIndexStr = cmd.getString("arg_index");
+                if (!functionName || !argIndexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'function_name' or 'arg_index'");
+                    continue;
+                }
+                int argIndex = -1;
+                try {
+                    argIndex = std::stoi(argIndexStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + argIndexStr->str());
+                    continue;
+                }
+                // Parse optional offsets array
+                std::vector<std::string> offsets;
+                if (auto offsetsArray = cmd.getArray("offsets")) {
+                    for (const auto& offsetVal : *offsetsArray) {
+                        if (auto offsetStr = offsetVal.getAsString()) {
+                            offsets.push_back(offsetStr->str());
+                        } else {
+                            SVF::GraphReaderUtil::sendJsonError("invalid offset value in 'offsets' array (must be strings)");
+                            continue;
+                        }
+                    }
+                }
+                pq.findFormalArgKeySVFGNodes(functionName->str(), argIndex, offsets);
+            } else if (cname == "find-actual_arg-key_svfgnode") {
+                auto loc = cmd.getString("location");
+                auto calleeFuncName = cmd.getString("callee_function_name");
+                auto argIndexStr = cmd.getString("arg_index");
+                if (!loc || !calleeFuncName || !argIndexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'callee_function_name' or 'arg_index'");
+                    continue;
+                }
+                int argIndex = -1;
+                try {
+                    argIndex = std::stoi(argIndexStr->str());
+                } catch (...) {
+                    SVF::GraphReaderUtil::sendJsonError("invalid 'arg_index' value: " + argIndexStr->str());
+                    continue;
+                }
+                // Parse optional offsets array
+                std::vector<std::string> offsets;
+                if (auto offsetsArray = cmd.getArray("offsets")) {
+                    for (const auto& offsetVal : *offsetsArray) {
+                        if (auto offsetStr = offsetVal.getAsString()) {
+                            offsets.push_back(offsetStr->str());
+                        } else {
+                            SVF::GraphReaderUtil::sendJsonError("invalid offset value in 'offsets' array (must be strings)");
+                            continue;
+                        }
+                    }
+                }
+                pq.findActualArgKeySVFGNodes(loc->str(), calleeFuncName->str(), argIndex, offsets);
             } else if (cname == "find-call-arg-value-path-inside") {
                 auto loc = cmd.getString("location");
                 auto calleeFuncName = cmd.getString("callee_function_name");
@@ -265,6 +431,13 @@ int main(int argc, char ** argv) {
                 } else {
                     fq.checkReturnPointer(loc->str());
                 }
+            } else if (cname == "check-always-return") {
+                auto func = cmd.getString("function_name");
+                if (!func) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'function_name'");
+                } else {
+                    fq.checkFunctionAlwaysReturn(func->str());
+                }
             } else if (cname == "find-store-cl") {
                 auto loc = cmd.getString("location");
                 if (!loc) {
@@ -299,6 +472,72 @@ int main(int argc, char ** argv) {
                     SVF::GraphReaderUtil::sendJsonError("missing 'location'");
                 } else {
                     SVF::GraphReaderUtil::showCodeLineDebugInfo(svfg, icfg, loc->str());
+                }
+            } else if (cname == "find-all-free-caller") {
+                llvm::json::Object result = SVF::GraphReaderUtil::findAllFreeCallers(pag);
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                llvm::outs().flush();
+            } else if (cname == "show-return-locations") {
+                auto n = cmd.getString("name");
+                if (!n) {
+                    SVF::GraphReaderUtil::sendJsonError("missing 'name'");
+                } else {
+                    std::string functionName = n->str();
+                    const FunObjVar* function = pag->getFunObjVar(functionName);
+                    if (!function) {
+                        SVF::GraphReaderUtil::sendJsonError("Function '" + functionName + "' not found.");
+                    } else {
+                        // Find all return locations using the helper function
+                        std::vector<const ICFGNode*> returnNodes = findActualReturnICFGNodes(icfg, function);
+                        
+                        // Helper function to format location JSON object to "filename:line" string
+                        auto formatLocationString = [](const llvm::json::Object& locObj) -> std::string {
+                            std::string filename;
+                            int64_t line = 0;
+                            
+                            if (auto fl = locObj.getString("fl")) {
+                                filename = fl->str();
+                            }
+                            if (auto ln = locObj.getInteger("ln")) {
+                                line = *ln;
+                            }
+                            
+                            if (filename.empty() && line == 0) {
+                                return "";
+                            } else if (filename.empty()) {
+                                return std::to_string(line);
+                            } else if (line == 0) {
+                                return filename;
+                            } else {
+                                return filename + ":" + std::to_string(line);
+                            }
+                        };
+                        
+                        // Build JSON output
+                        llvm::json::Object result;
+                        llvm::json::Array returnLocationsArray;
+                        
+                        for (const ICFGNode* node : returnNodes) {
+                            llvm::json::Object locationObj;
+                            
+                            // Get node description
+                            std::string nodeDesc = node->toString();
+                            if (nodeDesc.empty()) {
+                                nodeDesc = "Return location";
+                            }
+                            locationObj["node_desc"] = nodeDesc;
+                            
+                            // Get location from node description
+                            llvm::json::Object locationInfo = SVF::GraphReaderUtil::parseSourceLocation(nodeDesc);
+                            locationObj["location"] = formatLocationString(locationInfo);
+                            
+                            returnLocationsArray.push_back(std::move(locationObj));
+                        }
+                        
+                        result["return_locations"] = std::move(returnLocationsArray);
+                        llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                        llvm::outs().flush();
+                    }
                 }
             } else if (cname == "exit") {
                 shouldExit = true;

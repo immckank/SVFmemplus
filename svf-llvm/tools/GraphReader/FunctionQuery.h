@@ -44,6 +44,9 @@ public:
     
     //! Check if a return location returns a pointer type variable.
     void checkReturnPointer(const std::string& location);
+
+    //! Check whether every path in a function reaches a normal return.
+    void checkFunctionAlwaysReturn(const std::string& functionName);
     
 };
 
