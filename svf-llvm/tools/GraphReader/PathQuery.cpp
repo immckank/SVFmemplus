@@ -2764,7 +2764,10 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
     }
     
     // Step 2: Compute dependencies - extract LHS pointer nodes from start node
+    // Distinguish between base pointers (non-GEP) and GEP pointers
     Set<NodeID> startNodeLHSPointers;
+    Set<NodeID> startNodeLHSBasePointers;  // LHS pointers that are NOT GEP nodes (base pointers)
+    Set<NodeID> startNodeLHSGepPointers;  // LHS pointers that ARE GEP nodes
     PointerAnalysis* pta = svfg ? svfg->getPTA() : nullptr;
     
     if (pta) {
@@ -2779,13 +2782,215 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
         
         if (lhsNode && lhsNode->isPointer()) {
             startNodeLHSPointers.insert(lhsNode->getId());
+            
+            // Check if LHS is a GEP node (GepValVar or GepObjVar)
+            if (SVFUtil::isa<GepValVar>(lhsNode) || SVFUtil::isa<GepObjVar>(lhsNode)) {
+                startNodeLHSGepPointers.insert(lhsNode->getId());
+            } else {
+                // LHS is a base pointer (not a GEP node)
+                startNodeLHSBasePointers.insert(lhsNode->getId());
+            }
         }
     }
     
-    // Get the global set of all functions that call free
-    const Set<std::string>& allFreeCallers = GraphReaderUtil::getAllFreeCallers();
+    // Get the map of function names to their distance to free functions
+    // Distance: 0 = free function itself, 1 = directly calls free, 2+ = indirectly calls free
+    // Smaller distance means higher priority (closer to free)
+    const Map<std::string, int>& freeCallerDistances = GraphReaderUtil::getFreeCallerDistances();
     
-    // Step 3: Apply filtering logic - iterate through all collected nodes
+    // Step 3: First pass - collect all ActualParmVFGNode nodes grouped by function
+    // Map: function name -> vector of ActualParmVFGNode that pass canReachConcernedVar check
+    std::map<std::string, std::vector<const ActualParmVFGNode*>> actualParmNodesByFunction;
+    
+    // Step 3.1: Pre-process ActualParmVFGNode nodes to collect them by function
+    for (const SVFGNode* svfgNode : allReachableNodes) {
+        if (const ActualParmVFGNode* actualParmNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
+            // Check if parameter can reach our concerned variables
+            bool canReachConcernedVar = false;
+            std::vector<const LoadVFGNode*> connectedLoads;
+            for (const SVFGEdge* inEdge : actualParmNode->getInEdges()) {
+                const SVFGNode* pred = inEdge->getSrcNode();
+                if (const LoadVFGNode* loadNode = SVFUtil::dyn_cast<LoadVFGNode>(pred)) {
+                    connectedLoads.push_back(loadNode);
+                }
+            }
+            for (const LoadVFGNode* loadNode : connectedLoads) {
+                const SVFStmt* stmt = loadNode->getPAGEdge();
+                const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(stmt);
+                if (!loadStmt) {
+                    continue;
+                }
+                const SVFVar* rhsVar = loadStmt->getRHSVar();
+                if (!rhsVar) {
+                    continue;
+                }
+                NodeID rhsNodeId = rhsVar->getId();
+                for (NodeID lhsPtrId : startNodeLHSPointers) {
+                    if (isValueFlowReachable(rhsNodeId, lhsPtrId)) {
+                        canReachConcernedVar = true;
+                        break;
+                    }
+                }
+                if (canReachConcernedVar) {
+                    break;
+                }
+            }
+            
+            // Only collect nodes that can reach concerned variables
+            if (canReachConcernedVar) {
+                const CallICFGNode* callSite = actualParmNode->getCallSite();
+                if (callSite) {
+                    const FunObjVar* directCallee = callSite->getCalledFunction();
+                    if (directCallee) {
+                        // Direct call: group by function name
+                        actualParmNodesByFunction[directCallee->getName()].push_back(actualParmNode);
+                    } else {
+                        // Indirect call: check all possible callees and group by each callee
+                        const CallGraph* callGraph = pag->getCallGraph();
+                        if (callGraph) {
+                            CallGraph::FunctionSet callees;
+                            const_cast<CallGraph*>(callGraph)->getCallees(callSite, callees);
+                            for (const FunObjVar* callee : callees) {
+                                if (callee) {
+                                    actualParmNodesByFunction[callee->getName()].push_back(actualParmNode);
+                                }
+                            }
+                            // If no callees found, use call site as key
+                            if (callees.empty()) {
+                                std::string callSiteKey = callSite->toString();
+                                actualParmNodesByFunction[callSiteKey].push_back(actualParmNode);
+                            }
+                        } else {
+                            // No call graph: use call site as key
+                            std::string callSiteKey = callSite->toString();
+                            actualParmNodesByFunction[callSiteKey].push_back(actualParmNode);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Step 3.2: Calculate minimum distance to free for each ActualParmVFGNode
+    // Distance: 0 = free function itself, 1 = directly calls free, 2+ = indirectly calls free
+    // Smaller distance means higher priority (closer to free)
+    // Map: node -> minimum distance found
+    std::map<const ActualParmVFGNode*, int> nodeDistances;
+    SaberCheckerAPI* checkerAPI = SaberCheckerAPI::getCheckerAPI();
+    
+    for (auto& [funcName, nodes] : actualParmNodesByFunction) {
+        if (nodes.empty()) {
+            continue;
+        }
+        
+        // Get distance for this function from the map
+        int funcDistance = -1;  // -1 = not found (doesn't call free)
+        auto distIt = freeCallerDistances.find(funcName);
+        if (distIt != freeCallerDistances.end()) {
+            funcDistance = distIt->second;
+        } else if (checkerAPI) {
+            // Check if this function is a free function via SaberCheckerAPI
+            // (for functions not in our categorized sets, like OPENSSL_free)
+            for (const ActualParmVFGNode* node : nodes) {
+                const CallICFGNode* callSite = node->getCallSite();
+                if (!callSite) {
+                    continue;
+                }
+                const FunObjVar* directCallee = callSite->getCalledFunction();
+                if (directCallee && directCallee->getName() == funcName) {
+                    if (checkerAPI->isMemDealloc(directCallee)) {
+                        funcDistance = 0;  // Free function itself
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // For each node in this function's group, calculate its minimum distance
+        for (const ActualParmVFGNode* node : nodes) {
+            const CallICFGNode* callSite = node->getCallSite();
+            if (!callSite) {
+                continue;
+            }
+            
+            // Calculate node's minimum distance based on call type
+            int nodeDistance = -1;
+            const FunObjVar* directCallee = callSite->getCalledFunction();
+            
+            if (directCallee) {
+                // Direct call: use function's distance
+                if (funcDistance >= 0) {
+                    nodeDistance = funcDistance;
+                } else if (checkerAPI && checkerAPI->isMemDealloc(directCallee)) {
+                    // Check SaberCheckerAPI for functions not in our map
+                    nodeDistance = 0;  // Free function itself
+                }
+            } else {
+                // Indirect call: check all possible callees and use the minimum distance
+                const CallGraph* callGraph = pag->getCallGraph();
+                if (callGraph) {
+                    CallGraph::FunctionSet callees;
+                    const_cast<CallGraph*>(callGraph)->getCallees(callSite, callees);
+                    
+                    int minCalleeDistance = -1;
+                    for (const FunObjVar* callee : callees) {
+                        if (!callee) {
+                            continue;
+                        }
+                        std::string calleeName = callee->getName();
+                        int calleeDistance = -1;
+                        
+                        // Check distance map first
+                        auto calleeDistIt = freeCallerDistances.find(calleeName);
+                        if (calleeDistIt != freeCallerDistances.end()) {
+                            calleeDistance = calleeDistIt->second;
+                        } else if (checkerAPI && checkerAPI->isMemDealloc(callee)) {
+                            // Check SaberCheckerAPI for functions not in our map
+                            calleeDistance = 0;  // Free function itself
+                        }
+                        
+                        // Update minimum distance
+                        if (calleeDistance >= 0) {
+                            if (minCalleeDistance < 0 || calleeDistance < minCalleeDistance) {
+                                minCalleeDistance = calleeDistance;
+                            }
+                        }
+                    }
+                    nodeDistance = minCalleeDistance;
+                }
+            }
+            
+            // Update node's distance if this is better (or first time seeing it)
+            // We want the minimum distance (closest to free)
+            if (nodeDistance >= 0) {
+                auto it = nodeDistances.find(node);
+                if (it == nodeDistances.end() || nodeDistance < it->second) {
+                    nodeDistances[node] = nodeDistance;
+                }
+            }
+        }
+    }
+    
+    // Step 3.3: Find global minimum distance and select all nodes with that distance
+    // Only keep nodes with the globally minimum distance (highest priority)
+    int globalMinDistance = -1;
+    for (const auto& [node, distance] : nodeDistances) {
+        if (globalMinDistance < 0 || distance < globalMinDistance) {
+            globalMinDistance = distance;
+        }
+    }
+    
+    // Build final selected set: only include nodes with global minimum distance
+    std::set<const ActualParmVFGNode*> selectedActualParms;
+    if (globalMinDistance >= 0) {
+        for (const auto& [node, distance] : nodeDistances) {
+            if (distance == globalMinDistance) {
+                selectedActualParms.insert(node);
+            }
+        }
+    }
+    
+    // Step 3.3: Apply filtering logic - iterate through all collected nodes
     for (const SVFGNode* svfgNode : allReachableNodes) {
         bool shouldHideInOutput = false;
         
@@ -2913,8 +3118,13 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                     bool canCallFree = false;
                     const FunObjVar* directCallee = callSite->getCalledFunction();
                     if (directCallee) {
-                        // Direct call: check if function name is in the global free callers set
-                        canCallFree = (allFreeCallers.find(directCallee->getName()) != allFreeCallers.end());
+                        // Direct call: check if function is in distance map or is a free function
+                        std::string calleeName = directCallee->getName();
+                        if (freeCallerDistances.find(calleeName) != freeCallerDistances.end()) {
+                            canCallFree = true;
+                        } else if (checkerAPI && checkerAPI->isMemDealloc(directCallee)) {
+                            canCallFree = true;
+                        }
                     } else {
                         // Indirect call: check all possible callees
                         const CallGraph* callGraph = pag->getCallGraph();
@@ -2923,7 +3133,9 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                             const_cast<CallGraph*>(callGraph)->getCallees(callSite, callees);
                             for (const FunObjVar* callee : callees) {
                                 if (callee) {
-                                    if (allFreeCallers.find(callee->getName()) != allFreeCallers.end()) {
+                                    std::string calleeName = callee->getName();
+                                    if (freeCallerDistances.find(calleeName) != freeCallerDistances.end() ||
+                                        (checkerAPI && checkerAPI->isMemDealloc(callee))) {
                                         canCallFree = true;
                                         break;
                                     }
@@ -2941,72 +3153,9 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                 }
             }
         } else if (const ActualParmVFGNode* actualParmNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
-            shouldHideInOutput = true;
-            
-            // Step 1: Check if parameter can reach our concerned variables
-            bool canReachConcernedVar = false;
-            std::vector<const LoadVFGNode*> connectedLoads;
-            for (const SVFGEdge* inEdge : actualParmNode->getInEdges()) {
-                const SVFGNode* pred = inEdge->getSrcNode();
-                if (const LoadVFGNode* loadNode = SVFUtil::dyn_cast<LoadVFGNode>(pred)) {
-                    connectedLoads.push_back(loadNode);
-                }
-            }
-            for (const LoadVFGNode* loadNode : connectedLoads) {
-                const SVFStmt* stmt = loadNode->getPAGEdge();
-                const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(stmt);
-                if (!loadStmt) {
-                    continue;
-                }
-                const SVFVar* rhsVar = loadStmt->getRHSVar();
-                if (!rhsVar) {
-                    continue;
-                }
-                NodeID rhsNodeId = rhsVar->getId();
-                for (NodeID lhsPtrId : startNodeLHSPointers) {
-                    if (isValueFlowReachable(rhsNodeId, lhsPtrId)) {
-                        canReachConcernedVar = true;
-                        break;
-                    }
-                }
-                if (canReachConcernedVar) {
-                    break;
-                }
-            }
-            
-            // Step 2: Only keep this node if parameter can reach concerned variables AND function can call free
-            if (canReachConcernedVar) {
-                const CallICFGNode* callSite = actualParmNode->getCallSite();
-                if (callSite) {
-                    bool canCallFree = false;
-                    const FunObjVar* directCallee = callSite->getCalledFunction();
-                    if (directCallee) {
-                        // Direct call: check if function name is in the global free callers set
-                        canCallFree = (allFreeCallers.find(directCallee->getName()) != allFreeCallers.end());
-                    } else {
-                        // Indirect call: check all possible callees
-                        const CallGraph* callGraph = pag->getCallGraph();
-                        if (callGraph) {
-                            CallGraph::FunctionSet callees;
-                            const_cast<CallGraph*>(callGraph)->getCallees(callSite, callees);
-                            for (const FunObjVar* callee : callees) {
-                                if (callee) {
-                                    if (allFreeCallers.find(callee->getName()) != allFreeCallers.end()) {
-                                        canCallFree = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // Only keep node if both conditions are met
-                    if (canCallFree) {
-                        shouldHideInOutput = false;
-                    }
-                    // Otherwise, keep shouldHideInOutput = true (default)
-                }
-            }
-            // If parameter cannot reach concerned variables, keep shouldHideInOutput = true (default)
+            // Use the pre-selected nodes based on priority
+            // If this node is in selectedActualParms, keep it; otherwise hide it
+            shouldHideInOutput = (selectedActualParms.find(actualParmNode) == selectedActualParms.end());
         } else if (const GepVFGNode* gepNode = SVFUtil::dyn_cast<GepVFGNode>(svfgNode)) {
             // Filter out GEP operations on array objects
             // This operation doesn't affect memory ownership
@@ -3139,36 +3288,145 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                 } // End of base object checks
 
                 // Final guard: drop GEPs whose pointer operand/base object does not alias the start variable
+                // Special handling for field-insensitive analysis:
+                // - If start node LHS is a base pointer (not GEP), filter out GEPs derived from it
+                // - If start node LHS is a GEP pointer, preserve GEPs that match it
+                // - Exception: If user specified offsets, preserve GEPs that match those offsets
                 if (!shouldHideInOutput && pta && !startNodeLHSPointers.empty()) {
                     bool isRelatedToStart = false;
-                    auto checkPointerRelation = [&](const PAGNode* ptrNode) {
-                        if (!ptrNode || isRelatedToStart || !ptrNode->isPointer()) {
-                            return;
+                    bool shouldFilterDueToBasePointer = false;
+                    bool matchesUserSpecifiedOffset = false;
+                    
+                    // Get base object for Final Guard checks (re-obtain if needed)
+                    const BaseObjVar* baseObjForGuard = nullptr;
+                    const PAGNode* lhsNodeForGuard = gepStmt->getLHSVar();
+                    if (lhsNodeForGuard) {
+                        if (const GepObjVar* gepObjVar = SVFUtil::dyn_cast<GepObjVar>(lhsNodeForGuard)) {
+                            baseObjForGuard = gepObjVar->getBaseObj();
+                        } else {
+                            baseObjForGuard = pag->getBaseObject(lhsNodeForGuard->getId());
                         }
-                        NodeID ptrId = ptrNode->getId();
-                        for (NodeID lhsPtrId : startNodeLHSPointers) {
-                            if (pta->alias(ptrId, lhsPtrId) != AliasResult::NoAlias ||
-                                isValueFlowReachable(ptrId, lhsPtrId)) {
-                                isRelatedToStart = true;
-                                break;
+                    }
+                    if (!baseObjForGuard) {
+                        const PAGNode* rhsNodeForGuard = gepStmt->getRHSVar();
+                        if (rhsNodeForGuard) {
+                            if (const ObjVar* objVar = SVFUtil::dyn_cast<ObjVar>(rhsNodeForGuard)) {
+                                if (const GepObjVar* gepObjVar = SVFUtil::dyn_cast<GepObjVar>(objVar)) {
+                                    baseObjForGuard = gepObjVar->getBaseObj();
+                                } else {
+                                    baseObjForGuard = pag->getBaseObject(rhsNodeForGuard->getId());
+                                }
+                            } else {
+                                baseObjForGuard = pag->getBaseObject(rhsNodeForGuard->getId());
                             }
                         }
-                    };
-
-                    checkPointerRelation(gepStmt->getLHSVar());
-                    checkPointerRelation(gepStmt->getRHSVar());
-
-                    if (!isRelatedToStart && baseObj) {
-                        NodeID baseId = baseObj->getId();
-                        for (NodeID lhsPtrId : startNodeLHSPointers) {
-                            if (pta->alias(baseId, lhsPtrId) != AliasResult::NoAlias) {
-                                isRelatedToStart = true;
+                    }
+                    
+                    // Check if current GEP matches user-specified offsets
+                    // If offsets are provided and this GEP matches, we should preserve it
+                    // even if start node is a base pointer
+                    if (!offsets.empty() && gepStmt->isConstantOffset() && !gepStmt->isVariantFieldGep()) {
+                        APOffset flattenedOffset = gepStmt->getConstantStructFldIdx();
+                        std::string flattenedOffsetStr = std::to_string(flattenedOffset);
+                        
+                        // Try to extract original struct field index
+                        std::string originalFieldIdxStr = "";
+                        const AccessPath::IdxOperandPairs& typePairs = gepStmt->getOffsetVarAndGepTypePairVec();
+                        for (const auto& pair : typePairs) {
+                            const SVFVar* idxVar = pair.first;
+                            const SVFType* idxType = pair.second;
+                            
+                            if (SVFUtil::isa<SVFStructType>(idxType) || idxType->isStructTy()) {
+                                if (const ConstIntValVar* constIntVar = SVFUtil::dyn_cast<ConstIntValVar>(idxVar)) {
+                                    APOffset origIdx = constIntVar->getSExtValue();
+                                    originalFieldIdxStr = std::to_string(origIdx);
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // Check if this GEP's offset matches any of the user-specified offsets
+                        for (const std::string& expectedOffset : offsets) {
+                            if ((!originalFieldIdxStr.empty() && originalFieldIdxStr == expectedOffset) ||
+                                flattenedOffsetStr == expectedOffset) {
+                                matchesUserSpecifiedOffset = true;
                                 break;
                             }
                         }
                     }
+                    
+                    // Check if current GEP's RHS is related to a start base pointer (non-GEP)
+                    // If so, this GEP should be filtered (it's a derived GEP from the base pointer)
+                    // UNLESS it matches user-specified offsets
+                    if (!startNodeLHSBasePointers.empty() && !matchesUserSpecifiedOffset) {
+                        const PAGNode* rhsNode = gepStmt->getRHSVar();
+                        if (rhsNode && rhsNode->isPointer()) {
+                            NodeID rhsId = rhsNode->getId();
+                            for (NodeID basePtrId : startNodeLHSBasePointers) {
+                                // Check if RHS is the same as base pointer or aliases with it
+                                if (rhsId == basePtrId ||
+                                    pta->alias(rhsId, basePtrId) != AliasResult::NoAlias ||
+                                    isValueFlowReachable(rhsId, basePtrId)) {
+                                    // This GEP is derived from a base pointer in start node
+                                    // Filter it out (we only care about the base pointer, not its fields)
+                                    shouldFilterDueToBasePointer = true;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // Also check base object
+                        if (!shouldFilterDueToBasePointer && baseObjForGuard) {
+                            NodeID baseId = baseObjForGuard->getId();
+                            for (NodeID basePtrId : startNodeLHSBasePointers) {
+                                // Check if we can get the base object from basePtrId
+                                const BaseObjVar* startBaseObj = pag->getBaseObject(basePtrId);
+                                if (startBaseObj && startBaseObj->getId() == baseId) {
+                                    // Same base object, filter this GEP
+                                    shouldFilterDueToBasePointer = true;
+                                    break;
+                                }
+                                // Also check alias relation
+                                if (pta->alias(baseId, basePtrId) != AliasResult::NoAlias) {
+                                    shouldFilterDueToBasePointer = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // If not filtered due to base pointer, check normal relation
+                    if (!shouldFilterDueToBasePointer) {
+                        auto checkPointerRelation = [&](const PAGNode* ptrNode) {
+                            if (!ptrNode || isRelatedToStart || !ptrNode->isPointer()) {
+                                return;
+                            }
+                            NodeID ptrId = ptrNode->getId();
+                            for (NodeID lhsPtrId : startNodeLHSPointers) {
+                                if (ptrId == lhsPtrId ||
+                                    pta->alias(ptrId, lhsPtrId) != AliasResult::NoAlias ||
+                                    isValueFlowReachable(ptrId, lhsPtrId)) {
+                                    isRelatedToStart = true;
+                                    break;
+                                }
+                            }
+                        };
 
-                    if (!isRelatedToStart) {
+                        checkPointerRelation(gepStmt->getLHSVar());
+                        checkPointerRelation(gepStmt->getRHSVar());
+
+                        if (!isRelatedToStart && baseObjForGuard) {
+                            NodeID baseId = baseObjForGuard->getId();
+                            for (NodeID lhsPtrId : startNodeLHSPointers) {
+                                if (pta->alias(baseId, lhsPtrId) != AliasResult::NoAlias) {
+                                    isRelatedToStart = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (shouldFilterDueToBasePointer || !isRelatedToStart) {
                         shouldHideInOutput = true;
                     }
                 }

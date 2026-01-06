@@ -213,6 +213,57 @@ command for test
 {"command" : "find-lvalue-key_svfgnode", "location" : "tif_dirwrite.c:839", "eq_position" : "8"}
 {"command" : "find-lvalue-key_svfgnode", "location": "tif_getimage.c:370", "eq_position": "18"}
 
+{"command" : "find-lvalue-key_svfgnode", "location": "crypto/bn/bn_exp2.c:59", "eq_position": "19"}
+{"command" : "find-all-free-caller"}
+
+{"key_svfgs":[
+    {
+        "location":"crypto/bn/bn_exp2.c:27","node_desc":"AddrVFGNode ID: 127648 AddrStmt: [Var1129101 <-- Var1129102]\t\nValVar ID: 1129101\n   %37 = alloca ptr, align 8 { \"ln\": 27, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"AddrVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:186","node_desc":"ActualParmVFGNode ID: 791679 CS[CallICFGNode: { \"ln\": 186, \"cl\": 18, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129670\n   %475 = load ptr, ptr %37, align 8, !dbg !182675 { \"ln\": 186, \"cl\": 66, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:114","node_desc":"ActualParmVFGNode ID: 791689 CS[CallICFGNode: { \"ln\": 114, \"cl\": 14, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129428\n   %279 = load ptr, ptr %37, align 8, !dbg !182459 { \"ln\": 114, \"cl\": 57, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:92","node_desc":"ActualParmVFGNode ID: 791700 CS[CallICFGNode: { \"ln\": 92, \"cl\": 18, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129362\n   %221 = load ptr, ptr %37, align 8, !dbg !182403 { \"ln\": 92, \"cl\": 65, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:83","node_desc":"ActualParmVFGNode ID: 791704 CS[CallICFGNode: { \"ln\": 83, \"cl\": 10, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129313\n   %176 = load ptr, ptr %37, align 8, !dbg !182357 { \"ln\": 83, \"cl\": 45, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:61","node_desc":"ActualParmVFGNode ID: 795095 CS[CallICFGNode: { \"ln\": 61, \"cl\": 14, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129215\n   %91 = load ptr, ptr %37, align 8, !dbg !182316 { \"ln\": 61, \"cl\": 30, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:120","node_desc":"ActualParmVFGNode ID: 806225 CS[CallICFGNode: { \"ln\": 120, \"cl\": 18, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129463\n   %310 = load ptr, ptr %37, align 8, !dbg !182491 { \"ln\": 120, \"cl\": 65, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:192","node_desc":"ActualParmVFGNode ID: 812397 CS[CallICFGNode: { \"ln\": 192, \"cl\": 10, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129688\n   %488 = load ptr, ptr %37, align 8, !dbg !182691 { \"ln\": 192, \"cl\": 36, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:111","node_desc":"ActualParmVFGNode ID: 831037 CS[CallICFGNode: { \"ln\": 111, \"cl\": 10, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129414\n   %265 = load ptr, ptr %37, align 8, !dbg !182445 { \"ln\": 111, \"cl\": 45, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:197","node_desc":"ActualParmVFGNode ID: 861093 CS[CallICFGNode: { \"ln\": 197, \"cl\": 9, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129700\n   %498 = load ptr, ptr %37, align 8, !dbg !182704 { \"ln\": 197, \"cl\": 26, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:178","node_desc":"ActualParmVFGNode ID: 863282 CS[CallICFGNode: { \"ln\": 178, \"cl\": 18, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129646\n   %454 = load ptr, ptr %37, align 8, !dbg !182653 { \"ln\": 178, \"cl\": 66, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:134","node_desc":"ActualParmVFGNode ID: 866102 CS[CallICFGNode: { \"ln\": 134, \"cl\": 10, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129484\n   %323 = load ptr, ptr %37, align 8, !dbg !182510 { \"ln\": 134, \"cl\": 46, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:86","node_desc":"ActualParmVFGNode ID: 893154 CS[CallICFGNode: { \"ln\": 86, \"cl\": 14, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129327\n   %190 = load ptr, ptr %37, align 8, !dbg !182371 { \"ln\": 86, \"cl\": 57, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"crypto/bn/bn_exp2.c:138","node_desc":"ActualParmVFGNode ID: 926585 CS[CallICFGNode: { \"ln\": 138, \"cl\": 18, \"fl\": \"crypto/bn/bn_exp2.c\" }]ValVar ID: 1129504\n   %341 = load ptr, ptr %37, align 8, !dbg !182533 { \"ln\": 138, \"cl\": 49, \"fl\": \"crypto/bn/bn_exp2.c\" }","node_type":"ActualParmVFGNode"
+    },
+    {
+        "location":"","node_desc":"FormalOUTSVFGNode ID: 1688200 {fun: BN_mod_exp2_mont}RETMU(10891V_3)\npts{1129102 }\n","node_type":"FormalOUTSVFGNode"
+    }
+]}
+
 {"command" : "find-formal_arg-key_svfgnode", "function_name" : "TIFFReadBufferSetup", "arg_index" : "0"}
 {"command" : "find-formal_arg-key_svfgnode", "function_name" : "TIFFRGBAImageEnd", "arg_index" : "0", "offsets":["13"]}
 

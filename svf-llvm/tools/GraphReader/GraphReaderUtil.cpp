@@ -24,8 +24,10 @@
 namespace SVF {
 namespace GraphReaderUtil {
 
-// Global set to store all functions that call free (directly or indirectly)
-static Set<std::string> g_allFreeCallers;
+// Global map to store function names and their distance to free functions
+// Distance: 0 = free function itself, 1 = directly calls free, 2+ = indirectly calls free
+// Smaller distance means higher priority (closer to free)
+static Map<std::string, int> g_freeCallerDistances;
 
 static SaberCondAllocator* GlobalSaberCondAllocator = nullptr;
 
@@ -2114,11 +2116,11 @@ llvm::json::Object checkFunctionCallsFree(SVFIR* pag, const std::string& functio
 llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
     llvm::json::Object result;
     
-    // Clear the global set first
-    g_allFreeCallers.clear();
+    // Clear the global map first
+    g_freeCallerDistances.clear();
     
     if (!pag) {
-        result["all_free_callers"] = llvm::json::Array{};
+        result["function_distances"] = llvm::json::Object{};
         result["error"] = "PAG is null";
         return result;
     }
@@ -2126,7 +2128,7 @@ llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
     // Get call graph
     const CallGraph* callGraph = pag->getCallGraph();
     if (!callGraph) {
-        result["all_free_callers"] = llvm::json::Array{};
+        result["function_distances"] = llvm::json::Object{};
         result["error"] = "CallGraph is null";
         return result;
     }
@@ -2134,63 +2136,58 @@ llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
     // Get SaberCheckerAPI to identify free functions
     SaberCheckerAPI* checkerAPI = SaberCheckerAPI::getCheckerAPI();
     if (!checkerAPI) {
-        result["all_free_callers"] = llvm::json::Array{};
+        result["function_distances"] = llvm::json::Object{};
         result["error"] = "SaberCheckerAPI is null";
         return result;
     }
     
-    // Step 1: Find all free functions in the program
+    // Step 1: Find all free functions in the program (distance = 0)
     Set<const FunObjVar*> freeFunctions;
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it) {
         const PAGNode* node = it->second;
         if (const FunObjVar* fun = SVFUtil::dyn_cast<FunObjVar>(node)) {
             if (checkerAPI->isMemDealloc(fun)) {
                 freeFunctions.insert(fun);
+                g_freeCallerDistances[fun->getName()] = 0;  // Distance 0: free function itself
             }
         }
     }
     
     if (freeFunctions.empty()) {
-        result["all_free_callers"] = llvm::json::Array{};
+        result["function_distances"] = llvm::json::Object{};
         result["message"] = "No free functions found in the program";
         result["iteration_info"] = llvm::json::Array{};
         return result;
     }
     
-    // Step 2: Bottom-up iterative analysis
-    // currentLevel: functions that call free (directly or indirectly) at current iteration
-    // nextLevel: functions that call currentLevel functions (to be processed in next iteration)
-    Set<const FunObjVar*> allFreeCallers;  // All functions that eventually call free
-    Set<const FunObjVar*> currentLevel = freeFunctions;  // Start with free functions themselves
-    allFreeCallers.insert(freeFunctions.begin(), freeFunctions.end());
-    
     llvm::json::Array iterationInfo;
     int iteration = 0;
     
-    // Iteration 0: Free functions themselves (starting point)
+    // Iteration 0: Free functions themselves (distance = 0)
     {
         llvm::json::Object iterObj;
         iterObj["iteration"] = iteration;
-        iterObj["new_functions"] = llvm::json::Array{};
+        iterObj["distance"] = 0;
         llvm::json::Array freeFuncNames;
         for (const FunObjVar* freeFun : freeFunctions) {
             freeFuncNames.push_back(freeFun->getName());
         }
-        iterObj["free_functions"] = std::move(freeFuncNames);
-        iterObj["total_functions"] = static_cast<int64_t>(allFreeCallers.size());
+        iterObj["functions"] = std::move(freeFuncNames);
+        iterObj["count"] = static_cast<int64_t>(freeFunctions.size());
         iterObj["note"] = "Starting point: free functions found in program";
         iterationInfo.push_back(std::move(iterObj));
         if (!silent) {
-            SVFUtil::outs() << "[findAllFreeCallers] Iteration 0: Found " << freeFunctions.size() 
-                            << " free function(s) in the program (starting point)\n";
-            for (const FunObjVar* freeFun : freeFunctions) {
-                SVFUtil::outs() << "  - " << freeFun->getName() << "\n";
-            }
+            SVFUtil::outs() << "[findAllFreeCallers] Iteration 0 (distance 0): Found " << freeFunctions.size() 
+                            << " free function(s) in the program\n";
         }
     }
     
-    // Iterations: Find callers of current level functions
+    // Step 2: Bottom-up iterative analysis to find callers at each distance level
+    Set<const FunObjVar*> currentLevel = freeFunctions;
+    int currentDistance = 0;
+    
     while (true) {
+        currentDistance++;
         iteration++;
         Set<const FunObjVar*> nextLevel;
         
@@ -2210,38 +2207,37 @@ llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
                     continue;
                 }
                 
-                // If not already in allFreeCallers, add to next level
-                if (allFreeCallers.find(callerFun) == allFreeCallers.end()) {
-                    nextLevel.insert(callerFun);
-                    allFreeCallers.insert(callerFun);
+                std::string callerName = callerFun->getName();
+                
+                // If this caller already has a distance assigned, skip it
+                // (we want the shortest distance, which is found first)
+                if (g_freeCallerDistances.find(callerName) != g_freeCallerDistances.end()) {
+                    continue;
                 }
+                
+                // Assign current distance to this caller
+                g_freeCallerDistances[callerName] = currentDistance;
+                nextLevel.insert(callerFun);
             }
         }
         
         // Debug output for this iteration
         llvm::json::Object iterObj;
         iterObj["iteration"] = iteration;
+        iterObj["distance"] = currentDistance;
         llvm::json::Array newFuncNames;
         for (const FunObjVar* newFun : nextLevel) {
             newFuncNames.push_back(newFun->getName());
         }
-        iterObj["new_functions"] = std::move(newFuncNames);
-        iterObj["new_count"] = static_cast<int64_t>(nextLevel.size());
-        iterObj["total_functions"] = static_cast<int64_t>(allFreeCallers.size());
+        iterObj["functions"] = std::move(newFuncNames);
+        iterObj["count"] = static_cast<int64_t>(nextLevel.size());
         iterationInfo.push_back(std::move(iterObj));
         
         // Output debug information (only if not silent)
         if (!silent) {
             SVFUtil::outs() << "[findAllFreeCallers] Iteration " << iteration 
-                            << ": Found " << nextLevel.size() 
-                            << " new function(s) that call free (directly or indirectly)\n";
-            if (!nextLevel.empty()) {
-                SVFUtil::outs() << "[findAllFreeCallers] New functions in iteration " << iteration << ":\n";
-                for (const FunObjVar* newFun : nextLevel) {
-                    SVFUtil::outs() << "  - " << newFun->getName() << "\n";
-                }
-            }
-            SVFUtil::outs() << "[findAllFreeCallers] Total functions found so far: " << allFreeCallers.size() << "\n";
+                            << " (distance " << currentDistance << "): Found " << nextLevel.size() 
+                            << " function(s)\n";
         }
         
         // Check for convergence: if no new functions found, we're done
@@ -2256,29 +2252,23 @@ llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
         currentLevel = nextLevel;
     }
     
-    // Build final result: exclude free functions themselves, only keep callers
-    llvm::json::Array allCallersArray;
-    for (const FunObjVar* caller : allFreeCallers) {
-        // Exclude free functions themselves from the result
-        if (freeFunctions.find(caller) == freeFunctions.end()) {
-            std::string funcName = caller->getName();
-            allCallersArray.push_back(funcName);
-            // Store in global set
-            g_allFreeCallers.insert(funcName);
-        }
+    // Build final result: function distances map
+    llvm::json::Object distancesObj;
+    for (const auto& [funcName, distance] : g_freeCallerDistances) {
+        distancesObj[funcName] = distance;
     }
     
-    result["all_free_callers"] = std::move(allCallersArray);
-    result["total_count"] = static_cast<int64_t>(allCallersArray.size());
-    result["free_functions_count"] = static_cast<int64_t>(freeFunctions.size());
+    result["function_distances"] = std::move(distancesObj);
+    result["total_functions"] = static_cast<int64_t>(g_freeCallerDistances.size());
+    result["max_distance"] = currentDistance - 1;  // Last distance level reached
     result["iteration_info"] = std::move(iterationInfo);
     result["total_iterations"] = iteration;
     
     return result;
 }
 
-const Set<std::string>& getAllFreeCallers() {
-    return g_allFreeCallers;
+const Map<std::string, int>& getFreeCallerDistances() {
+    return g_freeCallerDistances;
 }
 
 } // namespace GraphReaderUtil

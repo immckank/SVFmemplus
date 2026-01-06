@@ -212,20 +212,22 @@ namespace GraphReaderUtil {
     llvm::json::Object checkFunctionCallsFree(SVFIR* pag, const std::string& functionName);
 
     /*!
-     * \brief Finds all functions that call free functions (directly or indirectly) using bottom-up analysis.
-     * Uses iterative approach until convergence: finds direct callers of free functions, then callers of those callers, etc.
+     * \brief Finds all functions that call free functions and records their distance to free.
+     * Distance: 0 = free function itself, 1 = directly calls free, 2+ = indirectly calls free.
+     * Uses bottom-up iterative analysis until convergence.
      * \param pag Pointer to the SVFIR/PAG.
      * \param silent If true, suppresses all debug output. Default is false.
-     * \return A JSON object with all_free_callers (array of function names) and iteration_info (array of iteration details).
+     * \return A JSON object with function distance map and iteration_info.
      */
     llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent = false);
 
     /*!
-     * \brief Gets the set of all functions that call free (directly or indirectly).
-     * This set is populated by calling findAllFreeCallers.
-     * \return A reference to the set of function names.
+     * \brief Gets the map of function names to their distance to free functions.
+     * Distance: 0 = free function itself, 1 = directly calls free, 2+ = indirectly calls free.
+     * Smaller distance means higher priority (closer to free).
+     * \return A reference to the map of function names to distances.
      */
-    const Set<std::string>& getAllFreeCallers();
+    const Map<std::string, int>& getFreeCallerDistances();
 
 } // namespace GraphReaderUtil
 } // namespace SVF
