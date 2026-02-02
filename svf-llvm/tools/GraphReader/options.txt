@@ -88,7 +88,7 @@ path
 {"command": "show-code-line", "location": "tif_dirread.c:5731"}
 {"command": "show-code-line", "location": "tif_dirread.c:5796"}
 {"command": "show-code-line", "location": "tif_dirread.c:5801"}
-{"command": "show-code-line", "location": "tif_getimage.c:371"}
+{"command": "show-code-line", "location": "tif_read.c:1421"}
 
 
 Node String: GepVFGNode ID: 23723 GepStmt: [Var87447 <-- Var87446]
