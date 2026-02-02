@@ -77,6 +77,7 @@ static const ei_pair ei_pairs[]=
     {"SSL_CTX_new", SaberCheckerAPI::CK_ALLOC},
     {"SSL_new", SaberCheckerAPI::CK_ALLOC},
     {"VOS_MemAlloc", SaberCheckerAPI::CK_ALLOC},
+    {"_TIFFmalloc", SaberCheckerAPI::CK_ALLOC},
 
     {"VOS_MemFree", SaberCheckerAPI::CK_FREE},
     {"cfree", SaberCheckerAPI::CK_FREE},
@@ -98,6 +99,7 @@ static const ei_pair ei_pairs[]=
     {"SSL_CTX_free", SaberCheckerAPI::CK_FREE},
     {"SSL_free", SaberCheckerAPI::CK_FREE},
     {"XFree", SaberCheckerAPI::CK_FREE},
+    {"_TIFFfree", SaberCheckerAPI::CK_FREE},
 
     {"fopen", SaberCheckerAPI::CK_FOPEN},
     {"\01_fopen", SaberCheckerAPI::CK_FOPEN},
