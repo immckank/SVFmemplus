@@ -109,11 +109,8 @@ inline const Function* getLLVMFunction(const Value* val)
 /// Get program entry function from module.
 const Function* getProgFunction(const std::string& funName);
 
-/// Check whether a function is an entry function (i.e., main)
-inline bool isProgEntryFunction(const Function* fun)
-{
-    return fun && fun->getName() == "main";
-}
+/// Check whether a function is an entry function (i.e., main or user-specified via -entry-fun)
+bool isProgEntryFunction(const Function* fun);
 
 /// Check whether this value is a black hole
 inline bool isBlackholeSym(const Value* val)

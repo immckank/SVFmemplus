@@ -609,6 +609,12 @@ const Option<bool> Options::DisableWarn(
     true
 );
 
+const Option<std::string> Options::EntryFunction(
+    "entry-fun",
+    "Program entry function name for analysis (default: main)",
+    "main"
+);
+
 
 // Andersen.cpp
 const Option<bool> Options::ConsCGDotGraph(

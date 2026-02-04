@@ -200,6 +200,8 @@ public:
 
     // SVFUtil.cpp
     static const Option<bool> DisableWarn;
+    /// Program entry function name for analysis (default: main)
+    static const Option<std::string> EntryFunction;
 
     // Andersen.cpp
     static const Option<bool> ConsCGDotGraph;
