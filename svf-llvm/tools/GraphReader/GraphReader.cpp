@@ -95,6 +95,13 @@ int main(int argc, char ** argv) {
                 continue;
             }
 
+            auto sendStringError = [](const std::string& message) {
+                llvm::json::Object result;
+                result["error"] = message;
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                llvm::outs().flush();
+            };
+
             // function TODOs: 
             // 1. 在某一个赋值语句处 构建一个针对左值的GEP操作栈
             // 2. 在所有find value path index系列中 将GEP栈作为一个可选的传入变量 
@@ -354,6 +361,52 @@ int main(int argc, char ** argv) {
                     }
                 }
                 pq.findActualArgKeySVFGNodes(loc->str(), calleeFuncName->str(), argIndex, offsets);
+            } else if (cname == "find-key-svfgnode-by-id") {
+                auto idVal = cmd.getInteger("svfg_node_id");
+                if (!idVal) {
+                    sendStringError("missing 'svfg_node_id'");
+                    continue;
+                }
+                if (*idVal < 0) {
+                    sendStringError("invalid 'svfg_node_id' value: " + std::to_string(*idVal));
+                    continue;
+                }
+                NodeID nodeId = static_cast<NodeID>(*idVal);
+
+                std::vector<std::string> offsets;
+                if (auto offsetsArray = cmd.getArray("offsets")) {
+                    bool offsetsOk = true;
+                    for (const auto& offsetVal : *offsetsArray) {
+                        if (auto offsetStr = offsetVal.getAsString()) {
+                            offsets.push_back(offsetStr->str());
+                        } else if (auto offsetInt = offsetVal.getAsInteger()) {
+                            offsets.push_back(std::to_string(*offsetInt));
+                        } else {
+                            sendStringError("invalid offset value in 'offsets' array (must be strings)");
+                            offsetsOk = false;
+                            break;
+                        }
+                    }
+                    if (!offsetsOk) {
+                        continue;
+                    }
+                }
+
+                if (!svfg->hasSVFGNode(nodeId)) {
+                    sendStringError("Cannot find key svfg nodes for id " + std::to_string(nodeId));
+                    continue;
+                }
+                const SVFGNode* startSVFGNode = svfg->getSVFGNode(nodeId);
+                if (!startSVFGNode) {
+                    sendStringError("Cannot find key svfg nodes for id " + std::to_string(nodeId));
+                    continue;
+                }
+                const FunObjVar* function = startSVFGNode->getFun();
+                if (!function) {
+                    sendStringError("Cannot find key svfg nodes for id " + std::to_string(nodeId));
+                    continue;
+                }
+                pq.identifyKeySVFGNodesInFunction(function, startSVFGNode, false, offsets);
             } else if (cname == "find-call-arg-value-path-inside") {
                 auto loc = cmd.getString("location");
                 auto calleeFuncName = cmd.getString("callee_function_name");
@@ -513,6 +566,65 @@ int main(int argc, char ** argv) {
                 } else {
                     result = SVF::GraphReaderUtil::listSVFGNodesByLocation(svfg, icfg, loc->str());
                 }
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                llvm::outs().flush();
+            } else if (cname == "get-svfg-node-info") {
+                auto idVal = cmd.getInteger("svfg_node_id");
+                if (!idVal) {
+                    sendStringError("missing 'svfg_node_id'");
+                    continue;
+                }
+                if (*idVal < 0) {
+                    sendStringError("invalid 'svfg_node_id' value: " + std::to_string(*idVal));
+                    continue;
+                }
+                NodeID nodeId = static_cast<NodeID>(*idVal);
+                if (!svfg->hasSVFGNode(nodeId)) {
+                    llvm::json::Object result;
+                    result["svfg_node"] = nullptr;
+                    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                    llvm::outs().flush();
+                    continue;
+                }
+
+                const SVFGNode* svfgNode = svfg->getSVFGNode(nodeId);
+                if (!svfgNode) {
+                    sendStringError("Cannot find SVFG node info for id " + std::to_string(nodeId));
+                    continue;
+                }
+
+                auto formatLocationString = [](const llvm::json::Object& locObj) -> std::string {
+                    std::string filename;
+                    int64_t line = 0;
+
+                    if (auto fl = locObj.getString("fl")) {
+                        filename = fl->str();
+                    }
+                    if (auto ln = locObj.getInteger("ln")) {
+                        line = *ln;
+                    }
+
+                    if (filename.empty() && line == 0) {
+                        return "";
+                    } else if (filename.empty()) {
+                        return std::to_string(line);
+                    } else if (line == 0) {
+                        return filename;
+                    } else {
+                        return filename + ":" + std::to_string(line);
+                    }
+                };
+
+                llvm::json::Object nodeObj;
+                nodeObj["svfg_node_id"] = static_cast<int64_t>(svfgNode->getId());
+                nodeObj["node_type"] = SVF::GraphReaderUtil::getSVFGNodeKindString(svfgNode, true);
+                std::string nodeDesc = svfgNode->toString();
+                nodeObj["node_desc"] = nodeDesc;
+                llvm::json::Object locObj = SVF::GraphReaderUtil::parseSourceLocation(nodeDesc);
+                nodeObj["location"] = formatLocationString(locObj);
+
+                llvm::json::Object result;
+                result["svfg_node"] = std::move(nodeObj);
                 llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 llvm::outs().flush();
             } else if (cname == "find-all-free-caller") {
