@@ -15,6 +15,7 @@
 #include "MemoryModel/PointerAnalysis.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Operator.h"
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <queue>
@@ -129,6 +130,74 @@ static std::string toString(const llvm::Value* value) {
     llvm::raw_string_ostream rso(result);
     value->print(rso, false);
     return rso.str();
+}
+
+static llvm::json::Object makeErrorObject(const std::string& message) {
+    llvm::json::Object obj;
+    obj["error"] = message;
+    return obj;
+}
+
+static std::string formatLocationString(const llvm::json::Object& locObj) {
+    std::string filename;
+    int64_t line = 0;
+
+    if (auto fl = locObj.getString("fl")) {
+        filename = fl->str();
+    }
+    if (auto ln = locObj.getInteger("ln")) {
+        line = *ln;
+    }
+
+    if (filename.empty() && line == 0) {
+        return "";
+    }
+    if (filename.empty()) {
+        return std::to_string(line);
+    }
+    if (line == 0) {
+        return filename;
+    }
+    return filename + ":" + std::to_string(line);
+}
+
+static llvm::json::Object buildSVFGNodeJson(const SVFGNode* node) {
+    llvm::json::Object obj;
+    if (!node) {
+        return obj;
+    }
+    obj["svfg_node_id"] = static_cast<int64_t>(node->getId());
+    obj["node_type"] = GraphReaderUtil::getSVFGNodeKindString(node, true);
+    std::string nodeDesc = node->toString();
+    obj["node_desc"] = nodeDesc;
+    llvm::json::Object locObj = GraphReaderUtil::parseSourceLocation(nodeDesc);
+    obj["location"] = formatLocationString(locObj);
+    return obj;
+}
+
+static std::string getICFGNodeInstructionString(const ICFGNode* icfgNode) {
+    if (!icfgNode) {
+        return "";
+    }
+
+    LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
+    const llvm::Value* llvmVal = nullptr;
+    const llvm::Instruction* inst = nullptr;
+
+    if (const IntraICFGNode* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(icfgNode)) {
+        llvmVal = llvmModuleSet->getLLVMValue(intraNode);
+    } else if (const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(icfgNode)) {
+        llvmVal = llvmModuleSet->getLLVMValue(callNode);
+    } else if (const RetICFGNode* retNode = SVFUtil::dyn_cast<RetICFGNode>(icfgNode)) {
+        llvmVal = llvmModuleSet->getLLVMValue(retNode);
+    }
+
+    inst = SVFUtil::dyn_cast<llvm::Instruction>(llvmVal);
+    if (!inst) {
+        return "";
+    }
+
+    return toString(inst);
 }
 
 static const llvm::Module* getAnyModule() {
@@ -1997,6 +2066,225 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
     result["location"] = location;
     result["icfg_nodes_count"] = static_cast<int64_t>(allICFGNodes.size());
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+}
+
+llvm::json::Object listFormalArgNodes(SVFG* svfg, SVFIR* pag, const std::string& functionName) {
+    if (!svfg || !pag) {
+        return makeErrorObject("Invalid SVFG or PAG pointer");
+    }
+
+    const FunObjVar* fun = pag->getFunObjVar(functionName);
+    if (!fun) {
+        return makeErrorObject("Cannot find formal parameters for function \"" + functionName + "\"");
+    }
+
+    const SVFIR::SVFVarList& args = pag->getFunArgsList(fun);
+    if (args.empty()) {
+        return makeErrorObject("Cannot find formal parameters for function \"" + functionName + "\"");
+    }
+
+    std::vector<std::string> argNames;
+    const llvm::Value* funVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(fun);
+    const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(funVal);
+    if (llvmFun) {
+        argNames.reserve(llvmFun->arg_size());
+        for (const llvm::Argument& arg : llvmFun->args()) {
+            argNames.push_back(arg.hasName() ? arg.getName().str() : "");
+        }
+    }
+
+    llvm::json::Array formalArgs;
+    for (size_t i = 0; i < args.size(); ++i) {
+        const SVFVar* arg = args[i];
+        if (!arg) {
+            continue;
+        }
+        if (!svfg->hasFormalParmVFGNode(arg)) {
+            continue;
+        }
+        const FormalParmVFGNode* fpNode = svfg->getFormalParmVFGNode(arg);
+        if (!fpNode) {
+            continue;
+        }
+
+        llvm::json::Object argObj = buildSVFGNodeJson(fpNode);
+        argObj["arg_index"] = static_cast<int64_t>(i);
+        if (i < argNames.size() && !argNames[i].empty()) {
+            argObj["arg_name"] = argNames[i];
+        }
+        formalArgs.push_back(std::move(argObj));
+    }
+
+    if (formalArgs.empty()) {
+        return makeErrorObject("Cannot find formal parameters for function \"" + functionName + "\"");
+    }
+
+    llvm::json::Object result;
+    result["formal_args"] = std::move(formalArgs);
+    return result;
+}
+
+llvm::json::Object listCallsiteActualArgNodes(SVFG* svfg, ICFG* icfg, const std::string& location, const std::string& calleeFunctionName) {
+    if (!svfg || !icfg) {
+        return makeErrorObject("Invalid SVFG or ICFG pointer");
+    }
+
+    const CallICFGNode* callNode = selectCallICFGNode(icfg, location, calleeFunctionName);
+    if (!callNode) {
+        return makeErrorObject("Cannot find callsite actual args for location \"" + location + "\" and callee \"" + calleeFunctionName + "\"");
+    }
+
+    const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
+    const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
+    if (!callInst) {
+        return makeErrorObject("Cannot resolve call instruction for location \"" + location + "\"");
+    }
+
+    std::vector<const ActualParmVFGNode*> actualParmNodes;
+    for (auto& pair : *svfg) {
+        SVFGNode* svfgNode = pair.second;
+        if (svfgNode->getICFGNode() == callNode) {
+            if (auto apNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
+                actualParmNodes.push_back(apNode);
+            }
+        }
+    }
+
+    std::vector<std::pair<int, const ActualParmVFGNode*>> matched;
+    matched.reserve(actualParmNodes.size());
+    for (const ActualParmVFGNode* apNode : actualParmNodes) {
+        if (!apNode) {
+            continue;
+        }
+        const llvm::Value* paramLLVMVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(apNode->getParam());
+        if (!paramLLVMVal) {
+            continue;
+        }
+        for (unsigned i = 0; i < callInst->arg_size(); ++i) {
+            if (callInst->getArgOperand(i) == paramLLVMVal) {
+                matched.emplace_back(static_cast<int>(i), apNode);
+                break;
+            }
+        }
+    }
+
+    if (matched.empty()) {
+        return makeErrorObject("Cannot find callsite actual args for location \"" + location + "\" and callee \"" + calleeFunctionName + "\"");
+    }
+
+    std::sort(matched.begin(), matched.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.first != b.first) {
+                      return a.first < b.first;
+                  }
+                  return a.second->getId() < b.second->getId();
+              });
+
+    llvm::json::Array actualArgs;
+    for (const auto& entry : matched) {
+        llvm::json::Object argObj = buildSVFGNodeJson(entry.second);
+        argObj["arg_index"] = static_cast<int64_t>(entry.first);
+        actualArgs.push_back(std::move(argObj));
+    }
+
+    llvm::json::Object result;
+    result["callsite"] = location;
+    result["actual_args"] = std::move(actualArgs);
+    return result;
+}
+
+llvm::json::Object findCallsiteReturnNode(SVFG* svfg, ICFG* icfg, const std::string& location, const std::string& calleeFunctionName) {
+    if (!svfg || !icfg) {
+        return makeErrorObject("Invalid SVFG or ICFG pointer");
+    }
+
+    const CallICFGNode* callNode = selectCallICFGNode(icfg, location, calleeFunctionName);
+    if (!callNode) {
+        return makeErrorObject("Cannot find ActualRetVFGNode for callsite \"" + location + "\"");
+    }
+
+    const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
+    const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
+    if (!callInst) {
+        return makeErrorObject("Cannot find ActualRetVFGNode for callsite \"" + location + "\"");
+    }
+
+    llvm::json::Object result;
+    if (callInst->getType()->isVoidTy()) {
+        result["return_node"] = nullptr;
+        return result;
+    }
+
+    const ActualRetVFGNode* retNode = nullptr;
+    for (auto& pair : *svfg) {
+        SVFGNode* svfgNode = pair.second;
+        if (svfgNode->getICFGNode() == callNode) {
+            if (auto actualRet = SVFUtil::dyn_cast<ActualRetVFGNode>(svfgNode)) {
+                retNode = actualRet;
+                break;
+            }
+        }
+    }
+
+    if (!retNode) {
+        return makeErrorObject("Cannot find ActualRetVFGNode for callsite \"" + location + "\"");
+    }
+
+    result["return_node"] = buildSVFGNodeJson(retNode);
+    return result;
+}
+
+llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::string& location) {
+    if (!svfg || !icfg) {
+        return makeErrorObject("Invalid SVFG or ICFG pointer");
+    }
+
+    std::vector<const ICFGNode*> icfgNodes = findAllICFGNodesByLocation(icfg, location);
+    if (icfgNodes.empty()) {
+        return makeErrorObject("No ICFG nodes found at location: " + location);
+    }
+
+    std::unordered_set<const ICFGNode*> icfgSet(icfgNodes.begin(), icfgNodes.end());
+    std::unordered_set<NodeID> seen;
+    struct NodeEntry {
+        NodeID id;
+        llvm::json::Object obj;
+    };
+    std::vector<NodeEntry> entries;
+
+    for (auto& pair : *svfg) {
+        SVFGNode* svfgNode = pair.second;
+        const ICFGNode* icfgNode = svfgNode->getICFGNode();
+        if (!icfgNode) {
+            continue;
+        }
+        if (icfgSet.find(icfgNode) == icfgSet.end()) {
+            continue;
+        }
+        NodeID nodeId = svfgNode->getId();
+        if (!seen.insert(nodeId).second) {
+            continue;
+        }
+
+        llvm::json::Object nodeObj;
+        nodeObj["svfg_node_id"] = static_cast<int64_t>(nodeId);
+        nodeObj["node_type"] = getSVFGNodeKindString(svfgNode, true);
+        nodeObj["llvm_ir"] = getICFGNodeInstructionString(icfgNode);
+        entries.push_back({nodeId, std::move(nodeObj)});
+    }
+
+    std::sort(entries.begin(), entries.end(),
+              [](const NodeEntry& a, const NodeEntry& b) { return a.id < b.id; });
+
+    llvm::json::Array nodesArray;
+    for (auto& entry : entries) {
+        nodesArray.push_back(std::move(entry.obj));
+    }
+
+    llvm::json::Object result;
+    result["location"] = location;
+    result["svfg_nodes"] = std::move(nodesArray);
+    return result;
 }
 
 llvm::json::Object checkFunctionCallsFree(SVFIR* pag, const std::string& functionName) {

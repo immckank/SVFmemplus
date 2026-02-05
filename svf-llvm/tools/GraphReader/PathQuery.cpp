@@ -3517,6 +3517,9 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
             // Get node type
             std::string nodeType = GraphReaderUtil::getSVFGNodeKindString(svfgNode, true);
             nodeObj["node_type"] = nodeType;
+
+            // Include SVFG node id
+            nodeObj["node_id"] = static_cast<int64_t>(svfgNode->getId());
             
             // Get node description
             std::string nodeDesc = svfgNode->toString();

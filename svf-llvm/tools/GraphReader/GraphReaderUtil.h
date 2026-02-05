@@ -176,6 +176,44 @@ namespace GraphReaderUtil {
     void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location);
 
     /*!
+     * \brief Lists all formal-parameter SVFG nodes for a given function.
+     * \param svfg Pointer to the SVFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param functionName The callee function name.
+     * \return A JSON object with "formal_args" or "error" (string) on failure.
+     */
+    llvm::json::Object listFormalArgNodes(SVFG* svfg, SVFIR* pag, const std::string& functionName);
+
+    /*!
+     * \brief Lists all actual-parameter SVFG nodes at a callsite.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param location Callsite location in "filename:line" format.
+     * \param calleeFunctionName The callee function name.
+     * \return A JSON object with "actual_args" or "error" (string) on failure.
+     */
+    llvm::json::Object listCallsiteActualArgNodes(SVFG* svfg, ICFG* icfg, const std::string& location, const std::string& calleeFunctionName);
+
+    /*!
+     * \brief Finds the return-value SVFG node at a callsite.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param location Callsite location in "filename:line" format.
+     * \param calleeFunctionName The callee function name.
+     * \return A JSON object with "return_node" or "error" (string) on failure.
+     */
+    llvm::json::Object findCallsiteReturnNode(SVFG* svfg, ICFG* icfg, const std::string& location, const std::string& calleeFunctionName);
+
+    /*!
+     * \brief Lists all SVFG nodes bound to a given source code line.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param location A string in "filename:line" format.
+     * \return A JSON object with "svfg_nodes" or "error" (string) on failure.
+     */
+    llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::string& location);
+
+    /*!
      * \brief Traces a call argument's value flow and finds its definition point.
      * Combines argument tracing with backward data flow to find where the value was stored.
      * Returns the PAGNode of the stored value (e.g., malloc result).

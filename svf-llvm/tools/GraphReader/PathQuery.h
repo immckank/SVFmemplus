@@ -146,7 +146,7 @@ public:
      * \param startSVFGNode The starting SVFG node for BFS traversal.
      * \param isTool If true, function is used as a tool function and returns the result set.
      *               If false, function outputs a JSON with format:
-     *               {"key_svfgs": [{"node_type": "...", "location": "...", "node_desc": "..."}, ...]}
+     *               {"key_svfgs": [{"node_type": "...", "node_id": 123, "location": "...", "node_desc": "..."}, ...]}
      * \return A set of key SVFG nodes that pass all filtering criteria.
      */
     std::set<const SVFGNode*> identifyKeySVFGNodesInFunction(

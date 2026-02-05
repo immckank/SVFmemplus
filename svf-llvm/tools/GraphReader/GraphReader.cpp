@@ -473,6 +473,48 @@ int main(int argc, char ** argv) {
                 } else {
                     SVF::GraphReaderUtil::showCodeLineDebugInfo(svfg, icfg, loc->str());
                 }
+            } else if (cname == "list-formal-arg-nodes") {
+                auto func = cmd.getString("function_name");
+                llvm::json::Object result;
+                if (!func) {
+                    result["error"] = "missing 'function_name'";
+                } else {
+                    result = SVF::GraphReaderUtil::listFormalArgNodes(svfg, pag, func->str());
+                }
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                llvm::outs().flush();
+            } else if (cname == "list-callsite-actual-arg-nodes") {
+                auto loc = cmd.getString("location");
+                auto callee = cmd.getString("callee_function_name");
+                llvm::json::Object result;
+                if (!loc || !callee) {
+                    result["error"] = "missing 'location' or 'callee_function_name'";
+                } else {
+                    result = SVF::GraphReaderUtil::listCallsiteActualArgNodes(svfg, icfg, loc->str(), callee->str());
+                }
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                llvm::outs().flush();
+            } else if (cname == "find-callsite-return-node") {
+                auto loc = cmd.getString("location");
+                auto callee = cmd.getString("callee_function_name");
+                llvm::json::Object result;
+                if (!loc || !callee) {
+                    result["error"] = "missing 'location' or 'callee_function_name'";
+                } else {
+                    result = SVF::GraphReaderUtil::findCallsiteReturnNode(svfg, icfg, loc->str(), callee->str());
+                }
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                llvm::outs().flush();
+            } else if (cname == "list-svfg-nodes-by-location") {
+                auto loc = cmd.getString("location");
+                llvm::json::Object result;
+                if (!loc) {
+                    result["error"] = "missing 'location'";
+                } else {
+                    result = SVF::GraphReaderUtil::listSVFGNodesByLocation(svfg, icfg, loc->str());
+                }
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                llvm::outs().flush();
             } else if (cname == "find-all-free-caller") {
                 llvm::json::Object result = SVF::GraphReaderUtil::findAllFreeCallers(pag);
                 llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
