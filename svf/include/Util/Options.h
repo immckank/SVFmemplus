@@ -278,6 +278,7 @@ public:
     static Option<bool> SaberKeepDerefDirSVFGEdges;
 
     // GraphReader
+    static const Option<bool> Interleaving;
     static const Option<std::string> FindCallSites;
     static const Option<std::string> FindCalleeBody;
     static const Option<std::string> FindFuncBody;

@@ -37,6 +37,10 @@
 阶段进入时发送：
 - `{"ready":true,"stage":<n>,"stage_name":"<name>","message":"svf-stage-ready"}`
 
+启用方式：
+- 默认保持旧行为（一次性构建并进入交互）。
+- 通过命令行参数 `-interleaving` 启用分阶段交互。
+
 继续/退出：
 - `{"command":"continue"}` 进入下一阶段
 - `{"command":"exit"}` 退出
@@ -52,6 +56,36 @@
 - `load-model-spec` 从 JSON 载入自定义模型（函数语义、源/汇、字段抽象规则）
 - `list-model-spec` 输出当前已加载模型条目摘要
 - `add-source-by-location`、`add-sink-by-location` 为后续分析准备
+
+最小 Model Spec schema（当前实现）：
+```json
+{
+  "apis": {
+    "alloc": ["malloc", "my_alloc"],
+    "free": ["free", "my_free"],
+    "fopen": ["fopen"],
+    "fclose": ["fclose"]
+  },
+  "sources": [
+    {"kind":"function","name":"getenv"},
+    {"kind":"location","location":"file.c:123"}
+  ],
+  "sinks": [
+    {"kind":"function","name":"system"},
+    {"kind":"location","location":"file.c:456"}
+  ]
+}
+```
+
+`load-model-spec` 参数约定：
+- `{"command":"load-model-spec","spec":{...},"mode":"replace|merge"}`  
+- `{"command":"load-model-spec","path":"/src/.../model.json","mode":"replace|merge"}`
+- `mode` 默认为 `replace`；`merge` 会在当前模型基础上追加并去重
+
+阶段可用命令（实现约束）：
+- Stage 0（post-pag）：仅建模类命令 + `ping/continue/exit`
+- Stage 1（post-andersen）：允许 ICFG/PAG 查询 + `list-model-spec` + `ping/continue/exit`
+- Stage 2（post-svfg）：全部现有 GraphReader 命令 + `list-model-spec` + `ping/exit`
 
 查询类（可直接复用 GraphReader）：
 - `find-function-body-by-name`、`find-function-body-by-location`

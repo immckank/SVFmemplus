@@ -21,6 +21,21 @@ class SaberCondAllocator;
 
 namespace GraphReaderUtil {
 
+    struct ModelTarget {
+        std::string kind;     // "function" or "location"
+        std::string name;     // used when kind == "function"
+        std::string location; // used when kind == "location"
+    };
+
+    struct ModelSpec {
+        std::vector<std::string> allocApis;
+        std::vector<std::string> freeApis;
+        std::vector<std::string> fopenApis;
+        std::vector<std::string> fcloseApis;
+        std::vector<ModelTarget> sources;
+        std::vector<ModelTarget> sinks;
+    };
+
     /// Register a global SaberCondAllocator instance for debug utilities
     void setSaberCondAllocator(SaberCondAllocator* allocator);
 
@@ -94,6 +109,16 @@ namespace GraphReaderUtil {
     /// top-level "commands" array. Returns true on success; otherwise false and
     /// sets errMsg.
     bool parseCommandsLine(const std::string& jsonStr, std::vector<llvm::json::Object>& outCmds, std::string& errMsg);
+
+    /// Parse a model spec JSON object into the given ModelSpec.
+    /// If merge is false, the ModelSpec is cleared first.
+    bool parseModelSpecObject(const llvm::json::Object& obj, ModelSpec& spec, std::string& err, bool merge);
+
+    /// Convert a ModelSpec to JSON object.
+    llvm::json::Object modelSpecToJson(const ModelSpec& spec);
+
+    /// Apply model spec APIs to SaberCheckerAPI.
+    bool applyModelSpecToSaber(const ModelSpec& spec, bool overwrite, std::string& err);
 
     bool fetchFunctionStartLocation(SVFIR* pag, const std::string& funcName, std::string& startLocation);
 
@@ -240,6 +265,21 @@ namespace GraphReaderUtil {
                                           SVFIR* pag,
                                           const std::string& location,
                                           int eqPosition);
+
+    /*!
+     * \brief Find base definition information for a left value at a location/column.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param location A string in "filename:line" format.
+     * \param eqPosition The column number of the store statement.
+     * \return A JSON object describing the base PAG node and its definition.
+     */
+    llvm::json::Object findBaseLvarDef(SVFG* svfg,
+                                       ICFG* icfg,
+                                       SVFIR* pag,
+                                       const std::string& location,
+                                       int eqPosition);
 
     /*!
      * \brief Checks if a function eventually calls any free function through the call graph.

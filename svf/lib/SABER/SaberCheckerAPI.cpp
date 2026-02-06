@@ -173,6 +173,19 @@ void SaberCheckerAPI::init()
     }
 }
 
+bool SaberCheckerAPI::addCustomAPI(const std::string& name, CHECKER_TYPE type, bool overwrite)
+{
+    if (name.empty())
+        return false;
+
+    TDAPIMap::iterator it = tdAPIMap.find(name);
+    if (it != tdAPIMap.end() && !overwrite)
+        return false;
+
+    tdAPIMap[name] = type;
+    return true;
+}
+
 
 
 

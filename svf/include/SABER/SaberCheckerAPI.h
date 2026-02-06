@@ -96,6 +96,10 @@ public:
         return ckAPI;
     }
 
+    /// Add or override a custom API classification.
+    /// Returns true on success; false if name is empty or overwrite is disabled and name exists.
+    bool addCustomAPI(const std::string& name, CHECKER_TYPE type, bool overwrite = true);
+
     /// Return true if this call is a memory allocation
     //@{
     inline bool isMemAlloc(const FunObjVar* fun) const

@@ -843,6 +843,11 @@ const Option<u32_t> Options::AEPrecision(
 );
 
 // GraphReader.cpp
+const Option<bool> Options::Interleaving(
+    "interleaving",
+    "Enable staged interleaving in GraphReader",
+    false);
+
 const Option<std::string> Options::FindCallSites(
     "find-call-sites",
     "Find all call sites of a function",

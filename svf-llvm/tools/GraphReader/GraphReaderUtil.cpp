@@ -308,6 +308,211 @@ bool parseCommandsLine(const std::string& jsonStr, std::vector<llvm::json::Objec
     return false;
 }
 
+static std::vector<std::string>* getApiVector(ModelSpec& spec, const std::string& kind) {
+    if (kind == "alloc") return &spec.allocApis;
+    if (kind == "free") return &spec.freeApis;
+    if (kind == "fopen") return &spec.fopenApis;
+    if (kind == "fclose") return &spec.fcloseApis;
+    return nullptr;
+}
+
+static std::string targetKey(const ModelTarget& target) {
+    if (target.kind == "function") {
+        return "function:" + target.name;
+    }
+    if (target.kind == "location") {
+        return "location:" + target.location;
+    }
+    return target.kind + ":";
+}
+
+bool parseModelSpecObject(const llvm::json::Object& obj, ModelSpec& spec, std::string& err, bool merge) {
+    if (!merge) {
+        spec.allocApis.clear();
+        spec.freeApis.clear();
+        spec.fopenApis.clear();
+        spec.fcloseApis.clear();
+        spec.sources.clear();
+        spec.sinks.clear();
+    }
+
+    std::set<std::string> allocSeen(spec.allocApis.begin(), spec.allocApis.end());
+    std::set<std::string> freeSeen(spec.freeApis.begin(), spec.freeApis.end());
+    std::set<std::string> fopenSeen(spec.fopenApis.begin(), spec.fopenApis.end());
+    std::set<std::string> fcloseSeen(spec.fcloseApis.begin(), spec.fcloseApis.end());
+    std::set<std::string> sourceSeen;
+    std::set<std::string> sinkSeen;
+
+    for (const auto& t : spec.sources) {
+        sourceSeen.insert(targetKey(t));
+    }
+    for (const auto& t : spec.sinks) {
+        sinkSeen.insert(targetKey(t));
+    }
+
+    if (const llvm::json::Object* apisObj = obj.getObject("apis")) {
+        for (const auto& kv : *apisObj) {
+            std::string kind = kv.first.str();
+            const llvm::json::Value& value = kv.second;
+            const llvm::json::Array* arr = value.getAsArray();
+            if (!arr) {
+                err = "apis." + kind + " must be an array";
+                return false;
+            }
+
+            std::vector<std::string>* dest = getApiVector(spec, kind);
+            if (!dest) {
+                err = "unknown api kind: " + kind;
+                return false;
+            }
+
+            std::set<std::string>* seen = nullptr;
+            if (kind == "alloc") seen = &allocSeen;
+            else if (kind == "free") seen = &freeSeen;
+            else if (kind == "fopen") seen = &fopenSeen;
+            else if (kind == "fclose") seen = &fcloseSeen;
+
+            for (const auto& v : *arr) {
+                if (auto s = v.getAsString()) {
+                    std::string name = s->str();
+                    if (name.empty()) {
+                        err = "api name cannot be empty in kind: " + kind;
+                        return false;
+                    }
+                    if (seen && seen->insert(name).second) {
+                        dest->push_back(name);
+                    }
+                } else {
+                    err = "apis." + kind + " must contain string entries";
+                    return false;
+                }
+            }
+        }
+    }
+
+    auto parseTargets = [&](const llvm::json::Array& arr,
+                            std::vector<ModelTarget>& out,
+                            std::set<std::string>& seen,
+                            const std::string& label) -> bool {
+        for (const auto& v : arr) {
+            const llvm::json::Object* tObj = v.getAsObject();
+            if (!tObj) {
+                err = label + " entries must be objects";
+                return false;
+            }
+            auto kindVal = tObj->getString("kind");
+            if (!kindVal) {
+                err = label + " entry missing 'kind'";
+                return false;
+            }
+            std::string kind = kindVal->str();
+            ModelTarget target;
+            target.kind = kind;
+            if (kind == "function") {
+                auto nameVal = tObj->getString("name");
+                if (!nameVal) {
+                    err = label + " function entry missing 'name'";
+                    return false;
+                }
+                target.name = nameVal->str();
+            } else if (kind == "location") {
+                auto locVal = tObj->getString("location");
+                if (!locVal) {
+                    err = label + " location entry missing 'location'";
+                    return false;
+                }
+                target.location = locVal->str();
+            } else {
+                err = label + " entry has unknown kind: " + kind;
+                return false;
+            }
+
+            std::string key = targetKey(target);
+            if (seen.insert(key).second) {
+                out.push_back(target);
+            }
+        }
+        return true;
+    };
+
+    if (const llvm::json::Array* sourcesArr = obj.getArray("sources")) {
+        if (!parseTargets(*sourcesArr, spec.sources, sourceSeen, "sources")) {
+            return false;
+        }
+    }
+
+    if (const llvm::json::Array* sinksArr = obj.getArray("sinks")) {
+        if (!parseTargets(*sinksArr, spec.sinks, sinkSeen, "sinks")) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+llvm::json::Object modelSpecToJson(const ModelSpec& spec) {
+    llvm::json::Object root;
+    llvm::json::Object apis;
+
+    auto toArray = [](const std::vector<std::string>& items) {
+        llvm::json::Array arr;
+        for (const auto& item : items) {
+            arr.push_back(item);
+        }
+        return arr;
+    };
+
+    apis["alloc"] = toArray(spec.allocApis);
+    apis["free"] = toArray(spec.freeApis);
+    apis["fopen"] = toArray(spec.fopenApis);
+    apis["fclose"] = toArray(spec.fcloseApis);
+    root["apis"] = std::move(apis);
+
+    auto targetsToArray = [](const std::vector<ModelTarget>& targets) {
+        llvm::json::Array arr;
+        for (const auto& target : targets) {
+            llvm::json::Object obj;
+            obj["kind"] = target.kind;
+            if (target.kind == "function") {
+                obj["name"] = target.name;
+            } else if (target.kind == "location") {
+                obj["location"] = target.location;
+            }
+            arr.push_back(std::move(obj));
+        }
+        return arr;
+    };
+
+    root["sources"] = targetsToArray(spec.sources);
+    root["sinks"] = targetsToArray(spec.sinks);
+    return root;
+}
+
+bool applyModelSpecToSaber(const ModelSpec& spec, bool overwrite, std::string& err) {
+    SaberCheckerAPI* checkerAPI = SaberCheckerAPI::getCheckerAPI();
+    if (!checkerAPI) {
+        err = "SaberCheckerAPI is null";
+        return false;
+    }
+
+    auto applyApis = [&](const std::vector<std::string>& names, SaberCheckerAPI::CHECKER_TYPE type) -> bool {
+        for (const auto& name : names) {
+            if (!checkerAPI->addCustomAPI(name, type, overwrite)) {
+                err = "failed to add custom api: " + name;
+                return false;
+            }
+        }
+        return true;
+    };
+
+    if (!applyApis(spec.allocApis, SaberCheckerAPI::CK_ALLOC)) return false;
+    if (!applyApis(spec.freeApis, SaberCheckerAPI::CK_FREE)) return false;
+    if (!applyApis(spec.fopenApis, SaberCheckerAPI::CK_FOPEN)) return false;
+    if (!applyApis(spec.fcloseApis, SaberCheckerAPI::CK_FCLOSE)) return false;
+
+    return true;
+}
+
 void sendJsonError(const std::string& message) {
     llvm::json::Object result;
     result["error"] = true;
@@ -1316,6 +1521,55 @@ llvm::json::Object analyzeStoreLValue(SVFG* svfg, ICFG* icfg, SVFIR* pag, const 
         result["struct_name"] = structName;
     }
 
+    return result;
+}
+
+llvm::json::Object findBaseLvarDef(SVFG* svfg,
+                                   ICFG* icfg,
+                                   SVFIR* pag,
+                                   const std::string& location,
+                                   int eqPosition) {
+    llvm::json::Object result;
+    result["command"] = "find-base-lvar-def";
+    result["location"] = location;
+    result["eq_position"] = eqPosition;
+
+    if (!svfg || !icfg || !pag) {
+        result["error"] = "Invalid SVFG/ICFG/PAG pointer";
+        return result;
+    }
+
+    const PAGNode* basePagNode = getPAGNodeFromLvarGEP(icfg, pag, location, eqPosition);
+    if (!basePagNode) {
+        basePagNode = getPAGNodeFromLvar(icfg, pag, location, eqPosition);
+    }
+    if (!basePagNode) {
+        result["error"] = "Cannot find base PAG node for location";
+        return result;
+    }
+
+    llvm::json::Object baseInfo;
+    baseInfo["id"] = static_cast<int64_t>(basePagNode->getId());
+    baseInfo["type"] = SVFUtil::isa<ValVar>(basePagNode) ? "ValVar" : "ObjVar";
+    baseInfo["desc"] = basePagNode->toString();
+    baseInfo["location"] = basePagNode->getSourceLoc();
+    result["base_pag_node"] = std::move(baseInfo);
+
+    if (svfg->hasDefSVFGNode(basePagNode)) {
+        const SVFGNode* defNode = svfg->getDefSVFGNode(basePagNode);
+        if (defNode) {
+            llvm::json::Object defInfo;
+            defInfo["svfg_node_id"] = static_cast<int64_t>(defNode->getId());
+            defInfo["node_type"] = getSVFGNodeKindString(defNode, true);
+            defInfo["node_desc"] = defNode->toString();
+            defInfo["location"] = defNode->getICFGNode() ? defNode->getICFGNode()->getSourceLoc() : "";
+            result["def_svfg_node"] = std::move(defInfo);
+        }
+    } else {
+        result["def_svfg_node"] = nullptr;
+    }
+
+    result["success"] = true;
     return result;
 }
 
