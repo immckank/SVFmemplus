@@ -560,11 +560,16 @@ int main(int argc, char ** argv) {
                 llvm::outs().flush();
             } else if (cname == "list-svfg-nodes-by-location") {
                 auto loc = cmd.getString("location");
+                auto col = cmd.getInteger("column");
                 llvm::json::Object result;
                 if (!loc) {
                     result["error"] = "missing 'location'";
                 } else {
-                    result = SVF::GraphReaderUtil::listSVFGNodesByLocation(svfg, icfg, loc->str());
+                    int64_t column = -1;
+                    if (col) {
+                        column = *col;
+                    }
+                    result = SVF::GraphReaderUtil::listSVFGNodesByLocation(svfg, icfg, loc->str(), column);
                 }
                 llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 llvm::outs().flush();

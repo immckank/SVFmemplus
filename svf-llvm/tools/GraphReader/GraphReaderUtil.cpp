@@ -2234,7 +2234,7 @@ llvm::json::Object findCallsiteReturnNode(SVFG* svfg, ICFG* icfg, const std::str
     return result;
 }
 
-llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::string& location) {
+llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::string& location, int64_t column) {
     if (!svfg || !icfg) {
         return makeErrorObject("Invalid SVFG or ICFG pointer");
     }
@@ -2244,6 +2244,21 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::st
         return makeErrorObject("No ICFG nodes found at location: " + location);
     }
 
+    if (column >= 0) {
+        std::vector<const ICFGNode*> filtered;
+        for (const ICFGNode* node : icfgNodes) {
+            llvm::json::Object locInfo = parseSourceLocation(node->getSourceLoc());
+            if (auto col = locInfo.getInteger("cl")) {
+                if (*col == column) {
+                    filtered.push_back(node);
+                }
+            }
+        }
+        if (filtered.empty()) {
+            return makeErrorObject("No ICFG nodes found at location/column: " + location + ":" + std::to_string(column));
+        }
+        icfgNodes = std::move(filtered);
+    }
     std::unordered_set<const ICFGNode*> icfgSet(icfgNodes.begin(), icfgNodes.end());
     std::unordered_set<NodeID> seen;
     struct NodeEntry {
@@ -2269,6 +2284,10 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::st
         llvm::json::Object nodeObj;
         nodeObj["svfg_node_id"] = static_cast<int64_t>(nodeId);
         nodeObj["node_type"] = getSVFGNodeKindString(svfgNode, true);
+        std::string nodeDesc = svfgNode->toString();
+        nodeObj["node_desc"] = nodeDesc;
+        llvm::json::Object locObj = parseSourceLocation(nodeDesc);
+        nodeObj["location"] = formatLocationString(locObj);
         nodeObj["llvm_ir"] = getICFGNodeInstructionString(icfgNode);
         entries.push_back({nodeId, std::move(nodeObj)});
     }

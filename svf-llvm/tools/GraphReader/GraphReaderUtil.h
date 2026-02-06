@@ -211,7 +211,7 @@ namespace GraphReaderUtil {
      * \param location A string in "filename:line" format.
      * \return A JSON object with "svfg_nodes" or "error" (string) on failure.
      */
-    llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::string& location);
+    llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::string& location, int64_t column = -1);
 
     /*!
      * \brief Traces a call argument's value flow and finds its definition point.
