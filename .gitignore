@@ -31,3 +31,6 @@ Release-build/
 /PUT
 /saber_rep
 AGENTS.md
+
+*.py
+bug_stats.md
