@@ -141,6 +141,7 @@ static llvm::json::Object makeErrorObject(const std::string& message) {
 static std::string formatLocationString(const llvm::json::Object& locObj) {
     std::string filename;
     int64_t line = 0;
+    int64_t column = 0;
 
     if (auto fl = locObj.getString("fl")) {
         filename = fl->str();
@@ -148,17 +149,38 @@ static std::string formatLocationString(const llvm::json::Object& locObj) {
     if (auto ln = locObj.getInteger("ln")) {
         line = *ln;
     }
+    if (auto cl = locObj.getInteger("cl")) {
+        column = *cl;
+    }
 
-    if (filename.empty() && line == 0) {
+    if (filename.empty() && line == 0 && column == 0) {
         return "";
     }
-    if (filename.empty()) {
+    if (filename.empty() && column == 0) {
         return std::to_string(line);
+    }
+    if (filename.empty()) {
+        return std::to_string(line) + ":" + std::to_string(column);
     }
     if (line == 0) {
         return filename;
     }
-    return filename + ":" + std::to_string(line);
+    if (column == 0) {
+        return filename + ":" + std::to_string(line);
+    }
+    return filename + ":" + std::to_string(line) + ":" + std::to_string(column);
+}
+
+static void appendLocationFields(llvm::json::Object& obj, const llvm::json::Object& locObj) {
+    if (auto fl = locObj.getString("fl")) {
+        obj["filename"] = fl->str();
+    }
+    if (auto ln = locObj.getInteger("ln")) {
+        obj["line"] = *ln;
+    }
+    if (auto cl = locObj.getInteger("cl")) {
+        obj["column"] = *cl;
+    }
 }
 
 static llvm::json::Object buildSVFGNodeJson(const SVFGNode* node) {
@@ -172,6 +194,7 @@ static llvm::json::Object buildSVFGNodeJson(const SVFGNode* node) {
     obj["node_desc"] = nodeDesc;
     llvm::json::Object locObj = GraphReaderUtil::parseSourceLocation(nodeDesc);
     obj["location"] = formatLocationString(locObj);
+    appendLocationFields(obj, locObj);
     return obj;
 }
 
@@ -2288,6 +2311,7 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::st
         nodeObj["node_desc"] = nodeDesc;
         llvm::json::Object locObj = parseSourceLocation(nodeDesc);
         nodeObj["location"] = formatLocationString(locObj);
+        appendLocationFields(nodeObj, locObj);
         nodeObj["llvm_ir"] = getICFGNodeInstructionString(icfgNode);
         entries.push_back({nodeId, std::move(nodeObj)});
     }
