@@ -183,6 +183,74 @@ static void appendLocationFields(llvm::json::Object& obj, const llvm::json::Obje
     }
 }
 
+static bool parseLocationKey(const std::string& location, std::string& filename, int64_t& line) {
+    size_t colonPos = location.find(':');
+    if (colonPos == std::string::npos) {
+        return false;
+    }
+    filename = location.substr(0, colonPos);
+    try {
+        line = std::stoll(location.substr(colonPos + 1));
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
+static bool filenameMatches(const std::string& candidate, const std::string& target) {
+    if (target.empty()) {
+        return true;
+    }
+    return candidate.find(target) != std::string::npos || target.find(candidate) != std::string::npos;
+}
+
+static bool hasMatchingColumnInNodeDesc(const std::string& nodeDesc, const std::string& targetFilename,
+                                        int64_t targetLine, int64_t targetColumn) {
+    if (targetColumn < 0 || nodeDesc.empty()) {
+        return false;
+    }
+
+    size_t lastBrace = nodeDesc.rfind('}');
+    while (lastBrace != std::string::npos) {
+        int braceCount = 1;
+        size_t pos = lastBrace;
+        while (pos > 0 && braceCount > 0) {
+            --pos;
+            if (nodeDesc[pos] == '}') {
+                ++braceCount;
+            } else if (nodeDesc[pos] == '{') {
+                --braceCount;
+            }
+        }
+
+        if (braceCount == 0) {
+            std::string candidate = nodeDesc.substr(pos, lastBrace - pos + 1);
+            llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(candidate);
+            if (parsed) {
+                if (const auto* obj = parsed->getAsObject()) {
+                    auto col = obj->getInteger("cl");
+                    auto line = obj->getInteger("ln");
+                    auto file = obj->getString("fl");
+                    if (col && *col == targetColumn &&
+                        (!line || targetLine <= 0 || *line == targetLine) &&
+                        (!file || filenameMatches(file->str(), targetFilename))) {
+                        return true;
+                    }
+                }
+            } else {
+                llvm::consumeError(parsed.takeError());
+            }
+        }
+
+        if (pos > 0) {
+            lastBrace = nodeDesc.rfind('}', pos - 1);
+        } else {
+            break;
+        }
+    }
+    return false;
+}
+
 static llvm::json::Object buildSVFGNodeJson(const SVFGNode* node) {
     llvm::json::Object obj;
     if (!node) {
@@ -2267,21 +2335,10 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::st
         return makeErrorObject("No ICFG nodes found at location: " + location);
     }
 
-    if (column >= 0) {
-        std::vector<const ICFGNode*> filtered;
-        for (const ICFGNode* node : icfgNodes) {
-            llvm::json::Object locInfo = parseSourceLocation(node->getSourceLoc());
-            if (auto col = locInfo.getInteger("cl")) {
-                if (*col == column) {
-                    filtered.push_back(node);
-                }
-            }
-        }
-        if (filtered.empty()) {
-            return makeErrorObject("No ICFG nodes found at location/column: " + location + ":" + std::to_string(column));
-        }
-        icfgNodes = std::move(filtered);
-    }
+    std::string targetFilename;
+    int64_t targetLine = 0;
+    parseLocationKey(location, targetFilename, targetLine);
+
     std::unordered_set<const ICFGNode*> icfgSet(icfgNodes.begin(), icfgNodes.end());
     std::unordered_set<NodeID> seen;
     struct NodeEntry {
@@ -2308,12 +2365,22 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::st
         nodeObj["svfg_node_id"] = static_cast<int64_t>(nodeId);
         nodeObj["node_type"] = getSVFGNodeKindString(svfgNode, true);
         std::string nodeDesc = svfgNode->toString();
+        if (column >= 0 && !hasMatchingColumnInNodeDesc(nodeDesc, targetFilename, targetLine, column)) {
+            continue;
+        }
         nodeObj["node_desc"] = nodeDesc;
         llvm::json::Object locObj = parseSourceLocation(nodeDesc);
         nodeObj["location"] = formatLocationString(locObj);
         appendLocationFields(nodeObj, locObj);
         nodeObj["llvm_ir"] = getICFGNodeInstructionString(icfgNode);
         entries.push_back({nodeId, std::move(nodeObj)});
+    }
+
+    if (entries.empty()) {
+        if (column >= 0) {
+            return makeErrorObject("No SVFG nodes found at location/column: " + location + ":" + std::to_string(column));
+        }
+        return makeErrorObject("No SVFG nodes found at location: " + location);
     }
 
     std::sort(entries.begin(), entries.end(),
