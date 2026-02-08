@@ -146,6 +146,9 @@ static std::string formatLocationString(const llvm::json::Object& locObj) {
     if (auto fl = locObj.getString("fl")) {
         filename = fl->str();
     }
+    if (filename.empty() && (auto file = locObj.getString("file"))) {
+        filename = file->str();
+    }
     if (auto ln = locObj.getInteger("ln")) {
         line = *ln;
     }
@@ -174,6 +177,9 @@ static std::string formatLocationString(const llvm::json::Object& locObj) {
 static void appendLocationFields(llvm::json::Object& obj, const llvm::json::Object& locObj) {
     if (auto fl = locObj.getString("fl")) {
         obj["filename"] = fl->str();
+    }
+    if (!obj.contains("filename") && (auto file = locObj.getString("file"))) {
+        obj["filename"] = file->str();
     }
     if (auto ln = locObj.getInteger("ln")) {
         obj["line"] = *ln;
@@ -542,8 +548,8 @@ llvm::json::Object parseSourceLocation(const std::string& sourceLocString) {
             llvm::Expected<llvm::json::Value> parsed = llvm::json::parse(candidate);
             if (parsed) {
                 if (const auto* obj = parsed->getAsObject()) {
-                    // Check if this object contains location fields
-                    if (obj->getString("fl") || obj->getInteger("ln")) {
+                    // Check if this object contains location fields (fl/file = filename, ln = line)
+                    if (obj->getString("fl") || obj->getString("file") || obj->getInteger("ln")) {
                         return *obj;
                     }
                 }

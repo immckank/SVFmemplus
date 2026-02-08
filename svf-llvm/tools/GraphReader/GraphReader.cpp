@@ -605,6 +605,9 @@ int main(int argc, char ** argv) {
                     if (auto fl = locObj.getString("fl")) {
                         filename = fl->str();
                     }
+                    if (filename.empty() && (auto file = locObj.getString("file"))) {
+                        filename = file->str();
+                    }
                     if (auto ln = locObj.getInteger("ln")) {
                         line = *ln;
                     }
@@ -627,6 +630,40 @@ int main(int argc, char ** argv) {
                 nodeObj["node_desc"] = nodeDesc;
                 llvm::json::Object locObj = SVF::GraphReaderUtil::parseSourceLocation(nodeDesc);
                 nodeObj["location"] = formatLocationString(locObj);
+                if (auto fl = locObj.getString("fl")) {
+                    nodeObj["filename"] = fl->str();
+                }
+                if (!nodeObj.contains("filename") && (auto file = locObj.getString("file"))) {
+                    nodeObj["filename"] = file->str();
+                }
+                if (auto ln = locObj.getInteger("ln")) {
+                    nodeObj["line"] = *ln;
+                }
+                if (auto cl = locObj.getInteger("cl")) {
+                    nodeObj["column"] = *cl;
+                }
+                if (const ActualParmVFGNode* apNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
+                    const CallICFGNode* cs = apNode->getCallSite();
+                    const PAGNode* param = apNode->getParam();
+                    for (u32_t i = 0; i < cs->arg_size(); ++i) {
+                        if (cs->getArgument(i) == param) {
+                            nodeObj["arg_index"] = static_cast<int64_t>(i);
+                            break;
+                        }
+                    }
+                } else if (const FormalParmVFGNode* fpNode = SVFUtil::dyn_cast<FormalParmVFGNode>(svfgNode)) {
+                    const FunEntryICFGNode* entry = icfg->getFunEntryICFGNode(fpNode->getFun());
+                    if (entry) {
+                        const auto& formalParms = entry->getFormalParms();
+                        const PAGNode* param = fpNode->getParam();
+                        for (size_t i = 0; i < formalParms.size(); ++i) {
+                            if (formalParms[i] == param) {
+                                nodeObj["arg_index"] = static_cast<int64_t>(i);
+                                break;
+                            }
+                        }
+                    }
+                }
 
                 llvm::json::Object result;
                 result["svfg_node"] = std::move(nodeObj);
