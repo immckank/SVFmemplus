@@ -146,8 +146,10 @@ static std::string formatLocationString(const llvm::json::Object& locObj) {
     if (auto fl = locObj.getString("fl")) {
         filename = fl->str();
     }
-    if (filename.empty() && (auto file = locObj.getString("file"))) {
-        filename = file->str();
+    if (filename.empty()) {
+        if (auto file = locObj.getString("file")) {
+            filename = file->str();
+        }
     }
     if (auto ln = locObj.getInteger("ln")) {
         line = *ln;
@@ -178,8 +180,11 @@ static void appendLocationFields(llvm::json::Object& obj, const llvm::json::Obje
     if (auto fl = locObj.getString("fl")) {
         obj["filename"] = fl->str();
     }
-    if (!obj.contains("filename") && (auto file = locObj.getString("file"))) {
-        obj["filename"] = file->str();
+    bool hasFilename = locObj.getString("fl").has_value();
+    if (!hasFilename) {
+        if (auto file = locObj.getString("file")) {
+            obj["filename"] = file->str();
+        }
     }
     if (auto ln = locObj.getInteger("ln")) {
         obj["line"] = *ln;

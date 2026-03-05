@@ -406,7 +406,9 @@ int main(int argc, char ** argv) {
                     sendStringError("Cannot find key svfg nodes for id " + std::to_string(nodeId));
                     continue;
                 }
+                // pq.setFindKeyByIdDebug(true); // debug
                 pq.identifyKeySVFGNodesInFunction(function, startSVFGNode, false, offsets);
+                // pq.setFindKeyByIdDebug(false); // debug
             } else if (cname == "find-call-arg-value-path-inside") {
                 auto loc = cmd.getString("location");
                 auto calleeFuncName = cmd.getString("callee_function_name");
@@ -605,8 +607,10 @@ int main(int argc, char ** argv) {
                     if (auto fl = locObj.getString("fl")) {
                         filename = fl->str();
                     }
-                    if (filename.empty() && (auto file = locObj.getString("file"))) {
-                        filename = file->str();
+                    if (filename.empty()) {
+                        if (auto file = locObj.getString("file")) {
+                            filename = file->str();
+                        }
                     }
                     if (auto ln = locObj.getInteger("ln")) {
                         line = *ln;
@@ -633,8 +637,11 @@ int main(int argc, char ** argv) {
                 if (auto fl = locObj.getString("fl")) {
                     nodeObj["filename"] = fl->str();
                 }
-                if (!nodeObj.contains("filename") && (auto file = locObj.getString("file"))) {
-                    nodeObj["filename"] = file->str();
+                bool hasFilename = locObj.getString("fl").has_value();
+                if (!hasFilename) {
+                    if (auto file = locObj.getString("file")) {
+                        nodeObj["filename"] = file->str();
+                    }
                 }
                 if (auto ln = locObj.getInteger("ln")) {
                     nodeObj["line"] = *ln;

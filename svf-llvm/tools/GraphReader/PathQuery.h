@@ -155,6 +155,9 @@ public:
         bool isTool = true,
         const std::vector<std::string>& offsets = {}
     );
+    
+    // debug: enable verbose tracing for find-key-svfgnode-by-id command
+    void setFindKeyByIdDebug(bool enabled) { findKeyByIdDebugEnabled = enabled; }
 
     /*!
      * \brief Finds key SVFG nodes for a left value at a specific location and equation position.
@@ -205,6 +208,7 @@ private:
     ICFG* icfg;
     SVFIR* pag;
     SaberCheckerAPI* saberApi;
+    bool findKeyByIdDebugEnabled = false; // debug
 };
 
 /*!

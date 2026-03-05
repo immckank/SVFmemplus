@@ -26,6 +26,7 @@
 #include <iostream>
 #include <map>
 #include <queue>
+#include <sstream>
 #include <set>
 
 namespace SVF {
@@ -2628,16 +2629,55 @@ bool PathQuery::isLvarReachesReturn(SVFG* svfg, SVFIR* pag, const PAGNode* pagNo
 
 std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObjVar* function, const SVFGNode* startSVFGNode, bool isTool, const std::vector<std::string>& offsets) {
     std::set<const SVFGNode*> result;
+    auto debugLog = [&](const std::string& msg) { // debug
+        if (findKeyByIdDebugEnabled) {
+            SVFUtil::errs() << "[find-key-debug] " << msg << "\n";
+        }
+    };
+    auto formatNode = [&](const SVFGNode* node) -> std::string { // debug
+        if (!node) {
+            return "null";
+        }
+        std::string kind = GraphReaderUtil::getSVFGNodeKindString(node, true);
+        std::string loc = "no-loc";
+        llvm::json::Object locObj = GraphReaderUtil::parseSourceLocation(node->toString());
+        if (auto fl = locObj.getString("fl")) {
+            if (auto ln = locObj.getInteger("ln")) {
+                loc = fl->str() + ":" + std::to_string(*ln);
+                if (auto cl = locObj.getInteger("cl")) {
+                    loc += ":" + std::to_string(*cl);
+                }
+            }
+        }
+        return kind + "#" + std::to_string(node->getId()) + "@" + loc;
+    };
+    auto joinOffsets = [&](const std::vector<std::string>& items) -> std::string { // debug
+        std::ostringstream oss;
+        for (size_t i = 0; i < items.size(); ++i) {
+            if (i != 0) {
+                oss << ",";
+            }
+            oss << items[i];
+        }
+        return oss.str();
+    };
     
     // Validate inputs
     if (!function || !startSVFGNode || !svfg || !pag) {
+        debugLog("early-return: invalid input (null function/startSVFGNode/svfg/pag)"); // debug
         return result;
     }
     
     // Validate that start node belongs to the function
     if (startSVFGNode->getFun() != function) {
+        debugLog("early-return: start node function mismatch, start=" + formatNode(startSVFGNode) + // debug
+                 ", startFun=" + (startSVFGNode->getFun() ? startSVFGNode->getFun()->getName() : "null") +
+                 ", requiredFun=" + function->getName());
         return result;
     }
+    debugLog("begin identifyKeySVFGNodesInFunction: start=" + formatNode(startSVFGNode) + // debug
+             ", function=" + function->getName() +
+             ", offsets=[" + joinOffsets(offsets) + "]");
     
     // Step 1: BFS Collection - collect all reachable SVFG nodes within the function
     Set<const SVFGNode*> allReachableNodes;
@@ -2660,18 +2700,22 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
         
         // Get current offset match index for this node
         size_t currentMatchIndex = nodeOffsetMatchIndex[currentNode];
+        debugLog("BFS pop: node=" + formatNode(currentNode) + // debug
+                 ", matchedOffsets=" + std::to_string(currentMatchIndex) + "/" + std::to_string(offsets.size()));
         
         // Traverse all out-edges
         for (const SVFGEdge* edge : currentNode->getOutEdges()) {
             const SVFGNode* nextNode = edge->getDstNode();
             // Only include nodes that belong to the specified function
             if (nextNode->getFun() != function) {
+                debugLog("BFS skip-cross-function: " + formatNode(currentNode) + " -> " + formatNode(nextNode)); // debug
                 continue;
             }
             
             // Check if offsets filtering is enabled (non-empty offsets list)
             bool shouldIncludeNode = true;
             size_t nextMatchIndex = currentMatchIndex;
+            std::string skipReason; // debug
             
             if (!offsets.empty()) {
                 // Check if next node is a GEP node
@@ -2718,22 +2762,32 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                                 // Match found: increment match index
                                 nextMatchIndex = currentMatchIndex + 1;
                                 shouldIncludeNode = true;
+                                debugLog("BFS offset-match: next=" + formatNode(nextNode) + // debug
+                                         ", expected=" + expectedOffset +
+                                         ", flattened=" + flattenedOffsetStr +
+                                         ", original=" + (originalFieldIdxStr.empty() ? "n/a" : originalFieldIdxStr) +
+                                         ", nextMatchedOffsets=" + std::to_string(nextMatchIndex));
                             } else {
                                 // Offset doesn't match: 
                                 // 1. Don't include this GEP node (shouldIncludeNode = false)
                                 // 2. Don't explore from it (won't be added to worklist)
                                 // 3. Effectively "retreat" to the node before this GEP
                                 shouldIncludeNode = false;
+                                skipReason = "offset-mismatch(expected=" + expectedOffset +
+                                             ", flattened=" + flattenedOffsetStr +
+                                             ", original=" + (originalFieldIdxStr.empty() ? "n/a" : originalFieldIdxStr) + ")";
                             }
                         } else {
                             // All offsets already matched: skip additional GEP nodes
                             // This GEP node should not be included
                             shouldIncludeNode = false;
+                            skipReason = "extra-gep-after-all-offsets-matched";
                         }
                     } else {
                         // Non-constant or variant GEP: treat as non-matching
                         // Don't include this GEP node
                         shouldIncludeNode = false;
+                        skipReason = "non-constant-or-variant-gep";
                     }
                 } else {
                     // Non-GEP node: preserve current match index
@@ -2753,15 +2807,29 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                     // New node: add to worklist and track match index
                     nodeOffsetMatchIndex[nextNode] = nextMatchIndex;
                     worklist.push(nextNode);
+                    debugLog("BFS include+enqueue: " + formatNode(currentNode) + " -> " + formatNode(nextNode) + // debug
+                             ", matchedOffsets=" + std::to_string(nextMatchIndex) + "/" + std::to_string(offsets.size()));
                 }
                 // If node already exists, we don't need to process it again
                 // (it was already added via another valid path)
+                else {
+                    debugLog("BFS include-already-visited: " + formatNode(currentNode) + " -> " + formatNode(nextNode)); // debug
+                }
             }
             // If shouldIncludeNode is false (mismatched GEP), we skip this node entirely
             // This effectively "retreats" to the node before the GEP, and the GEP node itself
             // will not be included in the results
+            else {
+                if (skipReason.empty()) {
+                    skipReason = "filtered-by-offset-rule";
+                }
+                debugLog("BFS excluded: " + formatNode(currentNode) + " -> " + formatNode(nextNode) + // debug
+                         ", reason=" + skipReason +
+                         ", matchedOffsets=" + std::to_string(currentMatchIndex) + "/" + std::to_string(offsets.size()));
+            }
         }
     }
+    debugLog("BFS done: reachable_nodes=" + std::to_string(allReachableNodes.size())); // debug
     
     // Step 2: Compute dependencies - extract LHS pointer nodes from start node
     // Distinguish between base pointers (non-GEP) and GEP pointers
@@ -2792,6 +2860,13 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
             }
         }
     }
+    if (!pta) {
+        debugLog("dependency-setup: PTA is null"); // debug
+    } else {
+        debugLog("dependency-setup: lhsPointers=" + std::to_string(startNodeLHSPointers.size()) + // debug
+                 ", lhsBasePointers=" + std::to_string(startNodeLHSBasePointers.size()) +
+                 ", lhsGepPointers=" + std::to_string(startNodeLHSGepPointers.size()));
+    }
     
     // Get the map of function names to their distance to free functions
     // Distance: 0 = free function itself, 1 = directly calls free, 2+ = indirectly calls free
@@ -2805,6 +2880,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
     // Step 3.1: Pre-process ActualParmVFGNode nodes to collect them by function
     for (const SVFGNode* svfgNode : allReachableNodes) {
         if (const ActualParmVFGNode* actualParmNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
+            debugLog("ActualParm preprocess: visit " + formatNode(actualParmNode)); // debug
             // Check if parameter can reach our concerned variables
             bool canReachConcernedVar = false;
             std::vector<const LoadVFGNode*> connectedLoads;
@@ -2814,20 +2890,27 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                     connectedLoads.push_back(loadNode);
                 }
             }
+            debugLog("ActualParm preprocess: node=" + std::to_string(actualParmNode->getId()) + // debug
+                     ", connectedLoads=" + std::to_string(connectedLoads.size()));
             for (const LoadVFGNode* loadNode : connectedLoads) {
                 const SVFStmt* stmt = loadNode->getPAGEdge();
                 const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(stmt);
                 if (!loadStmt) {
+                    debugLog("ActualParm preprocess: load " + std::to_string(loadNode->getId()) + " has non-LoadStmt"); // debug
                     continue;
                 }
                 const SVFVar* rhsVar = loadStmt->getRHSVar();
                 if (!rhsVar) {
+                    debugLog("ActualParm preprocess: load " + std::to_string(loadNode->getId()) + " rhsVar is null"); // debug
                     continue;
                 }
                 NodeID rhsNodeId = rhsVar->getId();
                 for (NodeID lhsPtrId : startNodeLHSPointers) {
                     if (isValueFlowReachable(rhsNodeId, lhsPtrId)) {
                         canReachConcernedVar = true;
+                        debugLog("ActualParm preprocess: reachable via load=" + std::to_string(loadNode->getId()) + // debug
+                                 ", rhs=" + std::to_string(rhsNodeId) +
+                                 ", lhsPtr=" + std::to_string(lhsPtrId));
                         break;
                     }
                 }
@@ -2844,6 +2927,8 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                     if (directCallee) {
                         // Direct call: group by function name
                         actualParmNodesByFunction[directCallee->getName()].push_back(actualParmNode);
+                        debugLog("ActualParm preprocess: keep node=" + std::to_string(actualParmNode->getId()) + // debug
+                                 ", groupedBy=direct:" + directCallee->getName());
                     } else {
                         // Indirect call: check all possible callees and group by each callee
                         const CallGraph* callGraph = pag->getCallGraph();
@@ -2853,23 +2938,36 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                             for (const FunObjVar* callee : callees) {
                                 if (callee) {
                                     actualParmNodesByFunction[callee->getName()].push_back(actualParmNode);
+                                    debugLog("ActualParm preprocess: keep node=" + std::to_string(actualParmNode->getId()) + // debug
+                                             ", groupedBy=indirect:" + callee->getName());
                                 }
                             }
                             // If no callees found, use call site as key
                             if (callees.empty()) {
                                 std::string callSiteKey = callSite->toString();
                                 actualParmNodesByFunction[callSiteKey].push_back(actualParmNode);
+                                debugLog("ActualParm preprocess: keep node=" + std::to_string(actualParmNode->getId()) + // debug
+                                         ", groupedBy=callsite-fallback");
                             }
                         } else {
                             // No call graph: use call site as key
                             std::string callSiteKey = callSite->toString();
                             actualParmNodesByFunction[callSiteKey].push_back(actualParmNode);
+                            debugLog("ActualParm preprocess: keep node=" + std::to_string(actualParmNode->getId()) + // debug
+                                     ", groupedBy=no-callgraph-fallback");
                         }
                     }
+                } else {
+                    debugLog("ActualParm preprocess: drop node=" + std::to_string(actualParmNode->getId()) + // debug
+                             ", reason=no-callsite");
                 }
+            } else {
+                debugLog("ActualParm preprocess: drop node=" + std::to_string(actualParmNode->getId()) + // debug
+                         ", reason=cannot-reach-concerned-var");
             }
         }
     }
+    debugLog("ActualParm preprocess done: groups=" + std::to_string(actualParmNodesByFunction.size())); // debug
     
     // Step 3.2: Calculate minimum distance to free for each ActualParmVFGNode
     // Distance: 0 = free function itself, 1 = directly calls free, 2+ = indirectly calls free
@@ -2882,6 +2980,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
         if (nodes.empty()) {
             continue;
         }
+        debugLog("Distance phase: group=" + funcName + ", nodes=" + std::to_string(nodes.size())); // debug
         
         // Get distance for this function from the map
         int funcDistance = -1;  // -1 = not found (doesn't call free)
@@ -2905,6 +3004,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                 }
             }
         }
+        debugLog("Distance phase: group=" + funcName + ", funcDistance=" + std::to_string(funcDistance)); // debug
         
         // For each node in this function's group, calculate its minimum distance
         for (const ActualParmVFGNode* node : nodes) {
@@ -2966,7 +3066,11 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                 auto it = nodeDistances.find(node);
                 if (it == nodeDistances.end() || nodeDistance < it->second) {
                     nodeDistances[node] = nodeDistance;
+                    debugLog("Distance phase: node=" + std::to_string(node->getId()) + // debug
+                             ", assignDistance=" + std::to_string(nodeDistance));
                 }
+            } else {
+                debugLog("Distance phase: node=" + std::to_string(node->getId()) + ", no-distance-to-free"); // debug
             }
         }
     }
@@ -2979,6 +3083,8 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
             globalMinDistance = distance;
         }
     }
+    debugLog("Distance phase done: nodesWithDistance=" + std::to_string(nodeDistances.size()) + // debug
+             ", globalMinDistance=" + std::to_string(globalMinDistance));
     
     // Build final selected set: only include nodes with global minimum distance
     std::set<const ActualParmVFGNode*> selectedActualParms;
@@ -2986,33 +3092,46 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
         for (const auto& [node, distance] : nodeDistances) {
             if (distance == globalMinDistance) {
                 selectedActualParms.insert(node);
+                debugLog("ActualParm selected: node=" + std::to_string(node->getId()) + // debug
+                         ", distance=" + std::to_string(distance));
             }
         }
     }
+    debugLog("ActualParm selected count=" + std::to_string(selectedActualParms.size())); // debug
     
     // Step 3.3: Apply filtering logic - iterate through all collected nodes
     for (const SVFGNode* svfgNode : allReachableNodes) {
         bool shouldHideInOutput = false;
+        std::string hideReason = "kept"; // debug
         
         // Filter out pure control-flow nodes (don't affect data/memory)
         if (SVFUtil::isa<BranchVFGNode>(svfgNode)) {
             shouldHideInOutput = true;
+            hideReason = "filtered:BranchVFGNode";
         } else if (SVFUtil::isa<NullPtrSVFGNode>(svfgNode)) {
             shouldHideInOutput = true;
+            hideReason = "filtered:NullPtrSVFGNode";
         } else if (SVFUtil::isa<DummyVersionPropSVFGNode>(svfgNode)) {
             shouldHideInOutput = true;
+            hideReason = "filtered:DummyVersionPropSVFGNode";
         } else if (SVFUtil::isa<BinaryOPVFGNode>(svfgNode)) {
             shouldHideInOutput = true;
+            hideReason = "filtered:BinaryOPVFGNode";
         } else if (SVFUtil::isa<UnaryOPVFGNode>(svfgNode)) {
             shouldHideInOutput = true;
+            hideReason = "filtered:UnaryOPVFGNode";
         } else if (SVFUtil::isa<CmpVFGNode>(svfgNode)) {
             shouldHideInOutput = true;
+            hideReason = "filtered:CmpVFGNode";
         } else if (SVFUtil::isa<IntraMSSAPHISVFGNode>(svfgNode)) {
             shouldHideInOutput = true;
+            hideReason = "filtered:IntraMSSAPHISVFGNode";
         } else if (SVFUtil::isa<LoadVFGNode>(svfgNode)) {
             shouldHideInOutput = true;
+            hideReason = "filtered:LoadVFGNode";
         } else if (SVFUtil::isa<CopyVFGNode>(svfgNode)) {
             shouldHideInOutput = true;
+            hideReason = "filtered:CopyVFGNode";
         } else if (const ActualINSVFGNode* actualInNode = SVFUtil::dyn_cast<ActualINSVFGNode>(svfgNode)) {
             std::vector<const StoreSVFGNode*> connectedStores;
             std::vector<const MSSAPHISVFGNode*> connectedMPHI;
@@ -3146,9 +3265,11 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                     // If the function cannot call free, hide this node
                     if (!canCallFree) {
                         shouldHideInOutput = true;
+                        hideReason = "filtered:ActualIN-callee-cannot-call-free";
                     } else {
                         // If the function can call free, we should not hide it
                         shouldHideInOutput = false;
+                        hideReason = "kept:ActualIN-callee-can-call-free";
                     }
                 }
             }
@@ -3156,6 +3277,14 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
             // Use the pre-selected nodes based on priority
             // If this node is in selectedActualParms, keep it; otherwise hide it
             shouldHideInOutput = (selectedActualParms.find(actualParmNode) == selectedActualParms.end());
+            auto distanceIt = nodeDistances.find(actualParmNode); // debug
+            std::string distanceStr = (distanceIt == nodeDistances.end()) ? "none" : std::to_string(distanceIt->second); // debug
+            if (shouldHideInOutput) {
+                hideReason = "filtered:ActualParm-not-selected(distance=" + distanceStr + // debug
+                             ", globalMin=" + std::to_string(globalMinDistance) + ")";
+            } else {
+                hideReason = "kept:ActualParm-selected(distance=" + distanceStr + ")"; // debug
+            }
         } else if (const GepVFGNode* gepNode = SVFUtil::dyn_cast<GepVFGNode>(svfgNode)) {
             // Filter out GEP operations on array objects
             // This operation doesn't affect memory ownership
@@ -3184,8 +3313,10 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                     shouldHideInOutput = false;
                 } else if (isArrayFromAccessPath) {
                     shouldHideInOutput = true;
+                    hideReason = "filtered:GEP-array-accesspath";
                 } else {
                     shouldHideInOutput = true;
+                    hideReason = "filtered:GEP-non-struct";
                 }
                 
                 // Only continue with base object checks if not already filtered
@@ -3229,6 +3360,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                             shouldHideInOutput = false;
                         } else if (baseObj->isArray()) {
                             shouldHideInOutput = true;
+                            hideReason = "filtered:GEP-array-baseobj";
                         }
                     } else {
                         // Try to check type from LHS node directly
@@ -3283,6 +3415,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                         
                         if (isArrayType) {
                             shouldHideInOutput = true;
+                            hideReason = "filtered:GEP-array-llvm-type";
                         }
                     }
                 } // End of base object checks
@@ -3428,6 +3561,8 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
 
                     if (shouldFilterDueToBasePointer || !isRelatedToStart) {
                         shouldHideInOutput = true;
+                        hideReason = shouldFilterDueToBasePointer ? "filtered:GEP-derived-from-start-base-pointer" // debug
+                                                                  : "filtered:GEP-not-related-to-start";
                     }
                 }
             }
@@ -3439,6 +3574,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                 // Only hide if left value neither reaches formal parameter nor reaches return value
                 if (!reachesFormalParm && !reachesReturn) {
                     shouldHideInOutput = true;
+                    hideReason = "filtered:Store-not-reaching-formal-or-return";
                 }
             }
             
@@ -3449,6 +3585,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                 if (srcNode) {
                     if (!srcNode->isPointer()) {
                         shouldHideInOutput = true;
+                        hideReason = "filtered:Store-src-not-pointer";
                     } else if (pta && !startNodeLHSPointers.empty()) {
                         bool hasAlias = false;
                         for (NodeID lhsPtrId : startNodeLHSPointers) {
@@ -3470,6 +3607,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                         
                         if (!hasAlias && !hasValueFlow) {
                             shouldHideInOutput = true;
+                            hideReason = "filtered:Store-src-no-alias-no-valueflow-to-start";
                         }
                     }
                 }
@@ -3480,7 +3618,11 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
         if (!shouldHideInOutput) {
             result.insert(svfgNode);
         }
+        debugLog("Final filter: node=" + formatNode(svfgNode) + // debug
+                 ", decision=" + (shouldHideInOutput ? "drop" : "keep") +
+                 ", reason=" + hideReason);
     }
+    debugLog("Final result count=" + std::to_string(result.size())); // debug
     
     // If not a tool function, output JSON format
     if (!isTool) {
