@@ -21,6 +21,14 @@ class SaberCondAllocator;
 
 namespace GraphReaderUtil {
 
+    struct SourceLocation {
+        std::string fl;
+        int64_t ln = 0;
+        int64_t cl = -1;
+
+        bool isValid() const { return !fl.empty() && ln > 0; }
+    };
+
     /// Register a global SaberCondAllocator instance for debug utilities
     void setSaberCondAllocator(SaberCondAllocator* allocator);
 
@@ -34,6 +42,7 @@ namespace GraphReaderUtil {
      * \return A const pointer to the matched ICFGNode, or nullptr if not found.
      */
     const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& location);
+    const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const SourceLocation& location);
 
     /*!
      * \brief Finds ALL ICFGNodes matching a source code location string.
@@ -42,6 +51,7 @@ namespace GraphReaderUtil {
      * \return A vector of all matching ICFGNodes.
      */
     std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const std::string& location);
+    std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const SourceLocation& location);
  
 
     /*!
@@ -49,6 +59,9 @@ namespace GraphReaderUtil {
      * This is a robust replacement for the old manual string parsing.
      */
     llvm::json::Object parseSourceLocation(const std::string& sourceLocString);
+    SourceLocation parseSourceLocationStruct(const std::string& sourceLocString);
+    llvm::json::Object toJson(const SourceLocation& location, bool includeAliases = true);
+    std::string toString(const SourceLocation& location);
 
     /*!
      * \brief Converts SVFGNode kind to a string representation.
@@ -85,9 +98,9 @@ namespace GraphReaderUtil {
      * \param location A string in "filename:line" format.
      * \return A llvm::json::Object with location and store_cl array containing column numbers.
      */
-    llvm::json::Object getStoreClInfoJson(SVFG* svfg, ICFG* icfg, const std::string& location);
+    llvm::json::Object getStoreClInfoJson(SVFG* svfg, ICFG* icfg, const SourceLocation& location);
 
-    llvm::json::Object getGepClInfoJson(SVFG* svfg, ICFG* icfg, const std::string& location);
+    llvm::json::Object getGepClInfoJson(SVFG* svfg, ICFG* icfg, const SourceLocation& location);
 
     /// Parse a JSON string into a list of command objects.
     /// Supports: an array of objects; a single object; or an object with a
@@ -114,7 +127,7 @@ namespace GraphReaderUtil {
      * \param eqPosition The equation position (column) to match.
      * \return A const pointer to the LHS PAGNode, or nullptr if not found.
      */
-    const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition);
+    const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const SourceLocation& location, int eqPosition);
 
     /*!
      * \brief Gets the base PAGNode from a GEP operation at a source location and equation position.
@@ -126,7 +139,7 @@ namespace GraphReaderUtil {
      * \param eqPosition The equation position (column) to match.
      * \return A const pointer to the base PAGNode, or nullptr if not found.
      */
-    const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition);
+    const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const SourceLocation& location, int eqPosition);
 
     /*!
      * \brief Gets the PAGNode for a call argument at a specific location.
@@ -136,7 +149,7 @@ namespace GraphReaderUtil {
      * \param argIndex The argument index (0-based).
      * \return A const pointer to the PAGNode of the argument, or nullptr if not found.
      */
-    const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex, const std::string& functionName = "");
+    const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const SourceLocation& location, int argIndex, const std::string& functionName = "");
 
 
     /*!
@@ -192,7 +205,7 @@ namespace GraphReaderUtil {
      * \param calleeFunctionName The callee function name.
      * \return A JSON object with "actual_args" or "error" (string) on failure.
      */
-    llvm::json::Object listCallsiteActualArgNodes(SVFG* svfg, ICFG* icfg, const std::string& location, const std::string& calleeFunctionName);
+    llvm::json::Object listCallsiteActualArgNodes(SVFG* svfg, ICFG* icfg, const SourceLocation& location, const std::string& calleeFunctionName);
 
     /*!
      * \brief Finds the return-value SVFG node at a callsite.
@@ -202,7 +215,7 @@ namespace GraphReaderUtil {
      * \param calleeFunctionName The callee function name.
      * \return A JSON object with "return_node" or "error" (string) on failure.
      */
-    llvm::json::Object findCallsiteReturnNode(SVFG* svfg, ICFG* icfg, const std::string& location, const std::string& calleeFunctionName);
+    llvm::json::Object findCallsiteReturnNode(SVFG* svfg, ICFG* icfg, const SourceLocation& location, const std::string& calleeFunctionName);
 
     /*!
      * \brief Lists all SVFG nodes bound to a given source code line.
@@ -211,7 +224,7 @@ namespace GraphReaderUtil {
      * \param location A string in "filename:line" format.
      * \return A JSON object with "svfg_nodes" or "error" (string) on failure.
      */
-    llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::string& location, int64_t column = -1);
+    llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const SourceLocation& location, int64_t column = -1);
 
     /*!
      * \brief Traces a call argument's value flow and finds its definition point.
@@ -238,7 +251,7 @@ namespace GraphReaderUtil {
     llvm::json::Object analyzeStoreLValue(SVFG* svfg,
                                           ICFG* icfg,
                                           SVFIR* pag,
-                                          const std::string& location,
+                                          const SourceLocation& location,
                                           int eqPosition);
 
     /*!

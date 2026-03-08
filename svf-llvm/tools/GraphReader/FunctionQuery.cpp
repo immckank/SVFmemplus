@@ -33,16 +33,19 @@ void SVF::FunctionQuery::findCallSites(const std::string& functionName) {
                     const FunObjVar* svfFun = calleeEntryNode->getFun();
                     if (svfFun && svfFun->getName() == functionName) {
                         llvm::json::Object site;
-                        std::string locString = callNode->getSourceLoc();
-                        std::string formattedLoc = "unknown";
-
-                        llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
+                        llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(callNode->getSourceLoc());
                         if (auto file = locInfo.getString("fl")) {
-                            if (auto line = locInfo.getInteger("ln")) {
-                                formattedLoc = file->str() + ":" + std::to_string(*line);
-                            }
+                            site["fl"] = file->str();
+                            site["filename"] = file->str();
                         }
-                        site["location"] = formattedLoc;
+                        if (auto line = locInfo.getInteger("ln")) {
+                            site["ln"] = *line;
+                            site["line"] = *line;
+                        }
+                        if (auto col = locInfo.getInteger("cl")) {
+                            site["cl"] = *col;
+                            site["column"] = *col;
+                        }
                         callSites.push_back(std::move(site));
                         reportedCallSites.insert(callNode);
                         break;
@@ -57,7 +60,7 @@ void SVF::FunctionQuery::findCallSites(const std::string& functionName) {
     llvm::outs().flush();
 }
 
-void SVF::FunctionQuery::findCalleeBodyByLocation(const std::string& location) {
+void SVF::FunctionQuery::findCalleeBodyByLocation(const GraphReaderUtil::SourceLocation& location) {
     llvm::json::Object result;
     llvm::json::Array calleeFunctions;
 
@@ -91,7 +94,7 @@ void SVF::FunctionQuery::findCalleeBodyByLocation(const std::string& location) {
     llvm::outs().flush();
 }
 
-void SVF::FunctionQuery::findFunctionBodyByLocation(const std::string& location) {
+void SVF::FunctionQuery::findFunctionBodyByLocation(const GraphReaderUtil::SourceLocation& location) {
     llvm::json::Object result;
     const ICFGNode* node = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
     if (!node) {
@@ -354,14 +357,14 @@ void SVF::FunctionQuery::checkFunctionAlwaysReturn(const std::string& functionNa
     emitResult(true, "");
 }
 
-void SVF::FunctionQuery::checkReturnPointer(const std::string& location) {
+void SVF::FunctionQuery::checkReturnPointer(const GraphReaderUtil::SourceLocation& location) {
     llvm::json::Object result;
     
     // Find all ICFG nodes at this location
     std::vector<const ICFGNode*> nodes = GraphReaderUtil::findAllICFGNodesByLocation(icfg, location);
     
     if (nodes.empty()) {
-        GraphReaderUtil::sendJsonError("Could not find any ICFGNode at the given location: " + location);
+        GraphReaderUtil::sendJsonError("Could not find any ICFGNode at the given location: " + GraphReaderUtil::toString(location));
         return;
     }
     
@@ -375,7 +378,7 @@ void SVF::FunctionQuery::checkReturnPointer(const std::string& location) {
     }
     
     if (!targetFunction) {
-        GraphReaderUtil::sendJsonError("Could not determine the function at location: " + location);
+        GraphReaderUtil::sendJsonError("Could not determine the function at location: " + GraphReaderUtil::toString(location));
         return;
     }
     
@@ -467,7 +470,7 @@ void SVF::FunctionQuery::checkReturnPointer(const std::string& location) {
     bool returnsPointer = functionCanReturnPointer && locationHasPointerOperation;
     
     // Prepare result
-    result["location"] = location;
+    result = GraphReaderUtil::toJson(location);
     result["function_name"] = targetFunction->getName();
     result["function_can_return_pointer"] = functionCanReturnPointer;
     result["location_has_pointer_operation"] = locationHasPointerOperation;

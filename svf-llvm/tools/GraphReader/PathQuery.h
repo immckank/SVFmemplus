@@ -1,6 +1,7 @@
 #ifndef PATH_QUERY_H
 #define PATH_QUERY_H
 
+#include "GraphReaderUtil.h"
 #include "Graphs/ICFG.h"
 #include "Graphs/SVFG.h"
 #include "SABER/SaberCheckerAPI.h"
@@ -37,15 +38,17 @@ public:
      * For each path, it reports conditional branches and any unreturned function calls.
      * The output is in JSON format.
      *
-     * \param startLocation The starting source location string (e.g., "file.c:123").
-     * \param targetLocation The target source location string.
+     * \param startLocation The starting source location.
+     * \param targetLocation The target source location.
      */
-    void getConditionPath(const std::string& startLocation, const std::string& targetLocation);
+    void getConditionPath(const GraphReaderUtil::SourceLocation& startLocation,
+                          const GraphReaderUtil::SourceLocation& targetLocation);
 
-    void getConditionInsidePath(const std::string& startLocation, const std::string& targetLocation);
+    void getConditionInsidePath(const GraphReaderUtil::SourceLocation& startLocation,
+                                const GraphReaderUtil::SourceLocation& targetLocation);
 
     //得到当前位置行代码的最近约束条件 如果没有返回no constrain
-    void getConstrain(const std::string& location);
+    void getConstrain(const GraphReaderUtil::SourceLocation& location);
 
     /*!
      * \brief Collects branch constraints from a function's entry to a target location.
@@ -57,7 +60,7 @@ public:
      *
      * \param location Target source location string (e.g., "file.c:123").
      */
-    void getConstrainInside(const std::string& location);
+    void getConstrainInside(const GraphReaderUtil::SourceLocation& location);
 
     /*!
      * \brief Finds all ICFG paths from a location to all function return locations.
@@ -83,7 +86,7 @@ public:
      * \param startLocation Source code location string (e.g., "file.c:123").
      * \param targetPAG The PAG node representing the variable of interest.
      */
-    void getValueSensitiveReturnInsidePath(const std::string& startLocation,
+    void getValueSensitiveReturnInsidePath(const GraphReaderUtil::SourceLocation& startLocation,
                                            const std::vector<const SVFGNode*>& startSVFGNodes);
 
     /*!
@@ -96,7 +99,7 @@ public:
      * \param startLocation Source code location string (e.g., "file.c:123").
      * \param startSVFGNodes Optional vector of starting SVFG nodes.
      */
-    void getValueSensitiveReturnInsidePathDetailed(const std::string& startLocation,
+    void getValueSensitiveReturnInsidePathDetailed(const GraphReaderUtil::SourceLocation& startLocation,
                                                    const std::vector<const SVFGNode*>& startSVFGNodes);
 
     void findICFGPaths(const ICFGNode* startICFG,
@@ -170,7 +173,7 @@ public:
      * \param eqPosition The equation position (column) to match.
      * \param offsets Optional list of GEP offsets to filter nodes (e.g., ["1", "2"]).
      */
-    void findLvalueKeySVFGNodes(const std::string& location, int eqPosition, const std::vector<std::string>& offsets = {});
+    void findLvalueKeySVFGNodes(const GraphReaderUtil::SourceLocation& location, int eqPosition, const std::vector<std::string>& offsets = {});
 
     /*!
      * \brief Finds key SVFG nodes for a formal parameter at a specific function and argument index.
@@ -197,7 +200,7 @@ public:
      * \param argIndex The argument index (0-based) of the actual parameter.
      * \param offsets Optional list of GEP offsets to filter nodes (e.g., ["1", "2"]).
      */
-    void findActualArgKeySVFGNodes(const std::string& location, const std::string& calleeFunctionName, int argIndex, const std::vector<std::string>& offsets = {});
+    void findActualArgKeySVFGNodes(const GraphReaderUtil::SourceLocation& location, const std::string& calleeFunctionName, int argIndex, const std::vector<std::string>& offsets = {});
 
 private:
 

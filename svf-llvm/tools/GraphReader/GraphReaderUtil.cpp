@@ -19,8 +19,9 @@
 #include <limits>
 #include <map>
 #include <queue>
-#include <unordered_set>
+#include <regex>
 #include <set>
+#include <unordered_set>
 
 namespace SVF {
 namespace GraphReaderUtil {
@@ -59,7 +60,21 @@ static std::string resolveCalleeName(const llvm::CallBase* callInst) {
     return "";
 }
 
-static const CallICFGNode* selectCallICFGNode(ICFG* icfg, const std::string& location,  const std::string& functionName) {
+static bool parseLocationKey(const std::string& location, std::string& filename, int64_t& line) {
+    size_t colonPos = location.find(':');
+    if (colonPos == std::string::npos) {
+        return false;
+    }
+    filename = location.substr(0, colonPos);
+    try {
+        line = std::stoll(location.substr(colonPos + 1));
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
+static const CallICFGNode* selectCallICFGNode(ICFG* icfg, const SourceLocation& location,  const std::string& functionName) {
     // TODO: 
     // 这个函数依旧有缺陷 如果这个一行处多次调用了同名函数应该怎么处理
     std::vector<const ICFGNode*> allNodes = findAllICFGNodesByLocation(icfg, location);
@@ -85,7 +100,7 @@ static const CallICFGNode* selectCallICFGNode(ICFG* icfg, const std::string& loc
 
     if (candidates.empty()) {
         SVF::SVFUtil::errs() << "[GraphReaderUtil] No CallICFGNode found at location '"
-                             << location << "'\n";
+                             << toString(location) << "'\n";
         return nullptr;
     }
 
@@ -99,7 +114,7 @@ static const CallICFGNode* selectCallICFGNode(ICFG* icfg, const std::string& loc
 
     if (!matchedNode) {
         SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not find call to '" << functionName
-                             << "' at location '" << location << "'. Available callees:";
+                             << "' at location '" << toString(location) << "'. Available callees:";
         for (const auto& candidate : candidates) {
             SVF::SVFUtil::errs() << " '"
                                  << (candidate.calleeName.empty() ? std::string("<unknown>") : candidate.calleeName)
@@ -138,74 +153,30 @@ static llvm::json::Object makeErrorObject(const std::string& message) {
     return obj;
 }
 
-static std::string formatLocationString(const llvm::json::Object& locObj) {
-    std::string filename;
-    int64_t line = 0;
-    int64_t column = 0;
-
-    if (auto fl = locObj.getString("fl")) {
-        filename = fl->str();
-    }
-    if (filename.empty()) {
-        if (auto file = locObj.getString("file")) {
-            filename = file->str();
-        }
-    }
-    if (auto ln = locObj.getInteger("ln")) {
-        line = *ln;
-    }
-    if (auto cl = locObj.getInteger("cl")) {
-        column = *cl;
-    }
-
-    if (filename.empty() && line == 0 && column == 0) {
-        return "";
-    }
-    if (filename.empty() && column == 0) {
-        return std::to_string(line);
-    }
-    if (filename.empty()) {
-        return std::to_string(line) + ":" + std::to_string(column);
-    }
-    if (line == 0) {
-        return filename;
-    }
-    if (column == 0) {
-        return filename + ":" + std::to_string(line);
-    }
-    return filename + ":" + std::to_string(line) + ":" + std::to_string(column);
-}
-
 static void appendLocationFields(llvm::json::Object& obj, const llvm::json::Object& locObj) {
     if (auto fl = locObj.getString("fl")) {
+        obj["fl"] = fl->str();
         obj["filename"] = fl->str();
     }
     bool hasFilename = locObj.getString("fl").has_value();
     if (!hasFilename) {
         if (auto file = locObj.getString("file")) {
+            obj["fl"] = file->str();
             obj["filename"] = file->str();
         }
     }
     if (auto ln = locObj.getInteger("ln")) {
+        obj["ln"] = *ln;
         obj["line"] = *ln;
     }
     if (auto cl = locObj.getInteger("cl")) {
+        obj["cl"] = *cl;
         obj["column"] = *cl;
     }
 }
 
-static bool parseLocationKey(const std::string& location, std::string& filename, int64_t& line) {
-    size_t colonPos = location.find(':');
-    if (colonPos == std::string::npos) {
-        return false;
-    }
-    filename = location.substr(0, colonPos);
-    try {
-        line = std::stoll(location.substr(colonPos + 1));
-    } catch (const std::exception&) {
-        return false;
-    }
-    return true;
+static void appendLocationFields(llvm::json::Object& obj, const std::string& sourceLoc) {
+    appendLocationFields(obj, parseSourceLocation(sourceLoc));
 }
 
 static bool filenameMatches(const std::string& candidate, const std::string& target) {
@@ -272,7 +243,6 @@ static llvm::json::Object buildSVFGNodeJson(const SVFGNode* node) {
     std::string nodeDesc = node->toString();
     obj["node_desc"] = nodeDesc;
     llvm::json::Object locObj = GraphReaderUtil::parseSourceLocation(nodeDesc);
-    obj["location"] = formatLocationString(locObj);
     appendLocationFields(obj, locObj);
     return obj;
 }
@@ -587,7 +557,84 @@ llvm::json::Object parseSourceLocation(const std::string& sourceLocString) {
         }
     }
 
+    // Some SVFG node descriptions embed location fragments without a valid JSON
+    // object, e.g. `{ 0th arg Foo "ln": 1395, "file": "tif_read.c" }`.
+    std::smatch match;
+    llvm::json::Object fallback;
+    if (std::regex_search(sourceLocString, match, std::regex(R"("ln"\s*:\s*(\d+))"))) {
+        fallback["ln"] = static_cast<int64_t>(std::stoll(match[1].str()));
+    }
+    if (std::regex_search(sourceLocString, match, std::regex(R"loc("(fl|file)"\s*:\s*"([^"]+)")loc"))) {
+        std::string file = match[2].str();
+        fallback["fl"] = file;
+        fallback["file"] = file;
+    }
+    if (std::regex_search(sourceLocString, match, std::regex(R"("cl"\s*:\s*(\d+))"))) {
+        fallback["cl"] = static_cast<int64_t>(std::stoll(match[1].str()));
+    }
+    if (!fallback.empty()) {
+        return fallback;
+    }
+
     return llvm::json::Object();
+}
+
+SourceLocation parseSourceLocationStruct(const std::string& sourceLocString) {
+    SourceLocation location;
+    llvm::json::Object locObj = parseSourceLocation(sourceLocString);
+    if (auto fl = locObj.getString("fl")) {
+        location.fl = fl->str();
+    } else if (auto file = locObj.getString("file")) {
+        location.fl = file->str();
+    }
+    if (auto ln = locObj.getInteger("ln")) {
+        location.ln = *ln;
+    }
+    if (auto cl = locObj.getInteger("cl")) {
+        location.cl = *cl;
+    }
+    return location;
+}
+
+llvm::json::Object toJson(const SourceLocation& location, bool includeAliases) {
+    llvm::json::Object obj;
+    if (!location.fl.empty()) {
+        obj["fl"] = location.fl;
+        if (includeAliases) {
+            obj["filename"] = location.fl;
+        }
+    }
+    if (location.ln > 0) {
+        obj["ln"] = location.ln;
+        if (includeAliases) {
+            obj["line"] = location.ln;
+        }
+    }
+    if (location.cl >= 0) {
+        obj["cl"] = location.cl;
+        if (includeAliases) {
+            obj["column"] = location.cl;
+        }
+    }
+    return obj;
+}
+
+std::string toString(const SourceLocation& location) {
+    if (location.fl.empty() && location.ln <= 0 && location.cl < 0) {
+        return "";
+    }
+    if (location.fl.empty()) {
+        return location.cl >= 0
+            ? std::to_string(location.ln) + ":" + std::to_string(location.cl)
+            : std::to_string(location.ln);
+    }
+    if (location.ln <= 0) {
+        return location.fl;
+    }
+    if (location.cl < 0) {
+        return location.fl + ":" + std::to_string(location.ln);
+    }
+    return location.fl + ":" + std::to_string(location.ln) + ":" + std::to_string(location.cl);
 }
 
 llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun) {
@@ -636,9 +683,9 @@ llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun) {
     return funInfoJson;
 }
 
-llvm::json::Object getStoreClInfoJson(SVFG* svfg, ICFG* icfg, const std::string& location) {
+llvm::json::Object getStoreClInfoJson(SVFG* svfg, ICFG* icfg, const SourceLocation& location) {
     llvm::json::Object result;
-    result["location"] = location;
+    result = toJson(location);
     llvm::json::Array storeCls;
     
     // 使用findAllICFGNodesByLocation找到所有匹配的ICFG节点
@@ -674,9 +721,9 @@ llvm::json::Object getStoreClInfoJson(SVFG* svfg, ICFG* icfg, const std::string&
     return result;
 }
 
-llvm::json::Object getGepClInfoJson(SVFG* svfg, ICFG* icfg, const std::string& location) {
+llvm::json::Object getGepClInfoJson(SVFG* svfg, ICFG* icfg, const SourceLocation& location) {
     llvm::json::Object result;
-    result["location"] = location;
+    result = toJson(location);
     llvm::json::Array gepCls;
     llvm::json::Array gepClNodes;
     std::map<int64_t, llvm::json::Array> clToNodes;
@@ -722,47 +769,36 @@ llvm::json::Object getGepClInfoJson(SVFG* svfg, ICFG* icfg, const std::string& l
 
 llvm::json::Object formatBranchInfo(const IntraCFGEdge* intraEdge) {
     std::string locString = intraEdge->getSrcNode()->getSourceLoc();
-    std::string formattedLoc = "unknown";
-    
     llvm::json::Object locInfo = parseSourceLocation(locString);
-    if (auto file = locInfo.getString("fl")) {
-        if (auto line = locInfo.getInteger("ln")) {
-            formattedLoc = file->str() + ":" + std::to_string(*line);
-        }
-    }
-    return llvm::json::Object{
+    llvm::json::Object result{
         {"type", "branch"},
-        {"location", formattedLoc},
         {"condition_value", intraEdge->getSuccessorCondValue() == 1 ? "true" : "false"}
     };
+    appendLocationFields(result, locInfo);
+    return result;
 }
 
 const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& location) {
-    size_t colon_pos = location.find(':');
-    if (colon_pos == std::string::npos) {
+    std::string target_filename;
+    int64_t target_line = 0;
+    if (!parseLocationKey(location, target_filename, target_line)) {
         return nullptr;
     }
-    std::string target_filename = location.substr(0, colon_pos);
-    long long target_line;
-    try {
-        target_line = std::stoll(location.substr(colon_pos + 1));
-    } catch (const std::invalid_argument& ia) {
+    return findICFGNodeByLocation(icfg, SourceLocation{target_filename, target_line, -1});
+}
+
+const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const SourceLocation& location) {
+    if (!location.isValid()) {
         return nullptr;
     }
 
     for (auto const& [id, node] : *icfg) {
         if (node) {
-            llvm::json::Object locInfo = parseSourceLocation(node->getSourceLoc());
-            if (!locInfo.empty()) {
-                if (auto file = locInfo.getString("fl")) {
-                    if (auto line = locInfo.getInteger("ln")) {
-                        // Check if the filename contains the target filename (to handle relative/absolute paths)
-                        // and if the line number matches.
-                        if (file->str().find(target_filename) != std::string::npos && *line == target_line) {
-                            return node;
-                        }
-                    }
-                }
+            SourceLocation candidate = parseSourceLocationStruct(node->getSourceLoc());
+            if (candidate.isValid() &&
+                filenameMatches(candidate.fl, location.fl) &&
+                candidate.ln == location.ln) {
+                return node;
             }
         }
     }
@@ -770,32 +806,27 @@ const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& loca
 }
 
 std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const std::string& location) {
-    std::vector<const ICFGNode*> results;
-    size_t colon_pos = location.find(':');
-    if (colon_pos == std::string::npos) {
-        return results;
+    std::string target_filename;
+    int64_t target_line = 0;
+    if (!parseLocationKey(location, target_filename, target_line)) {
+        return {};
     }
-    std::string target_filename = location.substr(0, colon_pos);
-    long long target_line;
-    try {
-        target_line = std::stoll(location.substr(colon_pos + 1));
-    } catch (const std::invalid_argument& ia) {
+    return findAllICFGNodesByLocation(icfg, SourceLocation{target_filename, target_line, -1});
+}
+
+std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const SourceLocation& location) {
+    std::vector<const ICFGNode*> results;
+    if (!location.isValid()) {
         return results;
     }
 
     for (auto const& [id, node] : *icfg) {
         if (node) {
-            llvm::json::Object locInfo = parseSourceLocation(node->getSourceLoc());
-            if (!locInfo.empty()) {
-                if (auto file = locInfo.getString("fl")) {
-                    if (auto line = locInfo.getInteger("ln")) {
-                        // Check if the filename contains the target filename (to handle relative/absolute paths)
-                        // and if the line number matches.
-                        if (file->str().find(target_filename) != std::string::npos && *line == target_line) {
-                            results.push_back(node);
-                        }
-                    }
-                }
+            SourceLocation candidate = parseSourceLocationStruct(node->getSourceLoc());
+            if (candidate.isValid() &&
+                filenameMatches(candidate.fl, location.fl) &&
+                candidate.ln == location.ln) {
+                results.push_back(node);
             }
         }
     }
@@ -821,7 +852,7 @@ const PAGNode* getPAGNodeFromArg(SVFIR* pag, const std::string& funcName, int ar
     return pag->getGNode(arg->getId());
 }
 
-const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
+const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const SourceLocation& location, int eqPosition) {
     if (!icfg || !pag) {
         return nullptr;
     }
@@ -878,7 +909,7 @@ const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const std::string& loc
 }
 
 // 这个函数可以用来构造gep栈
-const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
+const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const SourceLocation& location, int eqPosition) {
     if (!icfg || !pag) {
         // actually impossible
         SVF::SVFUtil::errs() << "Error: Invalid ICFG or PAG pointer\n";
@@ -888,7 +919,7 @@ const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& 
     // Step 1: 根据location找到所有icfg节点
     std::vector<const ICFGNode*> allICFGNodes = findAllICFGNodesByLocation(icfg, location);
     if (allICFGNodes.empty()) {
-        SVF::SVFUtil::errs() << "Error: No ICFG nodes found at location: " << location << "\n";
+        SVF::SVFUtil::errs() << "Error: No ICFG nodes found at location: " << toString(location) << "\n";
         return nullptr;
     }
     
@@ -978,7 +1009,7 @@ const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const std::string& 
 }
 
 // direct pag node to call arg
-const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& location, int argIndex, const std::string& functionName) {
+const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const SourceLocation& location, int argIndex, const std::string& functionName) {
     if (!icfg || !pag) {
         SVF::SVFUtil::errs() << "Error: Invalid ICFG or PAG pointer\n";
         return nullptr;
@@ -986,7 +1017,7 @@ const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& 
 
     const CallICFGNode* callNode = selectCallICFGNode(icfg, location, functionName);
     if (!callNode) {
-        SVF::SVFUtil::errs() << "Error: No CallICFGNode found at location: " << location << "\n";
+        SVF::SVFUtil::errs() << "Error: No CallICFGNode found at location: " << toString(location) << "\n";
         return nullptr;
     }
 
@@ -994,13 +1025,13 @@ const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& 
     const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
     if (!callInst) {
         SVF::SVFUtil::errs() << "[GraphReaderUtil] Failed to obtain CallBase from CallICFGNode at "
-                             << location << "\n";
+                             << toString(location) << "\n";
         return nullptr;
     }
 
     if (argIndex < 0 || argIndex >= static_cast<int>(callInst->arg_size())) {
         SVF::SVFUtil::errs() << "Error: Argument index " << argIndex
-                             << " out of range for call at " << location
+                             << " out of range for call at " << toString(location)
                              << " (argument count=" << callInst->arg_size() << ")\n";
         return nullptr;
     }
@@ -1008,14 +1039,14 @@ const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const std::string& 
     const llvm::Value* targetArgVal = callInst->getArgOperand(argIndex);
     if (!targetArgVal) {
         SVF::SVFUtil::errs() << "[GraphReaderUtil] Call argument operand is null at index "
-                             << argIndex << " for location '" << location << "'\n";
+                             << argIndex << " for location '" << toString(location) << "'\n";
         return nullptr;
     }
 
     NodeID argNodeID = LLVMModuleSet::getLLVMModuleSet()->getValueNode(targetArgVal);
     if (argNodeID == UINT_MAX || !pag->hasGNode(argNodeID)) {
         SVF::SVFUtil::errs() << "[GraphReaderUtil] Could not find PAG node for argument index "
-                             << argIndex << " at location '" << location << "'\n";
+                         << argIndex << " at location '" << toString(location) << "'\n";
         return nullptr;
     }
 
@@ -1031,7 +1062,14 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
                          << (functionName.empty() ? std::string("<none>") : functionName)
                          << "', arg_index=" << argIndex << "\n";
 
-    const CallICFGNode* callNode = selectCallICFGNode(icfg, callLocation, functionName);
+    std::string callFilename;
+    int64_t callLine = 0;
+    if (!parseLocationKey(callLocation, callFilename, callLine)) {
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Invalid call location for tracePAGNodeFromCallArg: "
+                             << callLocation << "\n";
+        return nullptr;
+    }
+    const CallICFGNode* callNode = selectCallICFGNode(icfg, SourceLocation{callFilename, callLine, -1}, functionName);
     if (!callNode) {
         SVF::SVFUtil::errs() << "[GraphReaderUtil] Unable to resolve call node for tracePAGNodeFromCallArg.\n";
         return nullptr;
@@ -1223,10 +1261,10 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
     return storedValuePAG;
 }
 
-llvm::json::Object analyzeStoreLValue(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& location, int eqPosition) {
+llvm::json::Object analyzeStoreLValue(SVFG* svfg, ICFG* icfg, SVFIR* pag, const SourceLocation& location, int eqPosition) {
     llvm::json::Object result;
+    result = toJson(location);
     result["command"] = "analysis-lvar";
-    result["location"] = location;
     result["eq_position"] = eqPosition;
 
     if (!icfg || !pag) {
@@ -1438,7 +1476,12 @@ const SVFGNode* getSVFGNodeFromActualINArg(SVFG* svfg,
         return nullptr;
     }
 
-    const CallICFGNode* callNode = selectCallICFGNode(icfg, location, functionName);
+    std::string callFilename;
+    int64_t callLine = 0;
+    if (!parseLocationKey(location, callFilename, callLine)) {
+        return nullptr;
+    }
+    const CallICFGNode* callNode = selectCallICFGNode(icfg, SourceLocation{callFilename, callLine, -1}, functionName);
     if (!callNode) {
         return nullptr;
     }
@@ -1599,7 +1642,7 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
     basePAGInfo["id"] = static_cast<int64_t>(pagNode->getId());
     basePAGInfo["type"] = SVFUtil::isa<ValVar>(pagNode) ? "ValVar" : "ObjVar";
     basePAGInfo["desc"] = pagNode->toString();
-    basePAGInfo["location"] = pagNode->getSourceLoc();
+    appendLocationFields(basePAGInfo, pagNode->getSourceLoc());
     result["base_pag_node"] = std::move(basePAGInfo);
     
     // 递归追踪 Definition SVFG Node
@@ -1623,7 +1666,7 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
             directDefNode["kind"] = nodeKind;
             directDefNode["desc"] = defSVFGNode->toString();
             if (!defLocation.empty()) {
-                directDefNode["location"] = defLocation;
+                appendLocationFields(directDefNode, defLocation);
             }
             result["direct_def_node"] = std::move(directDefNode);
         }
@@ -1684,7 +1727,7 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
                             finalDefNode["kind"] = addrNodeKind;
                             finalDefNode["desc"] = addrDefNode->toString();
                             if (!addrDefLocation.empty()) {
-                                finalDefNode["location"] = addrDefLocation;
+                                appendLocationFields(finalDefNode, addrDefLocation);
                             }
                             finalDefNode["pag_id"] = static_cast<int64_t>(loadFromPAG->getId());
                             finalDefNode["pag_desc"] = loadFromPAG->toString();
@@ -1727,7 +1770,7 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
                             finalDefNode["kind"] = addrNodeKind;
                             finalDefNode["desc"] = addrDefNode->toString();
                             if (!addrDefLocation.empty()) {
-                                finalDefNode["location"] = addrDefLocation;
+                                appendLocationFields(finalDefNode, addrDefLocation);
                             }
                             finalDefNode["pag_id"] = static_cast<int64_t>(loadFromPAG->getId());
                             finalDefNode["pag_desc"] = loadFromPAG->toString();
@@ -1755,7 +1798,7 @@ void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode) {
             finalDefNode["kind"] = nodeKind;
             finalDefNode["desc"] = defSVFGNode->toString();
             if (!defLocation.empty()) {
-                finalDefNode["location"] = defLocation;
+                appendLocationFields(finalDefNode, defLocation);
             }
             result["final_def_node"] = std::move(finalDefNode);
             break;
@@ -2165,7 +2208,12 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
     // Send JSON success response
     llvm::json::Object result;
     result["success"] = true;
-    result["location"] = location;
+    std::string inputFilename;
+    int64_t inputLine = 0;
+    if (parseLocationKey(location, inputFilename, inputLine)) {
+        result["fl"] = inputFilename;
+        result["ln"] = inputLine;
+    }
     result["icfg_nodes_count"] = static_cast<int64_t>(allICFGNodes.size());
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
 }
@@ -2226,20 +2274,20 @@ llvm::json::Object listFormalArgNodes(SVFG* svfg, SVFIR* pag, const std::string&
     return result;
 }
 
-llvm::json::Object listCallsiteActualArgNodes(SVFG* svfg, ICFG* icfg, const std::string& location, const std::string& calleeFunctionName) {
+llvm::json::Object listCallsiteActualArgNodes(SVFG* svfg, ICFG* icfg, const SourceLocation& location, const std::string& calleeFunctionName) {
     if (!svfg || !icfg) {
         return makeErrorObject("Invalid SVFG or ICFG pointer");
     }
 
     const CallICFGNode* callNode = selectCallICFGNode(icfg, location, calleeFunctionName);
     if (!callNode) {
-        return makeErrorObject("Cannot find callsite actual args for location \"" + location + "\" and callee \"" + calleeFunctionName + "\"");
+        return makeErrorObject("Cannot find callsite actual args for location \"" + toString(location) + "\" and callee \"" + calleeFunctionName + "\"");
     }
 
     const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
     const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
     if (!callInst) {
-        return makeErrorObject("Cannot resolve call instruction for location \"" + location + "\"");
+        return makeErrorObject("Cannot resolve call instruction for location \"" + toString(location) + "\"");
     }
 
     std::vector<const ActualParmVFGNode*> actualParmNodes;
@@ -2271,7 +2319,7 @@ llvm::json::Object listCallsiteActualArgNodes(SVFG* svfg, ICFG* icfg, const std:
     }
 
     if (matched.empty()) {
-        return makeErrorObject("Cannot find callsite actual args for location \"" + location + "\" and callee \"" + calleeFunctionName + "\"");
+        return makeErrorObject("Cannot find callsite actual args for location \"" + toString(location) + "\" and callee \"" + calleeFunctionName + "\"");
     }
 
     std::sort(matched.begin(), matched.end(),
@@ -2290,25 +2338,25 @@ llvm::json::Object listCallsiteActualArgNodes(SVFG* svfg, ICFG* icfg, const std:
     }
 
     llvm::json::Object result;
-    result["callsite"] = location;
+    result["callsite"] = toJson(location);
     result["actual_args"] = std::move(actualArgs);
     return result;
 }
 
-llvm::json::Object findCallsiteReturnNode(SVFG* svfg, ICFG* icfg, const std::string& location, const std::string& calleeFunctionName) {
+llvm::json::Object findCallsiteReturnNode(SVFG* svfg, ICFG* icfg, const SourceLocation& location, const std::string& calleeFunctionName) {
     if (!svfg || !icfg) {
         return makeErrorObject("Invalid SVFG or ICFG pointer");
     }
 
     const CallICFGNode* callNode = selectCallICFGNode(icfg, location, calleeFunctionName);
     if (!callNode) {
-        return makeErrorObject("Cannot find ActualRetVFGNode for callsite \"" + location + "\"");
+        return makeErrorObject("Cannot find ActualRetVFGNode for callsite \"" + toString(location) + "\"");
     }
 
     const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(callNode);
     const llvm::CallBase* callInst = SVFUtil::dyn_cast<llvm::CallBase>(llvmVal);
     if (!callInst) {
-        return makeErrorObject("Cannot find ActualRetVFGNode for callsite \"" + location + "\"");
+        return makeErrorObject("Cannot find ActualRetVFGNode for callsite \"" + toString(location) + "\"");
     }
 
     llvm::json::Object result;
@@ -2329,26 +2377,24 @@ llvm::json::Object findCallsiteReturnNode(SVFG* svfg, ICFG* icfg, const std::str
     }
 
     if (!retNode) {
-        return makeErrorObject("Cannot find ActualRetVFGNode for callsite \"" + location + "\"");
+        return makeErrorObject("Cannot find ActualRetVFGNode for callsite \"" + toString(location) + "\"");
     }
 
     result["return_node"] = buildSVFGNodeJson(retNode);
     return result;
 }
 
-llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::string& location, int64_t column) {
+llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const SourceLocation& location, int64_t column) {
     if (!svfg || !icfg) {
         return makeErrorObject("Invalid SVFG or ICFG pointer");
     }
 
     std::vector<const ICFGNode*> icfgNodes = findAllICFGNodesByLocation(icfg, location);
     if (icfgNodes.empty()) {
-        return makeErrorObject("No ICFG nodes found at location: " + location);
+        return makeErrorObject("No ICFG nodes found at location: " + toString(location));
     }
-
-    std::string targetFilename;
-    int64_t targetLine = 0;
-    parseLocationKey(location, targetFilename, targetLine);
+    std::string targetFilename = location.fl;
+    int64_t targetLine = location.ln;
 
     std::unordered_set<const ICFGNode*> icfgSet(icfgNodes.begin(), icfgNodes.end());
     std::unordered_set<NodeID> seen;
@@ -2381,7 +2427,6 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::st
         }
         nodeObj["node_desc"] = nodeDesc;
         llvm::json::Object locObj = parseSourceLocation(nodeDesc);
-        nodeObj["location"] = formatLocationString(locObj);
         appendLocationFields(nodeObj, locObj);
         nodeObj["llvm_ir"] = getICFGNodeInstructionString(icfgNode);
         entries.push_back({nodeId, std::move(nodeObj)});
@@ -2389,9 +2434,9 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::st
 
     if (entries.empty()) {
         if (column >= 0) {
-            return makeErrorObject("No SVFG nodes found at location/column: " + location + ":" + std::to_string(column));
+            return makeErrorObject("No SVFG nodes found at location/column: " + toString(location) + ":" + std::to_string(column));
         }
-        return makeErrorObject("No SVFG nodes found at location: " + location);
+        return makeErrorObject("No SVFG nodes found at location: " + toString(location));
     }
 
     std::sort(entries.begin(), entries.end(),
@@ -2402,8 +2447,10 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const std::st
         nodesArray.push_back(std::move(entry.obj));
     }
 
-    llvm::json::Object result;
-    result["location"] = location;
+    llvm::json::Object result = toJson(location);
+    if (column >= 0) {
+        result["cl"] = column;
+    }
     result["svfg_nodes"] = std::move(nodesArray);
     return result;
 }
