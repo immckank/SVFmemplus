@@ -31,6 +31,65 @@
 
 namespace SVF {
 
+namespace {
+
+static void appendStructuredLocationFields(llvm::json::Object& out, const llvm::json::Object& locObj) {
+    if (auto fl = locObj.getString("fl")) {
+        out["fl"] = fl->str();
+        out["filename"] = fl->str();
+    } else if (auto file = locObj.getString("file")) {
+        out["fl"] = file->str();
+        out["filename"] = file->str();
+    }
+    if (auto ln = locObj.getInteger("ln")) {
+        out["ln"] = *ln;
+        out["line"] = *ln;
+    }
+    if (auto cl = locObj.getInteger("cl")) {
+        out["cl"] = *cl;
+        out["column"] = *cl;
+    }
+}
+
+static void appendPrefixedLocationFields(llvm::json::Object& out,
+                                         llvm::StringRef prefix,
+                                         const GraphReaderUtil::SourceLocation& location) {
+    if (!location.fl.empty()) {
+        out[(prefix + "fl").str()] = location.fl;
+    }
+    if (location.ln > 0) {
+        out[(prefix + "ln").str()] = location.ln;
+    }
+    if (location.cl >= 0) {
+        out[(prefix + "cl").str()] = location.cl;
+    }
+}
+
+static std::string makeStructuredLocationKey(const llvm::json::Object& locObj) {
+    std::string key;
+    if (auto fl = locObj.getString("fl")) {
+        key = fl->str();
+    } else if (auto file = locObj.getString("file")) {
+        key = file->str();
+    }
+
+    if (auto ln = locObj.getInteger("ln")) {
+        key += "|" + std::to_string(*ln);
+    } else {
+        key += "|?";
+    }
+
+    if (auto cl = locObj.getInteger("cl")) {
+        key += "|" + std::to_string(*cl);
+    } else {
+        key += "|?";
+    }
+
+    return key;
+}
+
+}
+
 void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
     // DEBUG
     // 一个可能有用的debug功能 暂时留着
@@ -171,8 +230,7 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
     for (const auto& [locKey, entry] : locationMap) {
         llvm::json::Object locEntry;
         // Copy the location object
-        llvm::json::Object locCopy = entry.first;
-        locEntry["location"] = std::move(locCopy);
+        appendStructuredLocationFields(locEntry, entry.first);
         
         // Build node kind list
         llvm::json::Array nodeKindList;
@@ -254,7 +312,8 @@ void PathQuery::getValueInsidePath(const SVFGNode* startNode) {
     llvm::outs().flush();
 }
 
-void PathQuery::getConditionPath(const std::string& startLocation, const std::string& targetLocation) {
+void PathQuery::getConditionPath(const GraphReaderUtil::SourceLocation& startLocation,
+                                 const GraphReaderUtil::SourceLocation& targetLocation) {
     // TOOL FUNCTION
     // old implementation
     llvm::json::Object result;
@@ -289,21 +348,12 @@ void PathQuery::getConditionPath(const std::string& startLocation, const std::st
             // 添加未返回的函数调用到事件列表
             for (const auto* retNode : callStack) {
                 const CallICFGNode* callSiteNode = retNode->getCallICFGNode();
-                std::string locString = callSiteNode->getSourceLoc();
-                std::string formattedLoc = "unknown";
-                
-                llvm::json::Object locInfo = GraphReaderUtil::parseSourceLocation(locString);
-                if (auto file = locInfo.getString("fl")) {
-                    if (auto line = locInfo.getInteger("ln")) {
-                        formattedLoc = file->str() + ":" + std::to_string(*line);
-                    }
-                }
-
-                finalPathEvents.push_back(llvm::json::Object{
+                llvm::json::Object event{
                     {"type", "unreturned-call"},
-                    {"location", formattedLoc},
                     {"function", callSiteNode->getFun()->getName()}
-                });
+                };
+                appendStructuredLocationFields(event, GraphReaderUtil::parseSourceLocation(callSiteNode->getSourceLoc()));
+                finalPathEvents.push_back(std::move(event));
             }
 
             pathObject["events"] = std::move(finalPathEvents);
@@ -347,13 +397,16 @@ void PathQuery::getConditionPath(const std::string& startLocation, const std::st
         }
     }
 
+    appendPrefixedLocationFields(result, "start_", startLocation);
+    appendPrefixedLocationFields(result, "target_", targetLocation);
     result["paths"] = std::move(pathsArray);
     result["error"] = false;
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
     llvm::outs().flush();
 }
 
-void PathQuery::getConditionInsidePath(const std::string& startLocation, const std::string& targetLocation) {
+void PathQuery::getConditionInsidePath(const GraphReaderUtil::SourceLocation& startLocation,
+                                       const GraphReaderUtil::SourceLocation& targetLocation) {
     // TOOL FUNCTION
     // old implementation
     llvm::json::Object result;
@@ -407,11 +460,12 @@ void PathQuery::getConditionInsidePath(const std::string& startLocation, const s
                 succNode = const_cast<RetICFGNode*>(callSiteNode->getRetICFGNode());
 
                 // Add an event indicating a skipped function call.
-                newPathEvents.push_back(llvm::json::Object{
+                llvm::json::Object event{
                     {"type", "skipped-call"},
-                    {"location", GraphReaderUtil::parseSourceLocation(callSiteNode->getSourceLoc())},
                     {"function", callSiteNode->getCalledFunction() ? callSiteNode->getCalledFunction()->getName() : "indirect_call"}
-                });
+                };
+                appendStructuredLocationFields(event, GraphReaderUtil::parseSourceLocation(callSiteNode->getSourceLoc()));
+                newPathEvents.push_back(std::move(event));
             }
             else if (SVFUtil::isa<RetCFGEdge>(edge)) {
                 // We are analyzing within a single function, so we ignore return edges that lead to callers.
@@ -432,18 +486,20 @@ void PathQuery::getConditionInsidePath(const std::string& startLocation, const s
         }
     }
 
+    appendPrefixedLocationFields(result, "start_", startLocation);
+    appendPrefixedLocationFields(result, "target_", targetLocation);
     result["paths"] = std::move(pathsArray);
     result["error"] = false;
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
     llvm::outs().flush();
 }
 
-void PathQuery::getConstrain(const std::string& location) {
+void PathQuery::getConstrain(const GraphReaderUtil::SourceLocation& location) {
     // DEBUG
     // maybe useful
     const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
     if (!startNode) {
-        GraphReaderUtil::sendJsonError("Invalid location: " + location);
+        GraphReaderUtil::sendJsonError("Invalid location: " + GraphReaderUtil::toString(location));
         return;
     }
 
@@ -490,8 +546,8 @@ void PathQuery::getConstrain(const std::string& location) {
     llvm::outs().flush();
 }
 
-void PathQuery::getConstrainInside(const std::string& location) {
-    SVFUtil::outs() << "[getConstrainInside] Start location: " << location << "\n";
+void PathQuery::getConstrainInside(const GraphReaderUtil::SourceLocation& location) {
+    SVFUtil::outs() << "[getConstrainInside] Start location: " << GraphReaderUtil::toString(location) << "\n";
 
     if (!icfg) {
         GraphReaderUtil::sendJsonError("ICFG is null!");
@@ -500,7 +556,7 @@ void PathQuery::getConstrainInside(const std::string& location) {
 
     std::vector<const ICFGNode*> icfgNodes = GraphReaderUtil::findAllICFGNodesByLocation(icfg, location);
     if (icfgNodes.empty()) {
-        GraphReaderUtil::sendJsonError("Cannot find ICFG nodes for location: " + location);
+        GraphReaderUtil::sendJsonError("Cannot find ICFG nodes for location: " + GraphReaderUtil::toString(location));
         return;
     }
 
@@ -529,7 +585,7 @@ void PathQuery::getConstrainInside(const std::string& location) {
     }
 
     if (!targetNode || !function || !entryNode) {
-        GraphReaderUtil::sendJsonError("Failed to resolve function entry for location: " + location);
+        GraphReaderUtil::sendJsonError("Failed to resolve function entry for location: " + GraphReaderUtil::toString(location));
         return;
     }
 
@@ -548,9 +604,10 @@ void PathQuery::getConstrainInside(const std::string& location) {
 
     llvm::json::Object targetLocInfo = GraphReaderUtil::parseSourceLocation(targetNode->getSourceLoc());
     if (targetLocInfo.empty()) {
-        targetLocInfo = GraphReaderUtil::parseSourceLocation(location);
+        targetLocInfo = GraphReaderUtil::toJson(location);
     }
-    result["target_location"] = std::move(targetLocInfo);
+    appendPrefixedLocationFields(result, "target_", location);
+    appendStructuredLocationFields(result, targetLocInfo);
 
     if (icfgPaths.empty()) {
         result["message"] = "No intra-procedural paths found from function entry to target location.";
@@ -598,10 +655,7 @@ void PathQuery::getConstrainInside(const std::string& location) {
             branchInfo["src_icfg_node_id"] = static_cast<int64_t>(srcNode->getId());
             branchInfo["dst_icfg_node_id"] = static_cast<int64_t>(dstNode->getId());
 
-            std::string locKey = "unknown";
-            if (auto loc = branchInfo.getString("location")) {
-                locKey = loc->str();
-            }
+            std::string locKey = makeStructuredLocationKey(branchInfo);
             std::string condKey = "unknown";
             if (auto cond = branchInfo.getString("condition_value")) {
                 condKey = cond->str();
@@ -850,7 +904,7 @@ void PathQuery::findICFGPaths(const ICFGNode* startICFG, const ICFGNode* targetI
  * Returns the combined path condition (AND of all branch conditions).
  * Returns true condition if no conditions are found or condAllocator is null.
  */
-static SaberCondAllocator::Condition collectPathCondition(
+[[maybe_unused]] static SaberCondAllocator::Condition collectPathCondition(
     const std::vector<const ICFGNode*>& path,
     SaberCondAllocator* condAllocator) {
     
@@ -1100,7 +1154,7 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
 
     if (returnLocations.empty()) {
         llvm::json::Object result;
-        result["start_location"] = startLocation;
+        appendPrefixedLocationFields(result, "start_", GraphReaderUtil::parseSourceLocationStruct(startLocation));
         result["function"] = function->getName();
         result["return_locations"] = llvm::json::Array{};
         result["total_paths"] = 0;
@@ -1145,8 +1199,7 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
         
         // Get location info for this return
         std::string retLocStr = retICFG->getSourceLoc();
-        llvm::json::Object parsedLoc = GraphReaderUtil::parseSourceLocation(retLocStr);
-        retLocationObj["location"] = std::move(parsedLoc);
+        appendStructuredLocationFields(retLocationObj, GraphReaderUtil::parseSourceLocation(retLocStr));
         
         // Step 4a: First pass - collect all SVFG nodes for all paths to this return location
         std::vector<PathNodeInfo> pathNodeInfos;
@@ -1275,7 +1328,7 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
     SVFUtil::outs() << "\n[Step 4] Total paths found: " << totalPaths << "\n";
 
     llvm::json::Object result;
-    result["start_location"] = startLocation;
+    appendPrefixedLocationFields(result, "start_", GraphReaderUtil::parseSourceLocationStruct(startLocation));
     result["function"] = function->getName();
     result["return_locations"] = std::move(returnLocationsArray);
     result["total_return_locations"] = static_cast<int64_t>(pathsByReturn.size());
@@ -1290,7 +1343,7 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
     SVFUtil::outs() << "========================================\n\n";
 }
 
-void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocation, const std::vector<const SVFGNode*>& startSVFGNodes) {
+void PathQuery::getValueSensitiveReturnInsidePath(const GraphReaderUtil::SourceLocation& startLocation, const std::vector<const SVFGNode*>& startSVFGNodes) {
     if (!icfg || !svfg || !pag) {
         GraphReaderUtil::sendJsonError("ICFG, SVFG, or PAG is null for value-sensitive analysis!");
         return;
@@ -1298,7 +1351,7 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
 
     const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
     if (!startNode) {
-        GraphReaderUtil::sendJsonError("Cannot find ICFGNode for location: " + startLocation);
+        GraphReaderUtil::sendJsonError("Cannot find ICFGNode for location: " + GraphReaderUtil::toString(startLocation));
         return;
     }
 
@@ -1381,7 +1434,7 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
 
     if (returnLocations.empty()) {
         llvm::json::Object result;
-        result["start_location"] = startLocation;
+        appendPrefixedLocationFields(result, "start_", startLocation);
         result["function"] = function->getName();
         result["return_locations"] = llvm::json::Array{};
         result["total_paths"] = 0;
@@ -1632,8 +1685,7 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
         
         // Get location info for this return
         std::string retLocStr = retICFG->getSourceLoc();
-        llvm::json::Object parsedLoc = GraphReaderUtil::parseSourceLocation(retLocStr);
-        retLocationObj["location"] = std::move(parsedLoc);
+        appendStructuredLocationFields(retLocationObj, GraphReaderUtil::parseSourceLocation(retLocStr));
         
         // Differential analysis: compute common nodes (intersection) and union
         Set<NodeID> commonNodes;
@@ -1715,7 +1767,7 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
 
     // Build final result
     llvm::json::Object result;
-    result["start_location"] = startLocation;
+    appendPrefixedLocationFields(result, "start_", startLocation);
     result["function"] = function->getName();
     result["key_svfg_nodes_count"] = static_cast<int64_t>(keySVFGNodes.size());
     result["return_locations"] = std::move(returnLocationsArray);
@@ -1728,7 +1780,7 @@ void PathQuery::getValueSensitiveReturnInsidePath(const std::string& startLocati
     llvm::outs().flush();
 }
 
-void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& startLocation, const std::vector<const SVFGNode*>& startSVFGNodes) {
+void PathQuery::getValueSensitiveReturnInsidePathDetailed(const GraphReaderUtil::SourceLocation& startLocation, const std::vector<const SVFGNode*>& startSVFGNodes) {
     if (!icfg || !svfg || !pag) {
         GraphReaderUtil::sendJsonError("ICFG, SVFG, or PAG is null for value-sensitive analysis!");
         return;
@@ -1736,7 +1788,7 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
 
     const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
     if (!startNode) {
-        GraphReaderUtil::sendJsonError("Cannot find ICFGNode for location: " + startLocation);
+        GraphReaderUtil::sendJsonError("Cannot find ICFGNode for location: " + GraphReaderUtil::toString(startLocation));
         return;
     }
 
@@ -1943,19 +1995,14 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                     
                     // Create branch info
                     llvm::json::Object branchInfo = GraphReaderUtil::formatBranchInfo(branchEdge);
-                    std::string location = "unknown";
                     std::string conditionValue = "unknown";
-                    
-                    if (auto loc = branchInfo.getString("location")) {
-                        location = loc->str();
-                    }
                     if (auto cond = branchInfo.getString("condition_value")) {
                         conditionValue = cond->str();
                     }
                     
                     // Create unique key: location + condition_value + dst_node_id
                     // This helps distinguish different branches at the same location
-                    std::string branchKey = location + "|" + conditionValue + "|" + 
+                    std::string branchKey = makeStructuredLocationKey(branchInfo) + "|" + conditionValue + "|" +
                                           std::to_string(dstNode->getId());
                     
                     // Store condition value for this branch key
@@ -2001,15 +2048,11 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                                 if (const IntraCFGEdge* intraEdge = SVFUtil::dyn_cast<IntraCFGEdge>(edge)) {
                                     if (intraEdge->getCondition()) {
                                         llvm::json::Object brInfo = GraphReaderUtil::formatBranchInfo(intraEdge);
-                                        std::string loc = "unknown";
                                         std::string condVal = "unknown";
-                                        if (auto l = brInfo.getString("location")) {
-                                            loc = l->str();
-                                        }
                                         if (auto c = brInfo.getString("condition_value")) {
                                             condVal = c->str();
                                         }
-                                        std::string key = loc + "|" + condVal + "|" + 
+                                        std::string key = makeStructuredLocationKey(brInfo) + "|" + condVal + "|" +
                                                          std::to_string(dstNode->getId());
                                         if (key == branchKey) {
                                             foundBranch = true;
@@ -2170,29 +2213,6 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
     // Each path group becomes one path in the output
     llvm::json::Array pathsArray;
 
-    // Helper function to format location JSON object to "filename:line" string
-    auto formatLocationString = [](const llvm::json::Object& locObj) -> std::string {
-        std::string filename;
-        int64_t line = 0;
-        
-        if (auto fl = locObj.getString("fl")) {
-            filename = fl->str();
-        }
-        if (auto ln = locObj.getInteger("ln")) {
-            line = *ln;
-        }
-        
-        if (filename.empty() && line == 0) {
-            return "";
-        } else if (filename.empty()) {
-            return std::to_string(line);
-        } else if (line == 0) {
-            return filename;
-        } else {
-            return filename + ":" + std::to_string(line);
-        }
-    };
-
     for (const auto& [retICFG, pathGroups] : pathGroupsByReturn) {
         // Get ICFG paths for this return location
         const auto& icfgPaths = pathsByReturn.at(retICFG);
@@ -2216,7 +2236,7 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
             startNodeObj["node_desc"] = startNodeDesc;
             // Get location from startNode->toString() using parseSourceLocation and format as string
             llvm::json::Object startLocationObj = GraphReaderUtil::parseSourceLocation(startNodeDesc);
-            startNodeObj["location"] = formatLocationString(startLocationObj);
+            appendStructuredLocationFields(startNodeObj, startLocationObj);
             pathArray.push_back(std::move(startNodeObj));
             
             // Get consistent branches for this path group
@@ -2251,11 +2271,7 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                 branchObj["node_desc"] = branchDesc;
                 
                 // Get location from branch info
-                std::string branchLocation = "unknown";
-                if (auto loc = branchInfo.branchInfo.getString("location")) {
-                    branchLocation = loc->str();
-                }
-                branchObj["location"] = branchLocation;
+                appendStructuredLocationFields(branchObj, branchInfo.branchInfo);
                 
                 // Add condition value
                 std::string conditionValue = "unknown";
@@ -2313,7 +2329,7 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                     
                     // Get location from svfgNode->toString() using parseSourceLocation and format as string
                     llvm::json::Object locationObj = GraphReaderUtil::parseSourceLocation(nodeDesc);
-                    nodeObj["location"] = formatLocationString(locationObj);
+                    appendStructuredLocationFields(nodeObj, locationObj);
                     
                     node.nodeObj = std::move(nodeObj);
                     orderedNodes.push_back(std::move(node));
@@ -2342,7 +2358,7 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
                     
                     // Get location from svfgNode->toString() using parseSourceLocation and format as string
                     llvm::json::Object locationObj = GraphReaderUtil::parseSourceLocation(nodeDesc);
-                    nodeObj["location"] = formatLocationString(locationObj);
+                    appendStructuredLocationFields(nodeObj, locationObj);
                     
                     node.nodeObj = std::move(nodeObj);
                     orderedNodes.push_back(std::move(node));
@@ -2378,7 +2394,7 @@ void PathQuery::getValueSensitiveReturnInsidePathDetailed(const std::string& sta
             returnNodeObj["node_desc"] = retNodeDesc;
             // Get location from retICFG->toString() using parseSourceLocation and format as string
             llvm::json::Object retLocationObj = GraphReaderUtil::parseSourceLocation(retNodeDesc);
-            returnNodeObj["location"] = formatLocationString(retLocationObj);
+            appendStructuredLocationFields(returnNodeObj, retLocationObj);
             pathArray.push_back(std::move(returnNodeObj));
             
             pathObj["path"] = std::move(pathArray);
@@ -3629,29 +3645,6 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
         llvm::json::Object jsonResult;
         llvm::json::Array keySVFGsArray;
         
-        // Helper function to format location JSON object to "filename:line" string
-        auto formatLocationString = [](const llvm::json::Object& locObj) -> std::string {
-            std::string filename;
-            int64_t line = 0;
-            
-            if (auto fl = locObj.getString("fl")) {
-                filename = fl->str();
-            }
-            if (auto ln = locObj.getInteger("ln")) {
-                line = *ln;
-            }
-            
-            if (filename.empty() && line == 0) {
-                return "";
-            } else if (filename.empty()) {
-                return std::to_string(line);
-            } else if (line == 0) {
-                return filename;
-            } else {
-                return filename + ":" + std::to_string(line);
-            }
-        };
-        
         // Build JSON array for each key SVFG node
         for (const SVFGNode* svfgNode : result) {
             llvm::json::Object nodeObj;
@@ -3669,8 +3662,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
             
             // Get location from node description
             llvm::json::Object locationObj = GraphReaderUtil::parseSourceLocation(nodeDesc);
-            std::string location = formatLocationString(locationObj);
-            nodeObj["location"] = location;
+            appendStructuredLocationFields(nodeObj, locationObj);
             
             keySVFGsArray.push_back(std::move(nodeObj));
         }
@@ -3685,7 +3677,7 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
     return result;
 }
 
-void PathQuery::findLvalueKeySVFGNodes(const std::string& location, int eqPosition, const std::vector<std::string>& offsets) {
+void PathQuery::findLvalueKeySVFGNodes(const GraphReaderUtil::SourceLocation& location, int eqPosition, const std::vector<std::string>& offsets) {
     if (!icfg || !svfg || !pag) {
         GraphReaderUtil::sendJsonError("ICFG, SVFG, or PAG is null!");
         return;
@@ -3694,7 +3686,7 @@ void PathQuery::findLvalueKeySVFGNodes(const std::string& location, int eqPositi
     // Step 1: Find the PAGNode for the left value at the given location and eq_position
     const PAGNode* startPAGNode = GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, location, eqPosition);
     if (!startPAGNode) {
-        GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + location + "' with eq_position " + std::to_string(eqPosition));
+        GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + GraphReaderUtil::toString(location) + "' with eq_position " + std::to_string(eqPosition));
         return;
     }
 
@@ -3757,7 +3749,7 @@ void PathQuery::findFormalArgKeySVFGNodes(const std::string& functionName, int a
     identifyKeySVFGNodesInFunction(function, startSVFGNode, false, offsets);
 }
 
-void PathQuery::findActualArgKeySVFGNodes(const std::string& location, const std::string& calleeFunctionName, int argIndex, const std::vector<std::string>& offsets) {
+void PathQuery::findActualArgKeySVFGNodes(const GraphReaderUtil::SourceLocation& location, const std::string& calleeFunctionName, int argIndex, const std::vector<std::string>& offsets) {
     if (!icfg || !svfg || !pag) {
         GraphReaderUtil::sendJsonError("ICFG, SVFG, or PAG is null!");
         return;
@@ -3766,7 +3758,7 @@ void PathQuery::findActualArgKeySVFGNodes(const std::string& location, const std
     // Step 1: Find the PAGNode for the actual argument at the given location and arg_index
     const PAGNode* startPAGNode = GraphReaderUtil::getPAGNodeFromCallArg(icfg, pag, location, argIndex, calleeFunctionName);
     if (!startPAGNode) {
-        GraphReaderUtil::sendJsonError("Cannot find PAGNode for actual argument at location '" + location + "' with arg_index " + std::to_string(argIndex) + " for function '" + calleeFunctionName + "'");
+        GraphReaderUtil::sendJsonError("Cannot find PAGNode for actual argument at location '" + GraphReaderUtil::toString(location) + "' with arg_index " + std::to_string(argIndex) + " for function '" + calleeFunctionName + "'");
         return;
     }
 
@@ -3797,7 +3789,7 @@ void PathQuery::findActualArgKeySVFGNodes(const std::string& location, const std
     }
     
     if (!callICFGNode) {
-        GraphReaderUtil::sendJsonError("Cannot find CallICFGNode at location '" + location + "' for function '" + calleeFunctionName + "'");
+        GraphReaderUtil::sendJsonError("Cannot find CallICFGNode at location '" + GraphReaderUtil::toString(location) + "' for function '" + calleeFunctionName + "'");
         return;
     }
 

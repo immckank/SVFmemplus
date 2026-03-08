@@ -2,6 +2,7 @@
 #define FUNCTION_QUERY_H
 
 #include "Graphs/ICFG.h"
+#include "GraphReaderUtil.h"
 #include "SVFIR/SVFIR.h"
 #include <string>
 
@@ -31,10 +32,10 @@ public:
     void findCallSites(const std::string& functionName);
 
     //! Find and print information about callee functions at a specific source location.
-    void findCalleeBodyByLocation(const std::string& location);
+    void findCalleeBodyByLocation(const GraphReaderUtil::SourceLocation& location);
 
     //! Find and print information about the function containing a specific source location.
-    void findFunctionBodyByLocation(const std::string& location);
+    void findFunctionBodyByLocation(const GraphReaderUtil::SourceLocation& location);
 
     //! Find and print information about a function by its name.
     void findFunctionBodyByName(const std::string& functionName);
@@ -43,7 +44,7 @@ public:
     void findAllCalleesByName(const std::string& functionName);
     
     //! Check if a return location returns a pointer type variable.
-    void checkReturnPointer(const std::string& location);
+    void checkReturnPointer(const GraphReaderUtil::SourceLocation& location);
 
     //! Check whether every path in a function reaches a normal return.
     void checkFunctionAlwaysReturn(const std::string& functionName);

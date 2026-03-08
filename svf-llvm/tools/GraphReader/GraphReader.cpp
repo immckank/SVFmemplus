@@ -102,6 +102,116 @@ int main(int argc, char ** argv) {
                 llvm::outs().flush();
             };
 
+            auto readStructuredLocation = [](const llvm::json::Object& cmdObj,
+                                             const char* legacyLocationKey,
+                                             SVF::GraphReaderUtil::SourceLocation& outLocation,
+                                             int64_t* outColumn,
+                                             std::string& errorMessage) -> bool {
+                if (auto fl = cmdObj.getString("fl")) {
+                    auto ln = cmdObj.getInteger("ln");
+                    if (!ln) {
+                        errorMessage = "missing 'ln'";
+                        return false;
+                    }
+                    outLocation.fl = fl->str();
+                    outLocation.ln = *ln;
+                    outLocation.cl = -1;
+                    if (outColumn) {
+                        if (auto cl = cmdObj.getInteger("cl")) {
+                            *outColumn = *cl;
+                            outLocation.cl = *cl;
+                        } else {
+                            *outColumn = -1;
+                        }
+                    }
+                    return true;
+                }
+                if (auto loc = cmdObj.getString(legacyLocationKey)) {
+                    outLocation = SVF::GraphReaderUtil::parseSourceLocationStruct(loc->str());
+                    if (!outLocation.isValid()) {
+                        size_t colonPos = loc->str().find(':');
+                        if (colonPos != std::string::npos) {
+                            outLocation.fl = loc->str().substr(0, colonPos);
+                            try {
+                                std::string tail = loc->str().substr(colonPos + 1);
+                                size_t secondColonPos = tail.find(':');
+                                if (secondColonPos != std::string::npos) {
+                                    outLocation.ln = std::stoll(tail.substr(0, secondColonPos));
+                                    outLocation.cl = std::stoll(tail.substr(secondColonPos + 1));
+                                } else {
+                                    outLocation.ln = std::stoll(tail);
+                                }
+                            } catch (const std::exception&) {
+                                outLocation.ln = 0;
+                            }
+                        }
+                    }
+                    if (outColumn) {
+                        if (auto cl = cmdObj.getInteger("cl")) {
+                            *outColumn = *cl;
+                            outLocation.cl = *cl;
+                        } else {
+                            *outColumn = -1;
+                        }
+                    }
+                    return outLocation.isValid();
+                }
+                errorMessage = std::string("missing '") + legacyLocationKey + "' or ('fl' and 'ln')";
+                return false;
+            };
+
+            auto readPrefixedStructuredLocation = [&](const llvm::json::Object& cmdObj,
+                                                      const char* prefix,
+                                                      const char* legacyLocationKey,
+                                                      SVF::GraphReaderUtil::SourceLocation& outLocation,
+                                                      std::string& errorMessage) -> bool {
+                const std::string prefixStr(prefix);
+                const std::string flKey = prefixStr + "fl";
+                const std::string lnKey = prefixStr + "ln";
+                const std::string clKey = prefixStr + "cl";
+
+                if (auto fl = cmdObj.getString(flKey)) {
+                    auto ln = cmdObj.getInteger(lnKey);
+                    if (!ln) {
+                        errorMessage = "missing '" + lnKey + "'";
+                        return false;
+                    }
+                    outLocation.fl = fl->str();
+                    outLocation.ln = *ln;
+                    outLocation.cl = -1;
+                    if (auto cl = cmdObj.getInteger(clKey)) {
+                        outLocation.cl = *cl;
+                    }
+                    return true;
+                }
+
+                if (legacyLocationKey != nullptr) {
+                    return readStructuredLocation(cmdObj, legacyLocationKey, outLocation, nullptr, errorMessage);
+                }
+
+                errorMessage = "missing '" + flKey + "' and '" + lnKey + "'";
+                return false;
+            };
+
+            auto appendStructuredLocationFields = [](llvm::json::Object& out,
+                                                     const llvm::json::Object& locObj) {
+                if (auto fl = locObj.getString("fl")) {
+                    out["fl"] = fl->str();
+                    out["filename"] = fl->str();
+                } else if (auto file = locObj.getString("file")) {
+                    out["fl"] = file->str();
+                    out["filename"] = file->str();
+                }
+                if (auto ln = locObj.getInteger("ln")) {
+                    out["ln"] = *ln;
+                    out["line"] = *ln;
+                }
+                if (auto cl = locObj.getInteger("cl")) {
+                    out["cl"] = *cl;
+                    out["column"] = *cl;
+                }
+            };
+
             // function TODOs: 
             // 1. 在某一个赋值语句处 构建一个针对左值的GEP操作栈
             // 2. 在所有find value path index系列中 将GEP栈作为一个可选的传入变量 
@@ -115,10 +225,12 @@ int main(int argc, char ** argv) {
                     SVF::GraphReaderUtil::sendJsonError("missing 'name'");
                 }
             } else if (cname == "find-function-body-by-location") {
-                if (auto loc = cmd.getString("location")) {
-                    fq.findFunctionBodyByLocation(loc->str());
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
+                if (readStructuredLocation(cmd, "location", location, nullptr, locationError)) {
+                    fq.findFunctionBodyByLocation(location);
                 } else {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                    SVF::GraphReaderUtil::sendJsonError(locationError);
                 }
             } else if (cname == "find-all-function-call-sites") {
                 if (auto n = cmd.getString("name")) {
@@ -133,20 +245,26 @@ int main(int argc, char ** argv) {
                     SVF::GraphReaderUtil::sendJsonError("missing 'name'");
                 }
             } else if (cname == "find-cond-path") {
-                auto s = cmd.getString("start");
-                auto e = cmd.getString("end");
-                if (!s || !e) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'start' or 'end'");
+                SVF::GraphReaderUtil::SourceLocation startLocation;
+                SVF::GraphReaderUtil::SourceLocation targetLocation;
+                std::string startError;
+                std::string targetError;
+                if (!readPrefixedStructuredLocation(cmd, "start_", "start", startLocation, startError) ||
+                    !readPrefixedStructuredLocation(cmd, "target_", "end", targetLocation, targetError)) {
+                    SVF::GraphReaderUtil::sendJsonError("missing start_fl/start_ln or target_fl/target_ln");
                 } else {
-                    pq.getConditionPath(s->str(), e->str());
+                    pq.getConditionPath(startLocation, targetLocation);
                 }
             } else if (cname == "find-cond-path-inside") {
-                auto s = cmd.getString("start");
-                auto e = cmd.getString("end");
-                if (!s || !e) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'start' or 'end'");
+                SVF::GraphReaderUtil::SourceLocation startLocation;
+                SVF::GraphReaderUtil::SourceLocation targetLocation;
+                std::string startError;
+                std::string targetError;
+                if (!readPrefixedStructuredLocation(cmd, "start_", "start", startLocation, startError) ||
+                    !readPrefixedStructuredLocation(cmd, "target_", "end", targetLocation, targetError)) {
+                    SVF::GraphReaderUtil::sendJsonError("missing start_fl/start_ln or target_fl/target_ln");
                 } else {
-                    pq.getConditionInsidePath(s->str(), e->str());
+                    pq.getConditionInsidePath(startLocation, targetLocation);
                 }
             } else if (cname == "find-arg-value-path-inside") {
                 auto functionName = cmd.getString("function_name");
@@ -177,12 +295,13 @@ int main(int argc, char ** argv) {
                         startSVFGNodes.push_back(startSVFGNode);
                     }
                 }
-                pq.getValueSensitiveReturnInsidePath(startLocation, startSVFGNodes);
+                pq.getValueSensitiveReturnInsidePath(SVF::GraphReaderUtil::parseSourceLocationStruct(startLocation), startSVFGNodes);
             } else if (cname == "find-lvalue-path-inside") {
-                auto loc = cmd.getString("location");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
                 auto eqPositionStr = cmd.getString("eq_position");
-                if (!loc || !eqPositionStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError) || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing location/fl+ln or 'eq_position'");
                 } else {
                     int eqPosition = -1;
                     try {
@@ -193,9 +312,9 @@ int main(int argc, char ** argv) {
                     }
                     std::vector<const SVFGNode*> startSVFGNodes;
                     if (eqPosition != -1) {
-                        const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
+                        const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, location, eqPosition);
                         if (!startPAGNode) {
-                            SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + SVF::GraphReaderUtil::toString(location) + "' with eq_position " + std::to_string(eqPosition));
                             continue;
                         }
                         const SVFGNode* startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
@@ -205,13 +324,14 @@ int main(int argc, char ** argv) {
                         }
                         startSVFGNodes.push_back(startSVFGNode);
                     }
-                    pq.getValueSensitiveReturnInsidePath(loc->str(), startSVFGNodes);
+                    pq.getValueSensitiveReturnInsidePath(location, startSVFGNodes);
                 }
             } else if (cname == "find-lvalue-detail-path-inside") {
-                auto loc = cmd.getString("location");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
                 auto eqPositionStr = cmd.getString("eq_position");
-                if (!loc || !eqPositionStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError) || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing location/fl+ln or 'eq_position'");
                 } else {
                     int eqPosition = -1;
                     try {
@@ -222,9 +342,9 @@ int main(int argc, char ** argv) {
                     }
                     std::vector<const SVFGNode*> startSVFGNodes;
                     if (eqPosition != -1) {
-                        const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, loc->str(), eqPosition);
+                        const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromLvar(icfg, pag, location, eqPosition);
                         if (!startPAGNode) {
-                            SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
+                            SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for Lvar at location '" + SVF::GraphReaderUtil::toString(location) + "' with eq_position " + std::to_string(eqPosition));
                             continue;
                         }
                         const SVFGNode* startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
@@ -234,13 +354,14 @@ int main(int argc, char ** argv) {
                         }
                         startSVFGNodes.push_back(startSVFGNode);
                     }
-                    pq.getValueSensitiveReturnInsidePathDetailed(loc->str(), startSVFGNodes);
+                    pq.getValueSensitiveReturnInsidePathDetailed(location, startSVFGNodes);
                 }
             } else if (cname == "find-lvalue-detail-path-inside-store") {
-                auto loc = cmd.getString("location");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
                 auto eqPositionStr = cmd.getString("eq_position");
-                if (!loc || !eqPositionStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError) || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing location/fl+ln or 'eq_position'");
                     continue;
                 }
                 int eqPosition = -1;
@@ -251,7 +372,7 @@ int main(int argc, char ** argv) {
                     continue;
                 }
                 // 直接寻找cl的store路径
-                std::vector<const ICFGNode*> nodes = SVF::GraphReaderUtil::findAllICFGNodesByLocation(icfg, loc->str());
+                std::vector<const ICFGNode*> nodes = SVF::GraphReaderUtil::findAllICFGNodesByLocation(icfg, location);
                 const ICFGNode* matchedNode = nullptr;
                 for (const ICFGNode* node : nodes) {
                     if (!SVFUtil::isa<IntraICFGNode>(node)) {
@@ -278,12 +399,13 @@ int main(int argc, char ** argv) {
                 for (const SVFGNode* storeNode : storeNodes) {
                     startSVFGNodes.push_back(storeNode);
                 }
-                pq.getValueSensitiveReturnInsidePathDetailed(loc->str(), startSVFGNodes);
+                pq.getValueSensitiveReturnInsidePathDetailed(location, startSVFGNodes);
             } else if (cname == "find-lvalue-key_svfgnode") {
-                auto loc = cmd.getString("location");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
                 auto eqPositionStr = cmd.getString("eq_position");
-                if (!loc || !eqPositionStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError) || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing location/fl+ln or 'eq_position'");
                     continue;
                 }
                 int eqPosition = -1;
@@ -305,7 +427,7 @@ int main(int argc, char ** argv) {
                         }
                     }
                 }
-                pq.findLvalueKeySVFGNodes(loc->str(), eqPosition, offsets);
+                pq.findLvalueKeySVFGNodes(location, eqPosition, offsets);
             } else if (cname == "find-formal_arg-key_svfgnode") {
                 auto functionName = cmd.getString("function_name");
                 auto argIndexStr = cmd.getString("arg_index");
@@ -334,11 +456,12 @@ int main(int argc, char ** argv) {
                 }
                 pq.findFormalArgKeySVFGNodes(functionName->str(), argIndex, offsets);
             } else if (cname == "find-actual_arg-key_svfgnode") {
-                auto loc = cmd.getString("location");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
                 auto calleeFuncName = cmd.getString("callee_function_name");
                 auto argIndexStr = cmd.getString("arg_index");
-                if (!loc || !calleeFuncName || !argIndexStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'callee_function_name' or 'arg_index'");
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError) || !calleeFuncName || !argIndexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing location/fl+ln or 'callee_function_name' or 'arg_index'");
                     continue;
                 }
                 int argIndex = -1;
@@ -360,7 +483,7 @@ int main(int argc, char ** argv) {
                         }
                     }
                 }
-                pq.findActualArgKeySVFGNodes(loc->str(), calleeFuncName->str(), argIndex, offsets);
+                pq.findActualArgKeySVFGNodes(location, calleeFuncName->str(), argIndex, offsets);
             } else if (cname == "find-key-svfgnode-by-id") {
                 auto idVal = cmd.getInteger("svfg_node_id");
                 if (!idVal) {
@@ -410,11 +533,12 @@ int main(int argc, char ** argv) {
                 pq.identifyKeySVFGNodesInFunction(function, startSVFGNode, false, offsets);
                 // pq.setFindKeyByIdDebug(false); // debug
             } else if (cname == "find-call-arg-value-path-inside") {
-                auto loc = cmd.getString("location");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
                 auto calleeFuncName = cmd.getString("callee_function_name");
                 auto argIndexStr = cmd.getString("arg_index");
-                if (!loc || !calleeFuncName || !argIndexStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'callee_function_name' or 'arg_index'");
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError) || !calleeFuncName || !argIndexStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing location/fl+ln or 'callee_function_name' or 'arg_index'");
                 } else {
                     int argIndex = -1;
                     try {
@@ -424,10 +548,10 @@ int main(int argc, char ** argv) {
                         continue;
                     }
                     const PAGNode* startPAGNode = SVF::GraphReaderUtil::getPAGNodeFromCallArg(
-                        icfg, pag, loc->str(), argIndex, calleeFuncName->str());
+                        icfg, pag, location, argIndex, calleeFuncName->str());
                     if (!startPAGNode) {
                         SVF::GraphReaderUtil::sendJsonError(
-                            "Cannot find PAGNode for CallArg at location '" + loc->str() +
+                            "Cannot find PAGNode for CallArg at location '" + SVF::GraphReaderUtil::toString(location) +
                             "' with arg_index " + std::to_string(argIndex));
                         continue;
                     }
@@ -438,13 +562,14 @@ int main(int argc, char ** argv) {
                         continue;
                     }
                     std::vector<const SVFGNode*> startSVFGNodes{startSVFGNode};
-                    pq.getValueSensitiveReturnInsidePath(loc->str(), startSVFGNodes);
+                    pq.getValueSensitiveReturnInsidePath(location, startSVFGNodes);
                 }
             } else if (cname == "analysis-lvar") {
-                auto loc = cmd.getString("location");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
                 auto eqPositionStr = cmd.getString("eq_position");
-                if (!loc || !eqPositionStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError) || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing location/fl+ln or 'eq_position'");
                     continue;
                 }
                 int eqPosition = -1;
@@ -454,14 +579,15 @@ int main(int argc, char ** argv) {
                     SVF::GraphReaderUtil::sendJsonError("invalid 'eq_position' value: " + eqPositionStr->str());
                     continue;
                 }
-                llvm::json::Object analysisResult = SVF::GraphReaderUtil::analyzeStoreLValue(svfg, icfg, pag, loc->str(), eqPosition);
+                llvm::json::Object analysisResult = SVF::GraphReaderUtil::analyzeStoreLValue(svfg, icfg, pag, location, eqPosition);
                 llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(analysisResult))) << "\n";
                 llvm::outs().flush();
             } else if (cname == "find-base-lvar-def") {
-                auto loc = cmd.getString("location");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
                 auto eqPositionStr = cmd.getString("eq_position");
-                if (!loc || !eqPositionStr) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location' or 'eq_position'");
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError) || !eqPositionStr) {
+                    SVF::GraphReaderUtil::sendJsonError("missing location/fl+ln or 'eq_position'");
                 } else {
                     int eqPosition = -1;
                     try {
@@ -471,20 +597,21 @@ int main(int argc, char ** argv) {
                         continue;
                     }
                     // Step 1: Get PAGNode from LvarGEP
-                    const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromLvarGEP(icfg, pag, loc->str(), eqPosition);
+                    const PAGNode* targetPAG = SVF::GraphReaderUtil::getPAGNodeFromLvarGEP(icfg, pag, location, eqPosition);
                     if (!targetPAG) {
-                        SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for LvarGEP at location '" + loc->str() + "' with eq_position " + std::to_string(eqPosition));
+                        SVF::GraphReaderUtil::sendJsonError("Cannot find PAGNode for LvarGEP at location '" + SVF::GraphReaderUtil::toString(location) + "' with eq_position " + std::to_string(eqPosition));
                     } else {
                         // Step 2: Trace PAG store
                         SVF::GraphReaderUtil::tracePAGStore(svfg, pag, targetPAG);
                     }
                 }
             } else if (cname == "check-return-pointer") {
-                auto loc = cmd.getString("location");
-                if (!loc) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError)) {
+                    SVF::GraphReaderUtil::sendJsonError(locationError);
                 } else {
-                    fq.checkReturnPointer(loc->str());
+                    fq.checkReturnPointer(location);
                 }
             } else if (cname == "check-always-return") {
                 auto func = cmd.getString("function_name");
@@ -494,39 +621,59 @@ int main(int argc, char ** argv) {
                     fq.checkFunctionAlwaysReturn(func->str());
                 }
             } else if (cname == "find-store-cl") {
-                auto loc = cmd.getString("location");
-                if (!loc) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError)) {
+                    SVF::GraphReaderUtil::sendJsonError(locationError);
                 } else {
-                    llvm::json::Object result = SVF::GraphReaderUtil::getStoreClInfoJson(svfg, icfg, loc->str());
+                    llvm::json::Object result = SVF::GraphReaderUtil::getStoreClInfoJson(svfg, icfg, location);
                     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 }
             } else if (cname == "find-gep-cl") {
-                auto loc = cmd.getString("location");
-                if (!loc) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError)) {
+                    SVF::GraphReaderUtil::sendJsonError(locationError);
                 } else {
-                    llvm::json::Object result = SVF::GraphReaderUtil::getGepClInfoJson(svfg, icfg, loc->str());
+                    llvm::json::Object result = SVF::GraphReaderUtil::getGepClInfoJson(svfg, icfg, location);
                     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 }
             } else if (cname == "get-constrain-inside") {
-                auto loc = cmd.getString("location");
-                if (!loc) {
-                    loc = cmd.getString("locaton"); // fallback for common typo
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError)) {
+                    if (auto typoLoc = cmd.getString("locaton")) {
+                        size_t colonPos = typoLoc->str().find(':');
+                        if (colonPos != std::string::npos) {
+                            location.fl = typoLoc->str().substr(0, colonPos);
+                            try {
+                                std::string tail = typoLoc->str().substr(colonPos + 1);
+                                size_t secondColonPos = tail.find(':');
+                                if (secondColonPos != std::string::npos) {
+                                    location.ln = std::stoll(tail.substr(0, secondColonPos));
+                                    location.cl = std::stoll(tail.substr(secondColonPos + 1));
+                                } else {
+                                    location.ln = std::stoll(tail);
+                                }
+                            } catch (const std::exception&) {
+                                location.ln = 0;
+                            }
+                        }
+                    } else {
+                        SVF::GraphReaderUtil::sendJsonError(locationError);
+                        continue;
+                    }
                 }
-                if (!loc) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
-                } else {
-                    pq.getConstrainInside(loc->str());
-                }
+                pq.getConstrainInside(location);
             } else if (cname == "show-code-line"){
                 // DEBUG
                 // 一个重要的debug功能 可以一直保留
-                auto loc = cmd.getString("location");
-                if (!loc) {
-                    SVF::GraphReaderUtil::sendJsonError("missing 'location'");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError)) {
+                    SVF::GraphReaderUtil::sendJsonError(locationError);
                 } else {
-                    SVF::GraphReaderUtil::showCodeLineDebugInfo(svfg, icfg, loc->str());
+                    SVF::GraphReaderUtil::showCodeLineDebugInfo(svfg, icfg, SVF::GraphReaderUtil::toString(location));
                 }
             } else if (cname == "list-formal-arg-nodes") {
                 auto func = cmd.getString("function_name");
@@ -539,39 +686,41 @@ int main(int argc, char ** argv) {
                 llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 llvm::outs().flush();
             } else if (cname == "list-callsite-actual-arg-nodes") {
-                auto loc = cmd.getString("location");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
                 auto callee = cmd.getString("callee_function_name");
                 llvm::json::Object result;
-                if (!loc || !callee) {
-                    result["error"] = "missing 'location' or 'callee_function_name'";
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError) || !callee) {
+                    result["error"] = "missing location/fl+ln or 'callee_function_name'";
                 } else {
-                    result = SVF::GraphReaderUtil::listCallsiteActualArgNodes(svfg, icfg, loc->str(), callee->str());
+                    result = SVF::GraphReaderUtil::listCallsiteActualArgNodes(svfg, icfg, location, callee->str());
                 }
                 llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 llvm::outs().flush();
             } else if (cname == "find-callsite-return-node") {
-                auto loc = cmd.getString("location");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
                 auto callee = cmd.getString("callee_function_name");
                 llvm::json::Object result;
-                if (!loc || !callee) {
-                    result["error"] = "missing 'location' or 'callee_function_name'";
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError) || !callee) {
+                    result["error"] = "missing location/fl+ln or 'callee_function_name'";
                 } else {
-                    result = SVF::GraphReaderUtil::findCallsiteReturnNode(svfg, icfg, loc->str(), callee->str());
+                    result = SVF::GraphReaderUtil::findCallsiteReturnNode(svfg, icfg, location, callee->str());
                 }
                 llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 llvm::outs().flush();
             } else if (cname == "list-svfg-nodes-by-location") {
-                auto loc = cmd.getString("location");
-                auto col = cmd.getInteger("column");
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
+                int64_t column = -1;
                 llvm::json::Object result;
-                if (!loc) {
-                    result["error"] = "missing 'location'";
+                if (!readStructuredLocation(cmd, "location", location, &column, locationError)) {
+                    result["error"] = locationError;
                 } else {
-                    int64_t column = -1;
-                    if (col) {
-                        column = *col;
+                    if (auto legacyColumn = cmd.getInteger("column")) {
+                        column = *legacyColumn;
                     }
-                    result = SVF::GraphReaderUtil::listSVFGNodesByLocation(svfg, icfg, loc->str(), column);
+                    result = SVF::GraphReaderUtil::listSVFGNodesByLocation(svfg, icfg, location, column);
                 }
                 llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 llvm::outs().flush();
@@ -600,55 +749,13 @@ int main(int argc, char ** argv) {
                     continue;
                 }
 
-                auto formatLocationString = [](const llvm::json::Object& locObj) -> std::string {
-                    std::string filename;
-                    int64_t line = 0;
-
-                    if (auto fl = locObj.getString("fl")) {
-                        filename = fl->str();
-                    }
-                    if (filename.empty()) {
-                        if (auto file = locObj.getString("file")) {
-                            filename = file->str();
-                        }
-                    }
-                    if (auto ln = locObj.getInteger("ln")) {
-                        line = *ln;
-                    }
-
-                    if (filename.empty() && line == 0) {
-                        return "";
-                    } else if (filename.empty()) {
-                        return std::to_string(line);
-                    } else if (line == 0) {
-                        return filename;
-                    } else {
-                        return filename + ":" + std::to_string(line);
-                    }
-                };
-
                 llvm::json::Object nodeObj;
                 nodeObj["svfg_node_id"] = static_cast<int64_t>(svfgNode->getId());
                 nodeObj["node_type"] = SVF::GraphReaderUtil::getSVFGNodeKindString(svfgNode, true);
                 std::string nodeDesc = svfgNode->toString();
                 nodeObj["node_desc"] = nodeDesc;
                 llvm::json::Object locObj = SVF::GraphReaderUtil::parseSourceLocation(nodeDesc);
-                nodeObj["location"] = formatLocationString(locObj);
-                if (auto fl = locObj.getString("fl")) {
-                    nodeObj["filename"] = fl->str();
-                }
-                bool hasFilename = locObj.getString("fl").has_value();
-                if (!hasFilename) {
-                    if (auto file = locObj.getString("file")) {
-                        nodeObj["filename"] = file->str();
-                    }
-                }
-                if (auto ln = locObj.getInteger("ln")) {
-                    nodeObj["line"] = *ln;
-                }
-                if (auto cl = locObj.getInteger("cl")) {
-                    nodeObj["column"] = *cl;
-                }
+                appendStructuredLocationFields(nodeObj, locObj);
                 if (const ActualParmVFGNode* apNode = SVFUtil::dyn_cast<ActualParmVFGNode>(svfgNode)) {
                     const CallICFGNode* cs = apNode->getCallSite();
                     const PAGNode* param = apNode->getParam();
@@ -693,29 +800,6 @@ int main(int argc, char ** argv) {
                         // Find all return locations using the helper function
                         std::vector<const ICFGNode*> returnNodes = findActualReturnICFGNodes(icfg, function);
                         
-                        // Helper function to format location JSON object to "filename:line" string
-                        auto formatLocationString = [](const llvm::json::Object& locObj) -> std::string {
-                            std::string filename;
-                            int64_t line = 0;
-                            
-                            if (auto fl = locObj.getString("fl")) {
-                                filename = fl->str();
-                            }
-                            if (auto ln = locObj.getInteger("ln")) {
-                                line = *ln;
-                            }
-                            
-                            if (filename.empty() && line == 0) {
-                                return "";
-                            } else if (filename.empty()) {
-                                return std::to_string(line);
-                            } else if (line == 0) {
-                                return filename;
-                            } else {
-                                return filename + ":" + std::to_string(line);
-                            }
-                        };
-                        
                         // Build JSON output
                         llvm::json::Object result;
                         llvm::json::Array returnLocationsArray;
@@ -732,7 +816,7 @@ int main(int argc, char ** argv) {
                             
                             // Get location from node description
                             llvm::json::Object locationInfo = SVF::GraphReaderUtil::parseSourceLocation(nodeDesc);
-                            locationObj["location"] = formatLocationString(locationInfo);
+                            appendStructuredLocationFields(locationObj, locationInfo);
                             
                             returnLocationsArray.push_back(std::move(locationObj));
                         }
