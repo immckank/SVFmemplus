@@ -16,11 +16,14 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Operator.h"
 #include <algorithm>
+#include <cctype>
 #include <limits>
 #include <map>
+#include <memory>
 #include <queue>
 #include <regex>
 #include <set>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace SVF {
@@ -32,6 +35,7 @@ namespace GraphReaderUtil {
 static Map<std::string, int> g_freeCallerDistances;
 
 static SaberCondAllocator* GlobalSaberCondAllocator = nullptr;
+static thread_local std::string g_lastLocationLookupDiagnostic;
 
 void setSaberCondAllocator(SaberCondAllocator* allocator) {
     GlobalSaberCondAllocator = allocator;
@@ -42,6 +46,126 @@ SaberCondAllocator* getSaberCondAllocator() {
 }
 
 namespace {
+
+struct IndexedICFGNode {
+    const ICFGNode* node = nullptr;
+    SourceLocation location;
+};
+
+struct ModeledFileEntry {
+    std::string rawPath;
+    std::string normalizedPath;
+    std::vector<std::string> components;
+    std::string basename;
+};
+
+struct LocationIndex {
+    std::vector<ModeledFileEntry> files;
+    std::vector<IndexedICFGNode> indexedNodes;
+    std::unordered_map<std::string, size_t> rawFileToId;
+    std::unordered_map<std::string, std::vector<size_t>> normalizedToIds;
+    std::unordered_map<std::string, std::vector<size_t>> basenameToIds;
+    std::unordered_map<std::string, std::vector<size_t>> nodesByRawLine;
+};
+
+static std::unordered_map<const ICFG*, std::unique_ptr<LocationIndex>> g_locationIndexes;
+
+static std::string joinStrings(const std::vector<std::string>& parts, llvm::StringRef delimiter) {
+    std::string joined;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i != 0) {
+            joined += delimiter.str();
+        }
+        joined += parts[i];
+    }
+    return joined;
+}
+
+static std::vector<std::string> splitPathComponents(const std::string& normalizedPath) {
+    std::vector<std::string> components;
+    std::string current;
+    for (char ch : normalizedPath) {
+        if (ch == '/') {
+            if (!current.empty()) {
+                components.push_back(current);
+                current.clear();
+            }
+            continue;
+        }
+        current.push_back(ch);
+    }
+    if (!current.empty()) {
+        components.push_back(current);
+    }
+    return components;
+}
+
+static bool isWindowsDrivePrefix(const std::string& path) {
+    return path.size() >= 2 &&
+           std::isalpha(static_cast<unsigned char>(path[0])) &&
+           path[1] == ':';
+}
+
+static std::string makeRawLineKey(const std::string& rawPath, int64_t line) {
+    return rawPath + "\n" + std::to_string(line);
+}
+
+static std::string quoteString(const std::string& value) {
+    return "\"" + value + "\"";
+}
+
+static std::string buildCandidateList(const std::vector<std::string>& values, size_t limit = 5) {
+    if (values.empty()) {
+        return "";
+    }
+    std::vector<std::string> formatted;
+    formatted.reserve(std::min(values.size(), limit));
+    for (size_t i = 0; i < values.size() && i < limit; ++i) {
+        formatted.push_back(quoteString(values[i]));
+    }
+    std::string result = joinStrings(formatted, ", ");
+    if (values.size() > limit) {
+        result += ", ...";
+    }
+    return result;
+}
+
+static bool isSuffixComponentMatch(const std::vector<std::string>& lhs,
+                                   const std::vector<std::string>& rhs) {
+    if (lhs.empty() || rhs.empty()) {
+        return false;
+    }
+    const std::vector<std::string>& shorter = lhs.size() <= rhs.size() ? lhs : rhs;
+    const std::vector<std::string>& longer = lhs.size() <= rhs.size() ? rhs : lhs;
+    const size_t offset = longer.size() - shorter.size();
+    for (size_t i = 0; i < shorter.size(); ++i) {
+        if (shorter[i] != longer[offset + i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static std::string buildLocationDiagnostic(const SourceLocation& queryLocation,
+                                           const std::string& normalizedQueryPath,
+                                           const std::vector<std::string>& ambiguousRawPaths,
+                                           const std::vector<std::string>& basenameCandidates,
+                                           llvm::StringRef matchStage) {
+    std::string message = "Location lookup failed for " + quoteString(toString(queryLocation));
+    if (!normalizedQueryPath.empty()) {
+        message += "; normalized_fl=" + quoteString(normalizedQueryPath);
+    }
+    if (!matchStage.empty()) {
+        message += "; match_stage=" + quoteString(matchStage.str());
+    }
+    if (!ambiguousRawPaths.empty()) {
+        message += "; candidate modeled files=[" + buildCandidateList(ambiguousRawPaths) + "]";
+    }
+    if (!basenameCandidates.empty()) {
+        message += "; same-basename candidates=[" + buildCandidateList(basenameCandidates) + "]";
+    }
+    return message;
+}
 
 static std::string resolveCalleeName(const llvm::CallBase* callInst) {
     if (!callInst) {
@@ -184,6 +308,180 @@ static bool filenameMatches(const std::string& candidate, const std::string& tar
         return true;
     }
     return candidate.find(target) != std::string::npos || target.find(candidate) != std::string::npos;
+}
+
+static LocationIndex& getOrBuildLocationIndex(const ICFG* icfg) {
+    auto it = g_locationIndexes.find(icfg);
+    if (it != g_locationIndexes.end()) {
+        return *it->second;
+    }
+
+    auto index = std::make_unique<LocationIndex>();
+    for (auto const& [id, node] : *icfg) {
+        if (!node) {
+            continue;
+        }
+        SourceLocation location = parseSourceLocationStruct(node->getSourceLoc());
+        if (!location.isValid()) {
+            continue;
+        }
+
+        auto [rawIt, inserted] = index->rawFileToId.emplace(location.fl, index->files.size());
+        if (inserted) {
+            ModeledFileEntry entry;
+            entry.rawPath = location.fl;
+            entry.normalizedPath = normalizePathLexically(location.fl);
+            entry.components = splitPathComponents(entry.normalizedPath);
+            if (!entry.components.empty()) {
+                entry.basename = entry.components.back();
+            } else {
+                entry.basename = entry.normalizedPath;
+            }
+            index->normalizedToIds[entry.normalizedPath].push_back(rawIt->second);
+            if (!entry.basename.empty()) {
+                index->basenameToIds[entry.basename].push_back(rawIt->second);
+            }
+            index->files.push_back(std::move(entry));
+        }
+
+        index->indexedNodes.push_back({node, location});
+        index->nodesByRawLine[makeRawLineKey(location.fl, location.ln)].push_back(index->indexedNodes.size() - 1);
+    }
+
+    auto [insertedIt, _] = g_locationIndexes.emplace(icfg, std::move(index));
+    return *insertedIt->second;
+}
+
+struct ResolvedLocation {
+    std::vector<const ICFGNode*> nodes;
+    std::vector<std::string> rawPaths;
+    std::string diagnostic;
+};
+
+static ResolvedLocation resolveICFGNodesByLocation(const ICFG* icfg, const SourceLocation& location) {
+    ResolvedLocation resolved;
+    if (!icfg || !location.isValid()) {
+        resolved.diagnostic = "Invalid location: " + quoteString(toString(location));
+        return resolved;
+    }
+
+    const LocationIndex& index = getOrBuildLocationIndex(icfg);
+    const std::string normalizedQueryPath = normalizePathLexically(location.fl);
+    const std::vector<std::string> queryComponents = splitPathComponents(normalizedQueryPath);
+
+    auto collectRawPaths = [&](const std::vector<size_t>& ids) {
+        std::vector<std::string> rawPaths;
+        rawPaths.reserve(ids.size());
+        for (size_t id : ids) {
+            if (id < index.files.size()) {
+                rawPaths.push_back(index.files[id].rawPath);
+            }
+        }
+        std::sort(rawPaths.begin(), rawPaths.end());
+        rawPaths.erase(std::unique(rawPaths.begin(), rawPaths.end()), rawPaths.end());
+        return rawPaths;
+    };
+
+    auto gatherNodesAtLine = [&](const std::vector<std::string>& rawPaths) {
+        std::vector<const ICFGNode*> nodes;
+        for (const std::string& rawPath : rawPaths) {
+            auto lineIt = index.nodesByRawLine.find(makeRawLineKey(rawPath, location.ln));
+            if (lineIt == index.nodesByRawLine.end()) {
+                continue;
+            }
+            for (size_t nodeIndex : lineIt->second) {
+                if (nodeIndex < index.indexedNodes.size()) {
+                    nodes.push_back(index.indexedNodes[nodeIndex].node);
+                }
+            }
+        }
+        return nodes;
+    };
+
+    auto finalizeUniqueMatch = [&](const std::vector<std::string>& rawPaths) -> bool {
+        if (rawPaths.size() != 1) {
+            return false;
+        }
+        resolved.rawPaths = rawPaths;
+        resolved.nodes = gatherNodesAtLine(rawPaths);
+        if (resolved.nodes.empty()) {
+            return false;
+        }
+        return true;
+    };
+
+    auto rawIt = index.rawFileToId.find(location.fl);
+    if (rawIt != index.rawFileToId.end()) {
+        std::vector<std::string> rawPaths = {index.files[rawIt->second].rawPath};
+        if (finalizeUniqueMatch(rawPaths)) {
+            return resolved;
+        }
+    }
+
+    auto normalizedIt = index.normalizedToIds.find(normalizedQueryPath);
+    if (normalizedIt != index.normalizedToIds.end()) {
+        std::vector<std::string> rawPaths = collectRawPaths(normalizedIt->second);
+        if (finalizeUniqueMatch(rawPaths)) {
+            return resolved;
+        }
+        std::vector<std::string> rawPathsAtLine;
+        for (const std::string& rawPath : rawPaths) {
+            if (index.nodesByRawLine.count(makeRawLineKey(rawPath, location.ln)) != 0) {
+                rawPathsAtLine.push_back(rawPath);
+            }
+        }
+        if (rawPathsAtLine.size() == 1 && finalizeUniqueMatch(rawPathsAtLine)) {
+            return resolved;
+        }
+        if (!rawPathsAtLine.empty()) {
+            resolved.diagnostic = buildLocationDiagnostic(location, normalizedQueryPath, rawPathsAtLine, {}, "normalized-exact");
+            return resolved;
+        }
+    }
+
+    std::vector<std::string> suffixMatches;
+    for (const auto& file : index.files) {
+        if (isSuffixComponentMatch(queryComponents, file.components) &&
+            index.nodesByRawLine.count(makeRawLineKey(file.rawPath, location.ln)) != 0) {
+            suffixMatches.push_back(file.rawPath);
+        }
+    }
+    std::sort(suffixMatches.begin(), suffixMatches.end());
+    suffixMatches.erase(std::unique(suffixMatches.begin(), suffixMatches.end()), suffixMatches.end());
+    if (suffixMatches.size() == 1 && finalizeUniqueMatch(suffixMatches)) {
+        return resolved;
+    }
+    if (!suffixMatches.empty()) {
+        resolved.diagnostic = buildLocationDiagnostic(location, normalizedQueryPath, suffixMatches, {}, "normalized-suffix");
+        return resolved;
+    }
+
+    std::string basename = queryComponents.empty() ? normalizedQueryPath : queryComponents.back();
+    std::vector<std::string> basenameMatches;
+    auto basenameIt = index.basenameToIds.find(basename);
+    if (basenameIt != index.basenameToIds.end()) {
+        std::vector<std::string> rawPaths = collectRawPaths(basenameIt->second);
+        for (const std::string& rawPath : rawPaths) {
+            if (index.nodesByRawLine.count(makeRawLineKey(rawPath, location.ln)) != 0) {
+                basenameMatches.push_back(rawPath);
+            }
+        }
+    }
+    if (basenameMatches.size() == 1 && finalizeUniqueMatch(basenameMatches)) {
+        return resolved;
+    }
+
+    std::vector<std::string> anyBasenameCandidates;
+    auto anyBasenameIt = index.basenameToIds.find(basename);
+    if (anyBasenameIt != index.basenameToIds.end()) {
+        anyBasenameCandidates = collectRawPaths(anyBasenameIt->second);
+    }
+    resolved.diagnostic = buildLocationDiagnostic(location,
+                                                  normalizedQueryPath,
+                                                  basenameMatches,
+                                                  anyBasenameCandidates,
+                                                  basenameMatches.empty() ? "no-match" : "basename");
+    return resolved;
 }
 
 static bool hasMatchingColumnInNodeDesc(const std::string& nodeDesc, const std::string& targetFilename,
@@ -378,6 +676,66 @@ bool parseCommandsLine(const std::string& jsonStr, std::vector<llvm::json::Objec
 
     errMsg = "unsupported json format";
     return false;
+}
+
+std::string normalizePathLexically(const std::string& path) {
+    if (path.empty()) {
+        return "";
+    }
+
+    std::string unified = path;
+    std::replace(unified.begin(), unified.end(), '\\', '/');
+
+    std::string prefix;
+    size_t pos = 0;
+    bool absolute = false;
+    if (isWindowsDrivePrefix(unified)) {
+        prefix = unified.substr(0, 2);
+        pos = 2;
+        if (pos < unified.size() && unified[pos] == '/') {
+            absolute = true;
+            ++pos;
+        }
+    } else if (!unified.empty() && unified[0] == '/') {
+        absolute = true;
+        pos = 1;
+    }
+
+    std::vector<std::string> components;
+    while (pos <= unified.size()) {
+        size_t next = unified.find('/', pos);
+        std::string token = unified.substr(pos, next == std::string::npos ? std::string::npos : next - pos);
+        pos = next == std::string::npos ? unified.size() + 1 : next + 1;
+        if (token.empty() || token == ".") {
+            continue;
+        }
+        if (token == "..") {
+            if (!components.empty() && components.back() != "..") {
+                components.pop_back();
+            } else if (!absolute) {
+                components.push_back(token);
+            }
+            continue;
+        }
+        components.push_back(token);
+    }
+
+    std::string normalized;
+    if (!prefix.empty()) {
+        normalized += prefix;
+    }
+    if (absolute) {
+        normalized += "/";
+    }
+    normalized += joinStrings(components, "/");
+    if (normalized.empty()) {
+        return absolute ? "/" : ".";
+    }
+    return normalized;
+}
+
+std::string getLastLocationLookupDiagnostic() {
+    return g_lastLocationLookupDiagnostic;
 }
 
 void sendJsonError(const std::string& message) {
@@ -782,55 +1140,35 @@ const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& loca
     std::string target_filename;
     int64_t target_line = 0;
     if (!parseLocationKey(location, target_filename, target_line)) {
+        g_lastLocationLookupDiagnostic = "Invalid location string: " + quoteString(location);
         return nullptr;
     }
     return findICFGNodeByLocation(icfg, SourceLocation{target_filename, target_line, -1});
 }
 
 const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const SourceLocation& location) {
-    if (!location.isValid()) {
+    ResolvedLocation resolved = resolveICFGNodesByLocation(icfg, location);
+    g_lastLocationLookupDiagnostic = resolved.diagnostic;
+    if (resolved.nodes.empty()) {
         return nullptr;
     }
-
-    for (auto const& [id, node] : *icfg) {
-        if (node) {
-            SourceLocation candidate = parseSourceLocationStruct(node->getSourceLoc());
-            if (candidate.isValid() &&
-                filenameMatches(candidate.fl, location.fl) &&
-                candidate.ln == location.ln) {
-                return node;
-            }
-        }
-    }
-    return nullptr;
+    return resolved.nodes.front();
 }
 
 std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const std::string& location) {
     std::string target_filename;
     int64_t target_line = 0;
     if (!parseLocationKey(location, target_filename, target_line)) {
+        g_lastLocationLookupDiagnostic = "Invalid location string: " + quoteString(location);
         return {};
     }
     return findAllICFGNodesByLocation(icfg, SourceLocation{target_filename, target_line, -1});
 }
 
 std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const SourceLocation& location) {
-    std::vector<const ICFGNode*> results;
-    if (!location.isValid()) {
-        return results;
-    }
-
-    for (auto const& [id, node] : *icfg) {
-        if (node) {
-            SourceLocation candidate = parseSourceLocationStruct(node->getSourceLoc());
-            if (candidate.isValid() &&
-                filenameMatches(candidate.fl, location.fl) &&
-                candidate.ln == location.ln) {
-                results.push_back(node);
-            }
-        }
-    }
-    return results;
+    ResolvedLocation resolved = resolveICFGNodesByLocation(icfg, location);
+    g_lastLocationLookupDiagnostic = resolved.diagnostic;
+    return resolved.nodes;
 }
 
 const PAGNode* getPAGNodeFromArg(SVFIR* pag, const std::string& funcName, int argIndex) {
@@ -919,7 +1257,11 @@ const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const SourceLocatio
     // Step 1: 根据location找到所有icfg节点
     std::vector<const ICFGNode*> allICFGNodes = findAllICFGNodesByLocation(icfg, location);
     if (allICFGNodes.empty()) {
-        SVF::SVFUtil::errs() << "Error: No ICFG nodes found at location: " << toString(location) << "\n";
+        SVF::SVFUtil::errs() << "Error: "
+                             << (getLastLocationLookupDiagnostic().empty()
+                                     ? std::string("No ICFG nodes found at location: ") + toString(location)
+                                     : getLastLocationLookupDiagnostic())
+                             << "\n";
         return nullptr;
     }
     
@@ -1279,7 +1621,9 @@ llvm::json::Object analyzeStoreLValue(SVFG* svfg, ICFG* icfg, SVFIR* pag, const 
     std::vector<const ICFGNode*> nodes = findAllICFGNodesByLocation(icfg, location);
     if (nodes.empty()) {
         result["success"] = false;
-        result["error"] = "No ICFG nodes found at location";
+        result["error"] = getLastLocationLookupDiagnostic().empty()
+                              ? std::string("No ICFG nodes found at location")
+                              : getLastLocationLookupDiagnostic();
         return result;
     }
 
@@ -1999,8 +2343,12 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
     std::vector<const ICFGNode*> allICFGNodes = findAllICFGNodesByLocation(icfg, location);
     
     if (allICFGNodes.empty()) {
-        SVF::SVFUtil::errs() << "Error: No ICFG nodes found at location: " << location << "\n";
-        sendJsonError("No ICFG nodes found at location: " + location);
+        std::string diagnostic = getLastLocationLookupDiagnostic();
+        if (diagnostic.empty()) {
+            diagnostic = "No ICFG nodes found at location: " + location;
+        }
+        SVF::SVFUtil::errs() << "Error: " << diagnostic << "\n";
+        sendJsonError(diagnostic);
         return;
     }
 
@@ -2391,7 +2739,9 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const SourceL
 
     std::vector<const ICFGNode*> icfgNodes = findAllICFGNodesByLocation(icfg, location);
     if (icfgNodes.empty()) {
-        return makeErrorObject("No ICFG nodes found at location: " + toString(location));
+        std::string diagnostic = getLastLocationLookupDiagnostic();
+        return makeErrorObject(diagnostic.empty() ? "No ICFG nodes found at location: " + toString(location)
+                                                  : diagnostic);
     }
     std::string targetFilename = location.fl;
     int64_t targetLine = location.ln;

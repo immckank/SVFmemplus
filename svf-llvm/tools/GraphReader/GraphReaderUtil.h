@@ -62,6 +62,8 @@ namespace GraphReaderUtil {
     SourceLocation parseSourceLocationStruct(const std::string& sourceLocString);
     llvm::json::Object toJson(const SourceLocation& location, bool includeAliases = true);
     std::string toString(const SourceLocation& location);
+    std::string normalizePathLexically(const std::string& path);
+    std::string getLastLocationLookupDiagnostic();
 
     /*!
      * \brief Converts SVFGNode kind to a string representation.
