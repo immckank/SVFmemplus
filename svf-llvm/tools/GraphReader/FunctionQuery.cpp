@@ -66,7 +66,9 @@ void SVF::FunctionQuery::findCalleeBodyByLocation(const GraphReaderUtil::SourceL
 
     const ICFGNode* node = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
     if (!node) {
-        GraphReaderUtil::sendJsonError("Could not find ICFGNode for the given location.");
+        std::string diagnostic = GraphReaderUtil::getLastLocationLookupDiagnostic();
+        GraphReaderUtil::sendJsonError(diagnostic.empty() ? "Could not find ICFGNode for the given location."
+                                                          : diagnostic);
         return;
     }
 
@@ -98,7 +100,9 @@ void SVF::FunctionQuery::findFunctionBodyByLocation(const GraphReaderUtil::Sourc
     llvm::json::Object result;
     const ICFGNode* node = GraphReaderUtil::findICFGNodeByLocation(icfg, location);
     if (!node) {
-        GraphReaderUtil::sendJsonError("Could not find ICFGNode for the given location.");
+        std::string diagnostic = GraphReaderUtil::getLastLocationLookupDiagnostic();
+        GraphReaderUtil::sendJsonError(diagnostic.empty() ? "Could not find ICFGNode for the given location."
+                                                          : diagnostic);
         return;
     }
 
@@ -364,7 +368,10 @@ void SVF::FunctionQuery::checkReturnPointer(const GraphReaderUtil::SourceLocatio
     std::vector<const ICFGNode*> nodes = GraphReaderUtil::findAllICFGNodesByLocation(icfg, location);
     
     if (nodes.empty()) {
-        GraphReaderUtil::sendJsonError("Could not find any ICFGNode at the given location: " + GraphReaderUtil::toString(location));
+        std::string diagnostic = GraphReaderUtil::getLastLocationLookupDiagnostic();
+        GraphReaderUtil::sendJsonError(diagnostic.empty()
+                                           ? "Could not find any ICFGNode at the given location: " + GraphReaderUtil::toString(location)
+                                           : diagnostic);
         return;
     }
     

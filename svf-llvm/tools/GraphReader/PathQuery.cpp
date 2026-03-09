@@ -320,9 +320,12 @@ void PathQuery::getConditionPath(const GraphReaderUtil::SourceLocation& startLoc
     llvm::json::Array pathsArray;
 
     const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
+    std::string startDiagnostic = GraphReaderUtil::getLastLocationLookupDiagnostic();
     const ICFGNode* targetNode = GraphReaderUtil::findICFGNodeByLocation(icfg, targetLocation);
+    std::string targetDiagnostic = GraphReaderUtil::getLastLocationLookupDiagnostic();
     if (!startNode || !targetNode) {
-        GraphReaderUtil::sendJsonError("Invalid start or target location.");
+        std::string diagnostic = !startNode ? startDiagnostic : targetDiagnostic;
+        GraphReaderUtil::sendJsonError(diagnostic.empty() ? "Invalid start or target location." : diagnostic);
         return;
     }
     // 调用栈，用于跟踪函数调用和返回，确保路径的有效性
@@ -413,10 +416,13 @@ void PathQuery::getConditionInsidePath(const GraphReaderUtil::SourceLocation& st
     llvm::json::Array pathsArray;
 
     const ICFGNode* startNode = GraphReaderUtil::findICFGNodeByLocation(icfg, startLocation);
+    std::string startDiagnostic = GraphReaderUtil::getLastLocationLookupDiagnostic();
     const ICFGNode* targetNode = GraphReaderUtil::findICFGNodeByLocation(icfg, targetLocation);
+    std::string targetDiagnostic = GraphReaderUtil::getLastLocationLookupDiagnostic();
 
     if (!startNode || !targetNode) {
-        GraphReaderUtil::sendJsonError("Invalid start or target location.");
+        std::string diagnostic = !startNode ? startDiagnostic : targetDiagnostic;
+        GraphReaderUtil::sendJsonError(diagnostic.empty() ? "Invalid start or target location." : diagnostic);
         return;
     }
 
