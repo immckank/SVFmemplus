@@ -1,4 +1,4 @@
-//===- AOBChecker.h -- Detecting Array Out-of-Bounds-------------------------------//
+//===- BOFChecker.h -- Detecting Buffer Overflow errors -------------------------------//
 //
 //                     SVF: Static Value-Flow Analysis
 //
@@ -21,15 +21,15 @@
 //===----------------------------------------------------------------------===//
 
 /*
- * AOBChecker.h
+ * BufferOverflowChecker.h
  *
  *  Created on: NOV 10, 2025
  *      Author: Yaokun Yang
  */
 
-// AOBChecker.h
-#ifndef AOBCHECKER_H_
-#define AOBCHECKER_H_
+// BufferOverflowChecker.h
+#ifndef BUFFER_OVERFLOW_CHECKER_H_
+#define BUFFER_OVERFLOW_CHECKER_H_
 
 #include "MemoryModel/PointerAnalysisImpl.h"
 #include <unordered_map>
@@ -37,27 +37,25 @@
 #include <iostream>
 
 namespace SVF {
+    class BufferOverflowChecker {
+        public:
+            struct BFSNode{
+                const SVFVar* node;
+                s64_t offset;
+                u64_t size;
 
-class AOBChecker {
-public:
-    struct BFSNode{
-        const SVFVar* node;
-        s64_t offset;
-        u64_t size;
+                BFSNode(const SVFVar* n = nullptr, s64_t off = 0, u64_t s = 0)
+                : node(n), offset(off), size(s) {}
+            };
 
-        BFSNode(const SVFVar* n = nullptr, s64_t off = 0, u64_t s = 0)
-        : node(n), offset(off), size(s) {}
+            void runOnModule(SVFIR* pag);
+            void initialize(SVFIR* pag);
+            void propagate(SVFIR* pag);
+            void report(const SVFVar* base, s64_t fldIdx, u64_t arraySize);
+
+        private:
+            std::queue<BFSNode> worklist;
     };
-
-    void runOnModule(SVFIR* pag);
-    void initialize(SVFIR* pag);
-    void propagate(SVFIR* pag);
-    void report(const SVFVar* base, s64_t fldIdx, u64_t arraySize);
-
-private:
-    std::queue<BFSNode> worklist;
-};
-
 }
 
-#endif /* AOBCHECKER_H_ */
+#endif /* BUFFER_OVERFLOW_CHECKER_H_ */

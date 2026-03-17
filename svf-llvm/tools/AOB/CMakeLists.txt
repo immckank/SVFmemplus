@@ -1,1 +1,0 @@
-add_llvm_executable(aob aob.cpp)

@@ -1,4 +1,4 @@
-//===----- AOBChecker.cpp -- Detecting Array Out-of-Bounds--------------//
+//===----- BufferOverflowChecker.cpp -- Detecting Buffer Overflow errors --------------//
 //
 //                     SVF: Static Value-Flow Analysis
 //
@@ -21,17 +21,17 @@
 //===----------------------------------------------------------------------===//
 
 /*
- * AOBChecker.cpp
+ * BufferOverflowChecker.cpp
  *
  *  Created on: Nov 10 , 2025
  *      Author: Yaokun Yang
  */
 
-#include "AOB/AOBChecker.h"
+#include "BOF/BufferOverflowChecker.h"
 using namespace SVF;
 using namespace std;
 
-void AOBChecker::runOnModule(SVFIR* pag)
+void BufferOverflowChecker::runOnModule(SVFIR* pag)
 {
     assert(pag && "PAG must not be null");
 
@@ -44,7 +44,7 @@ void AOBChecker::runOnModule(SVFIR* pag)
     propagate(pag);
 }
 
-void AOBChecker::initialize(SVFIR* pag)
+void BufferOverflowChecker::initialize(SVFIR* pag)
 {   
     SVFStmt::SVFStmtSetTy addrStmtSet = pag->getSVFStmtSet(SVFStmt::Addr);
     for (auto stmt: addrStmtSet)
@@ -97,7 +97,7 @@ void AOBChecker::initialize(SVFIR* pag)
     }
 }
 
-void AOBChecker::propagate(SVFIR* pag)
+void BufferOverflowChecker::propagate(SVFIR* pag)
 {
     while (!worklist.empty())
     {
@@ -150,7 +150,7 @@ void AOBChecker::propagate(SVFIR* pag)
 }
 
 
-void AOBChecker::report(const SVFVar* base, s64_t fldIdx, u64_t arraySize)
+void BufferOverflowChecker::report(const SVFVar* base, s64_t fldIdx, u64_t arraySize)
 {
     cout << "[AOBChecker][BFS] Array Out-of-Bounds detected! "
          << "Base: " << base->toString()

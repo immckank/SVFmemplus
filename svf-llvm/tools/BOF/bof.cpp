@@ -1,4 +1,4 @@
-//===- aob.cpp -- Array Out-of-Bounds Checker -------------------------------------//
+//===- bof.cpp -- Buffer Overflow Errors Checker -------------------------------------//
 //
 //                     SVF: Static Value-Flow Analysis
 //
@@ -21,14 +21,14 @@
 //===-----------------------------------------------------------------------===//
 
 /*
- // Array Out-of-Bounds Checker 
+ // Buffer Overflow Errors Checker 
  //
  // Author: Yaokun Yang,
  */
 
 #include "SVF-LLVM/LLVMUtil.h"
 #include "SVF-LLVM/SVFIRBuilder.h"
-#include "AOB/AOBChecker.h"
+#include "BOF/BufferOverflowChecker.h"
 #include "Util/CommandLine.h"
 #include "Util/Options.h"
 
@@ -40,7 +40,7 @@ using namespace SVF;
 int main(int argc, char** argv)
 {
     auto moduleNameVec =
-        OptionBase::parseOptions(argc, argv, "Array Out-of-Bounds Checker",
+        OptionBase::parseOptions(argc, argv, "Buffer Overflow Errors Checker",
                                  "[options] <input-bitcode...>");
 
     // Refers to content of a singleton unique_ptr<SVFIR> in SVFIR.
@@ -65,8 +65,8 @@ int main(int argc, char** argv)
 
     }
 
-    AOBChecker aobChecker;
-    aobChecker.runOnModule(pag);
+    BufferOverflowChecker bufferOverflowChecker;
+    bufferOverflowChecker.runOnModule(pag);
 
     LLVMModuleSet::releaseLLVMModuleSet();
     return 0;
