@@ -1,4 +1,4 @@
-//===- BOFChecker.h -- Detecting Buffer Overflow Errors -------------------------------//
+//===- RangeAnalysis.h -- Range Analysis of SVF Vars -------------------------------//
 //
 //                     SVF: Static Value-Flow Analysis
 //
@@ -21,35 +21,33 @@
 //===----------------------------------------------------------------------===//
 
 /*
- * BufferOverflowChecker.h
+ * RangeAnalysis.h
  *
- *  Created on: NOV 10, 2025
+ *  Created on: MAR 15, 2025
  *      Author: Yaokun Yang
  */
 
-// BufferOverflowChecker.h
-#ifndef BUFFER_OVERFLOW_CHECKER_H_
-#define BUFFER_OVERFLOW_CHECKER_H_
+ // RangeAnalysis.h
+#ifndef RANGE_ANALYSIS_H
+#define RANGE_ANALYSIS_H
 
 #include "MemoryModel/PointerAnalysisImpl.h"
-#include "RangeFlowNode.h"
-#include "RangeAnalysis.h"
-
-#include <queue>
+#include <unordered_map>
+#include "Range.h"
 
 
 namespace SVF {
-    class BufferOverflowChecker {
+    class RangeAnalysis {
         public:
-            void runOnModule(SVFIR* pag);
-            void initialize(SVFIR* pag);
-            void propagate(SVFIR* pag);
-            void reportBufferOverflowError(const SVFVar* base, Range offset, Range size);
+            void analysisBufferRange(const StackObjVar* stackObjVar);
+            Range analysisIndexRange(const SVFVar* index, const GepStmt* gepStmt);
+            Range getBufferRange(const SVFVar* buffer);
+            Range getIndexRange(const SVFVar* index);
 
         private:
-            std::queue<RangeFlowNode>worklist;
-            RangeAnalysis rangeAnalysis;
+            std::unordered_map<const SVFVar*, Range> bufferRanges;
+            std::unordered_map<const SVFVar*, Range> indexRanges;
     };
 }
 
-#endif /* BUFFER_OVERFLOW_CHECKER_H_ */
+#endif /* RANGE_ANALYSIS_H_ */

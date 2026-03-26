@@ -1,4 +1,4 @@
-//===- BOFChecker.h -- Detecting Buffer Overflow Errors -------------------------------//
+//===- RangeFlowNode.h -- Record Value Flow from Parent to Children -------------------------------//
 //
 //                     SVF: Static Value-Flow Analysis
 //
@@ -21,35 +21,29 @@
 //===----------------------------------------------------------------------===//
 
 /*
- * BufferOverflowChecker.h
+ * RangeFlowNode.h
  *
  *  Created on: NOV 10, 2025
  *      Author: Yaokun Yang
  */
 
-// BufferOverflowChecker.h
-#ifndef BUFFER_OVERFLOW_CHECKER_H_
-#define BUFFER_OVERFLOW_CHECKER_H_
+// RangeFlowNode.h
+#ifndef RANGE_FLOW_NODE_H_
+#define RANGE_FLOW_NODE_H_
 
 #include "MemoryModel/PointerAnalysisImpl.h"
-#include "RangeFlowNode.h"
-#include "RangeAnalysis.h"
-
-#include <queue>
+#include "Range.h"
 
 
 namespace SVF {
-    class BufferOverflowChecker {
+    class RangeFlowNode{
         public:
-            void runOnModule(SVFIR* pag);
-            void initialize(SVFIR* pag);
-            void propagate(SVFIR* pag);
-            void reportBufferOverflowError(const SVFVar* base, Range offset, Range size);
+            const SVFVar* base;
+            const SVFVar* parent;
+            Range accumulate_offset;
 
-        private:
-            std::queue<RangeFlowNode>worklist;
-            RangeAnalysis rangeAnalysis;
+            RangeFlowNode(const SVFVar* _base, const SVFVar* _parent, Range _accumulate_offset);
     };
 }
 
-#endif /* BUFFER_OVERFLOW_CHECKER_H_ */
+#endif

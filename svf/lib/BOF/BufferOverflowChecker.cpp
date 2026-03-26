@@ -35,7 +35,7 @@ void BufferOverflowChecker::runOnModule(SVFIR* pag)
 {
     assert(pag && "PAG must not be null");
 
-    cout << "handling for aob" << endl;
+    cout << "handling for buffer overflow" << endl;
 
     // Initialize: add all array nodes to worklist with offset and size
     initialize(pag);
@@ -51,47 +51,12 @@ void BufferOverflowChecker::initialize(SVFIR* pag)
     {   
         if(auto addrStmt = SVFUtil::dyn_cast<AddrStmt>(stmt)){
             const SVFVar* src = addrStmt->getRHSVar();
-            const SVFVar* dest = addrStmt->getLHSVar();
+            const SVFVar* dst = addrStmt->getLHSVar();
+            
             // handle alloca instruction with stack obj
             if(const StackObjVar* stackObjVar = SVFUtil::dyn_cast<StackObjVar>(src)){
-                u64_t size = 0;
-
-                // handle case: %arrayidx = alloca [10*i32], align 16
-                const SVFType* objType = stackObjVar->getType();
-                const StInfo* objInfo = objType->getTypeInfo();
-                size = objInfo->getNumOfFlattenElements();
-                if(size > 1)
-                {
-                    this->worklist.push(BFSNode(dest, 0, size));
-                    // cout << "add case from type, size = " << size << endl;
-                    continue;
-                }
-            
-
-                // handle case: int a[n] -> %a = alloca i32, i32 %n, align 4
-                size = stackObjVar->getNumOfElements();
-                if(size > 1)
-                {      
-                    // cout << "add case from stack, size = " << size << endl;
-                    this->worklist.push(BFSNode(dest, 0, size));
-                    continue;
-                }
-
-                // handle case: int a[n] -> %a = alloca i32, i32 %n, align 4
-                // size = 0;
-                // const std::vector<SVFVar*>& sizeVec = addrStmt->getArrSize();
-                // if(sizeVec.size() > 0)
-                // {   
-                //     if(const auto constVar = SVFUtil::dyn_cast<ConstIntObjVar>(sizeVec[0]))
-                //         size = constVar->getZExtValue();
-                //     cout << "size from vec = " << sizeVec.size() << endl;
-                //     if(size > 1){
-                //         cout << "add case from type, size = " << size << endl;
-                //         this->worklist.push(BFSNode(dest, 0, size));
-                //         // continue;
-                //     }
-                        
-                // }
+                rangeAnalysis.analysisBufferRange(stackObjVar);
+                worklist.push(RangeFlowNode(dst, src, Range(0,0)));
             }
         }   
     }
@@ -101,29 +66,28 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
 {
     while (!worklist.empty())
     {
-        BFSNode cur = worklist.front();
+        RangeFlowNode srcNode = worklist.front();
         worklist.pop();
 
-        for(const auto &svfStmt: cur.node->getOutEdges())
-        {   
-            s64_t offset = 0;
+        // cout << srcNode.accumulate_offset.getLower() << " " << srcNode.accumulate_offset.getUpper() << endl;
 
+        for(const auto &svfStmt: srcNode.base->getOutEdges())
+        {   
             // Gep instruction
             if(auto *gepStmt = SVFUtil::dyn_cast<GepStmt>(svfStmt))
             {
                 // get destination node
-                SVFVar* dstNode = gepStmt->getLHSVar();  // gepStmt->getDstNode(); 
+                SVFVar* dstVar = gepStmt->getLHSVar();  // gepStmt->getDstNode(); 
                 
-                // calculate offset
-                AccessPath ap = gepStmt->getAccessPath();
-                offset = cur.offset + ap.computeConstantOffset();
-                
-                // in-bound checking
-                if(offset < 0 || static_cast<u64_t>(offset) >= cur.size)
-                    report(dstNode, offset, cur.size);
-                
-                // add to queue
-                this->worklist.push(BFSNode(dstNode, offset, cur.size));
+                Range accumulate_offset = rangeAnalysis.analysisIndexRange(dstVar, gepStmt) + srcNode.accumulate_offset;
+                Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
+
+                // printf("Access index: [%lld,%lld], Array size: [%lld,%lld]\n", accumulate_offset.getLower(), accumulate_offset.getUpper(), buffer_size.getLower(), buffer_size.getUpper());
+
+                if(!accumulate_offset.isSubset(buffer_size)){
+                    reportBufferOverflowError(dstVar, accumulate_offset, buffer_size);
+                }
+                worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset));
 
             }
             
@@ -131,30 +95,28 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
             else if(auto *copyStmt = SVFUtil::dyn_cast<CopyStmt>(svfStmt))
             {
                 // get destination node
-                SVFVar* dstNode = copyStmt->getLHSVar(); // copyStmt->getDstNode();
+                SVFVar* dstVar = copyStmt->getLHSVar(); // copyStmt->getDstNode();
 
                 // copy offset
-                offset = cur.offset;
+                Range accumulate_offset = srcNode.accumulate_offset;
+                Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
-                // in-bound checking
-                if(offset < 0 || static_cast<u64_t>(offset) >= cur.size)
-                    report(dstNode, offset, cur.size);
+                if(!accumulate_offset.isSubset(buffer_size)){
+                    reportBufferOverflowError(dstVar, accumulate_offset, buffer_size);
+                }
 
-                // add to queue
-                this->worklist.push(BFSNode(dstNode, offset, cur.size));
+                worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset));
             }
-
-            // cout << "offset = " << offset << endl;
         }
     }
 }
 
 
-void BufferOverflowChecker::report(const SVFVar* base, s64_t fldIdx, u64_t arraySize)
+void BufferOverflowChecker::reportBufferOverflowError(const SVFVar* base, Range offset, Range array_size)
 {
-    cout << "[AOBChecker][BFS] Array Out-of-Bounds detected! "
-         << "Base: " << base->toString()
-         << ", Access index: " << fldIdx
-         << ", Array size: " << arraySize
-         << endl;
+    SVFUtil::outs() << "[BufferOverflowChecker] Buffer Overflow Error detected! \n"
+                    << "Base: " << base->toString() << "\n"
+                    << "Buffer index: [" << offset.getLower() << "," << offset.getUpper() << "]\n"
+                    << "Buffer size: [" << array_size.getLower() << "," << array_size.getUpper() << "]\n"
+                    << "\n";
 }
