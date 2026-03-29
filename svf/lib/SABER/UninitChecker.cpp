@@ -11,6 +11,7 @@ using namespace SVF;
 using namespace SVFUtil;
 
 typedef VisitedFIFOWorkList<const SVFGNode*> BackwardWorkList;
+typedef FIFOWorkList<const SVFGNode*> ForwardWorkList;
 
 UninitChecker::UninitChecker() : LeakChecker() {
     Options::SaberKeepDerefDirSVFGEdges.setValue(true);
@@ -75,11 +76,113 @@ void UninitChecker::initSnks()
     }
 }
 
+bool UninitChecker::shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const
+{
+    return shouldConsiderStoreForMode(store, slice, shouldIgnorePtrStoreForLoad(load));
+}
+
+bool UninitChecker::shouldIgnorePtrStoreForLoad(const SVFGNode* load) const
+{
+    if (load->toString().find("load ptr") == std::string::npos)
+        return true;
+
+    for (auto edge : load->getOutEdges())
+    {
+        SVFGNode* next = edge->getDstNode();
+        if (ActualParmVFGNode::classof(next) && next->getOutEdges().empty())
+            return true;
+    }
+    return false;
+}
+
+bool UninitChecker::shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const
+{
+    if (!ignorePtrStore)
+        return true;
+
+    if (store->toString().find("store ptr") == std::string::npos)
+        return true;
+
+    bool formal_param = false;
+    bool cur_alloc = false;
+    for (auto edge : store->getInEdges())
+    {
+        SVFGNode* pre = edge->getSrcNode();
+        if (FormalParmVFGNode::classof(pre))
+            formal_param = true;
+        else if (pre == slice->getSource())
+            cur_alloc = true;
+    }
+    return cur_alloc && formal_param;
+}
+
+void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, Map<const SVFGNode*, bool>& inState) const
+{
+    inState.clear();
+
+    const bool Init = false;
+    const bool Uninit = true;
+    const SVFGNode* source = slice->getSource();
+    SVFGNodeSet reached;
+    ForwardWorkList workList;
+
+    inState[source] = Uninit;
+    reached.insert(source);
+    workList.push(source);
+
+    while (!workList.empty())
+    {
+        const SVFGNode* node = workList.pop();
+        auto inIt = inState.find(node);
+        bool in = (inIt == inState.end()) ? Init : inIt->second;
+        bool out = in;
+
+        if (storeNodes.find(node) != storeNodes.end() && shouldConsiderStoreForMode(node, slice, ignorePtrStore))
+            out = Init;
+
+        for (auto edge : node->getOutEdges())
+        {
+            const SVFGNode* succ = edge->getDstNode();
+            if (!slice->inBackwardSlice(succ))
+                continue;
+
+            bool firstReach = reached.insert(succ).second;
+            auto succIt = inState.find(succ);
+            bool oldIn = (succIt == inState.end()) ? Init : succIt->second;
+            bool newIn = oldIn || out;
+            if (firstReach || newIn != oldIn)
+            {
+                inState[succ] = newIn;
+                workList.push(succ);
+            }
+        }
+    }
+
+}
+
+bool UninitChecker::isDefinitelyInitInComputedState(const Map<const SVFGNode*, bool>& inState, const SVFGNode* load) const
+{
+    const bool Init = false;
+    auto loadStateIt = inState.find(load);
+    if (loadStateIt == inState.end())
+        return false;
+    return loadStateIt->second == Init;
+}
+
 bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventStack& eventStack){
     bool flag = true;
+    Map<const SVFGNode*, bool> qualifierStateIgnorePtrStore;
+    Map<const SVFGNode*, bool> qualifierStateAllStore;
+    computeQualifierInferenceState(slice, true, qualifierStateIgnorePtrStore);
+    computeQualifierInferenceState(slice, false, qualifierStateAllStore);
+
     for(SVFGNodeSetIter lit = loadNodesBegin(), elit = loadNodesEnd(); lit!=elit; ++lit){
         
         if(!slice->inBackwardSlice(*lit)) continue;
+
+        bool ignorePtrStore = shouldIgnorePtrStoreForLoad(*lit);
+        const Map<const SVFGNode*, bool>& qualifierState = ignorePtrStore ? qualifierStateIgnorePtrStore : qualifierStateAllStore;
+        if(isDefinitelyInitInComputedState(qualifierState, *lit)) continue;
 
         SVFGNodeSet curStoreSet;
 
@@ -96,39 +199,8 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventSta
                 backwardWorkList.push(pre);
             }
 
-            if(storeNodes.find(node) != storeNodes.end()){
-
-                bool ignore_ptr_store = false;
-                if((*lit)->toString().find("load ptr") == std::string::npos) ignore_ptr_store = true;
-                else{
-                    for(auto edge : (*lit)->getOutEdges()){
-                        SVFGNode* next = edge->getDstNode();
-                        // 如果load后面是一个ActualParam，且后者没有出边(没有连到FormalParam)，说明调用了外部函数
-                        if(ActualParmVFGNode::classof(next) && next->getOutEdges().empty()){
-                            ignore_ptr_store = true;
-                        }
-                    }
-                }
-
-                // 对于非ptr类型的load，忽略ptr类的store操作
-                if(ignore_ptr_store){
-                    if(node->toString().find("store ptr") == std::string::npos) curStoreSet.insert(node);
-                    else{
-                        bool formal_param=false, cur_alloc=false;
-
-                        for(auto edge : node->getInEdges()){
-                            SVFGNode* pre = edge->getSrcNode();
-                            // 其中一个是FormalParam，说明是函数传参，把这个store也加入
-                            if(FormalParmVFGNode::classof(pre)){
-                                formal_param = true;
-                            }
-                            else if(pre == slice->getSource()) cur_alloc=true;
-                        }
-                        if(cur_alloc && formal_param) curStoreSet.insert(node);
-                    }
-                }
-                else curStoreSet.insert(node);
-            }
+            if(storeNodes.find(node) != storeNodes.end() && shouldConsiderStoreForLoad(*lit, node, slice))
+                curStoreSet.insert(node);
         }
 
 
