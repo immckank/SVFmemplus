@@ -69,17 +69,130 @@ void RangeAnalysis::analysisBufferRange(const StackObjVar* stackObjVar){
     //     }
             
     // }
-    bufferRanges[stackObjVar] = Range::UNDEFINED;
+    bufferRanges[stackObjVar] = Range::BOTTOM;
 };
          
 
 
-Range RangeAnalysis::analysisIndexRange(const SVFVar* array, const GepStmt* gepStmt){
+Range RangeAnalysis::analysisIndexRange(const SVFVar* index, const GepStmt* gepStmt){
     // calculate offset
     AccessPath ap = gepStmt->getAccessPath();
     s64_t offset = ap.computeConstantOffset();
     return Range(offset, offset);
 };
+
+// // TODO
+// Range analyze(const SVFVar* var) {
+//     // 1. 用 map 作为 visited + memo
+//     auto it = indexRanges.find(var);
+//     if (it != indexRanges.end()) {
+//         return it->second;
+//     }
+
+//     // 先放一个 UNDEFINED 防止递归环
+//     indexRanges[var] = Range::UNDEFINED;
+
+//     // 2. 拿到 LLVM Value
+//     auto llvmVal =
+//         LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(var);
+
+//     if (!llvmVal) {
+//         return Range::UNDEFINED;
+//     }
+
+//     Range result = Range::UNDEFINED;
+
+//     // -------------------------
+//     // 3. 常量
+//     // -------------------------
+//     if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(llvmVal)) {
+//         long long v = ci->getSExtValue();
+//         result = Range(v, v);
+//     }
+
+//     // -------------------------
+//     // 4. BinaryOperator
+//     // -------------------------
+//     else if (auto* bin = llvm::dyn_cast<llvm::BinaryOperator>(llvmVal)) {
+
+//         auto* lhsVal = bin->getOperand(0);
+//         auto* rhsVal = bin->getOperand(1);
+
+//         const SVFVar* lhs = LLVMModuleSet::getLLVMModuleSet()
+//                                 ->getSVFVar(lhsVal);
+//         const SVFVar* rhs = LLVMModuleSet::getLLVMModuleSet()
+//                                 ->getSVFVar(rhsVal);
+
+//         Range r1 = analyze(lhs);
+//         Range r2 = analyze(rhs);
+
+//         if (!r1.isUndefined() && !r2.isUndefined()) {
+
+//             switch (bin->getOpcode()) {
+
+//                 case llvm::Instruction::Add:
+//                     result = r1 + r2;
+//                     break;
+
+//                 case llvm::Instruction::Sub:
+//                     result = Range(
+//                         r1.getLower() - r2.getUpper(),
+//                         r1.getUpper() - r2.getLower()
+//                     );
+//                     break;
+
+//                 case llvm::Instruction::Mul:
+//                     result = multiplyRange(r1, r2);
+//                     break;
+
+//                 default:
+//                     result = Range::UNDEFINED;
+//             }
+//         }
+//     }
+
+//     // -------------------------
+//     // 5. PHI（关键）
+//     // -------------------------
+//     else if (auto* phi = llvm::dyn_cast<llvm::PHINode>(llvmVal)) {
+
+//         for (unsigned i = 0; i < phi->getNumIncomingValues(); ++i) {
+
+//             auto* incomingVal = phi->getIncomingValue(i);
+
+//             const SVFVar* v =
+//                 LLVMModuleSet::getLLVMModuleSet()->getSVFVar(incomingVal);
+
+//             Range r = analyze(v);
+
+//             result = Range::merge(result, r);
+//         }
+//     }
+
+//     // -------------------------
+//     // 6. Cast（常见）
+//     // -------------------------
+//     else if (auto* castInst = llvm::dyn_cast<llvm::CastInst>(llvmVal)) {
+
+//         auto* src = castInst->getOperand(0);
+//         const SVFVar* v =
+//             LLVMModuleSet::getLLVMModuleSet()->getSVFVar(src);
+
+//         result = analyze(v);
+//     }
+
+//     // -------------------------
+//     // 7. 其他（load/call/GEP等）
+//     // -------------------------
+//     else {
+//         result = Range::UNDEFINED;
+//     }
+
+//     // 8. 写回缓存（关键）
+//     indexRanges[var] = result;
+
+//     return result;
+// }
 
 
 
@@ -88,7 +201,7 @@ Range RangeAnalysis::getBufferRange(const SVFVar* buffer){
     if (it != bufferRanges.end()) {
         return it->second;
     }
-    return Range::UNDEFINED;
+    return Range::BOTTOM;
 };
 
 
@@ -98,5 +211,5 @@ Range RangeAnalysis::getIndexRange(const SVFVar* index){
     if (it != indexRanges.end()) {
         return it->second;
     }
-    return Range::UNDEFINED;
+    return Range::BOTTOM;
 };

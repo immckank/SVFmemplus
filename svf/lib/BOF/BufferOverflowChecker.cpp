@@ -79,7 +79,8 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
                 // get destination node
                 SVFVar* dstVar = gepStmt->getLHSVar();  // gepStmt->getDstNode(); 
                 
-                Range accumulate_offset = rangeAnalysis.analysisIndexRange(dstVar, gepStmt) + srcNode.accumulate_offset;
+                Range accumulate_offset = Range::add(rangeAnalysis.analysisIndexRange(dstVar, gepStmt),
+                                                    srcNode.accumulate_offset);
                 Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
                 // printf("Access index: [%lld,%lld], Array size: [%lld,%lld]\n", accumulate_offset.getLower(), accumulate_offset.getUpper(), buffer_size.getLower(), buffer_size.getUpper());
