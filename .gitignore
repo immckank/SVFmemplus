@@ -34,3 +34,6 @@ AGENTS.md
 
 *.py
 bug_stats.md
+
+partition_checker/
+script/
