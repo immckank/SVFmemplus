@@ -66,6 +66,11 @@ public:
 private:
     SVFGNodeSet storeNodes;
     SVFGNodeSet loadNodes;
+    bool shouldIgnorePtrStoreForLoad(const SVFGNode* load) const;
+    bool shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const;
+    bool shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
+    void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, Map<const SVFGNode*, bool>& inState) const;
+    bool isDefinitelyInitInComputedState(const Map<const SVFGNode*, bool>& inState, const SVFGNode* load) const;
 
 };
 
