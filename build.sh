@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # type './build.sh'       for release build with dynamic libs, SVF and LLVM RTTI on
 # type './build.sh debug' for debug build with dynamic libs, SVF and LLVM RTTI on
 # type './build.sh dyn_lib' for release build with dynamic libs, SVF and LLVM RTTI on
@@ -295,6 +295,7 @@ BUILD_DIR="./${BUILD_TYPE}-build"
 
 rm -rf "${BUILD_DIR}"
 mkdir "${BUILD_DIR}"
+
 # If you need shared libs, turn BUILD_SHARED_LIBS on
 cmake -D CMAKE_BUILD_TYPE:STRING="${BUILD_TYPE}"   \
     -DSVF_ENABLE_ASSERTIONS:BOOL=true              \
@@ -306,6 +307,7 @@ cmake --build "${BUILD_DIR}" -j ${jobs}
 ########
 # Set up environment variables of SVF
 ########
+
 source ${SVFHOME}/setup.sh ${BUILD_TYPE}
 
 #########

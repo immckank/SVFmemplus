@@ -1137,11 +1137,6 @@ public:
         return loopAndDom->dominate(bbKey,bbValue);
     }
 
-    inline bool strictlyDominate(const SVFBasicBlock* bbKey, const SVFBasicBlock* bbValue) const
-    {
-        return loopAndDom->strictlyDominate(bbKey,bbValue);
-    }
-
     inline bool postDominate(const SVFBasicBlock* bbKey, const SVFBasicBlock* bbValue) const
     {
         return loopAndDom->postDominate(bbKey,bbValue);

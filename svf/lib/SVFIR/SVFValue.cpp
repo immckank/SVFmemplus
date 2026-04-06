@@ -124,38 +124,6 @@ bool SVFLoopAndDomInfo::dominate(const SVFBasicBlock* bbKey, const SVFBasicBlock
     return false;
 }
 
-bool SVFLoopAndDomInfo::strictlyDominate(const SVFBasicBlock* bbKey, const SVFBasicBlock* bbValue) const
-{
-    if (bbKey == bbValue) 
-        return false; // 严格支配不包含自身
-
-    // 不可达节点处理
-    if (isUnreachable(bbValue))
-        return true;
-    if (isUnreachable(bbKey))
-        return false;
-
-    const Map<const SVFBasicBlock*, BBSet>& dtBBsMap = getDomTreeMap();
-    auto it = dtBBsMap.find(bbKey);
-    if (it == dtBBsMap.end())
-        return false;
-
-    const BBSet& directChildren = it->second;
-
-    // 直接支配
-    if (directChildren.find(bbValue) != directChildren.end())
-        return true;
-
-    // 间接支配，通过递归检查子节点
-    for (const SVFBasicBlock* child : directChildren)
-    {
-        if (strictlyDominate(child, bbValue))
-            return true;
-    }
-
-    return false;
-}
-
 bool SVFLoopAndDomInfo::postDominate(const SVFBasicBlock* bbKey, const SVFBasicBlock* bbValue) const
 {
     if (bbKey == bbValue)
@@ -220,5 +188,37 @@ bool SVFLoopAndDomInfo::isLoopHeader(const SVFBasicBlock* bb) const
         assert(!blocks.empty() && "no available loop info?");
         return blocks.front() == bb;
     }
+    return false;
+}
+
+bool SVFLoopAndDomInfo::strictlyDominate(const SVFBasicBlock* bbKey, const SVFBasicBlock* bbValue) const
+{
+    if (bbKey == bbValue) 
+        return false; // 严格支配不包含自身
+
+    // 不可达节点处理
+    if (isUnreachable(bbValue))
+        return true;
+    if (isUnreachable(bbKey))
+        return false;
+
+    const Map<const SVFBasicBlock*, BBSet>& dtBBsMap = getDomTreeMap();
+    auto it = dtBBsMap.find(bbKey);
+    if (it == dtBBsMap.end())
+        return false;
+
+    const BBSet& directChildren = it->second;
+
+    // 直接支配
+    if (directChildren.find(bbValue) != directChildren.end())
+        return true;
+
+    // 间接支配，通过递归检查子节点
+    for (const SVFBasicBlock* child : directChildren)
+    {
+        if (strictlyDominate(child, bbValue))
+            return true;
+    }
+
     return false;
 }

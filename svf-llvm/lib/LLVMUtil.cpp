@@ -28,6 +28,7 @@
  */
 
 #include "SVF-LLVM/LLVMUtil.h"
+#include "Util/Options.h"
 #include "SVFIR/ObjTypeInfo.h"
 #include <sstream>
 #include <llvm/Support/raw_ostream.h>
@@ -35,6 +36,11 @@
 
 
 using namespace SVF;
+
+bool LLVMUtil::isProgEntryFunction(const Function* fun)
+{
+    return fun && fun->getName() == Options::EntryFunction();
+}
 
 const Function* LLVMUtil::getProgFunction(const std::string& funName)
 {

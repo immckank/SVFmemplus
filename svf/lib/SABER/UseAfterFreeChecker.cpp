@@ -117,7 +117,7 @@ bool isBackEdge(const ICFGEdge* edge) {
     //如果二者来自同一基本块，那么不会是回边，但同一基本块本身肯定支配自己，对这一情况予以排除
     if (BBsrc == BBdst) return false; 
 
-    return Fsrc->strictlyDominate(BBdst, BBsrc);
+    return Fsrc->getLoopAndDomInfo()->strictlyDominate(BBdst, BBsrc);
 }
 
 

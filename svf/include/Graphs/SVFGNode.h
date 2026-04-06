@@ -31,6 +31,7 @@
 #define INCLUDE_MSSA_SVFGNODE_H_
 
 #include "Graphs/VFGNode.h"
+#include "MSSA/MSSAMuChi.h"
 #include "Graphs/SVFGEdge.h"
 
 namespace SVF

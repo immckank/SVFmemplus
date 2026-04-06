@@ -609,6 +609,12 @@ const Option<bool> Options::DisableWarn(
     true
 );
 
+const Option<std::string> Options::EntryFunction(
+    "entry-fun",
+    "Program entry function name for analysis (default: main)",
+    "main"
+);
+
 
 // Andersen.cpp
 const Option<bool> Options::ConsCGDotGraph(
@@ -834,6 +840,122 @@ const Option<u32_t> Options::AEPrecision(
     "precision",
     "symbolic abstraction precision for float",
     0
+);
+
+// GraphReader.cpp
+const Option<std::string> Options::FindCallSites(
+    "find-call-sites",
+    "Find all call sites of a function",
+    ""
+);
+
+const Option<std::string> Options::FindCalleeBody(
+    "find-callee-body",
+    "Print callee's body at a call site",
+    ""
+);
+
+const Option<std::string> Options::FindFuncBody(
+    "find-function-body",
+    "Print the body of the function at a location",
+    ""
+);
+
+const Option<std::string> Options::FindBodyByName(
+    "find-body-by-name",
+    "Find and print function body by name",
+    ""
+);
+
+const Option<std::string> Options::FindAllCallees(
+    "find-all-callees",
+    "Find all functions that can be called by a given function name (transitively)",
+    ""
+);
+
+const Option<std::string> Options::FindVarByLocation(
+    "find-var-by-location",
+    "Find and print SVFVar by source location",
+    ""
+);
+
+const Option<std::string> Options::PathCondStart(
+    "path-cond-start",
+    "Start location for path condition analysis",
+    ""
+);
+
+const Option<std::string> Options::PathCondEnd(
+    "path-cond-end",
+    "End location for path condition analysis",
+    ""
+);
+
+const Option<std::string> Options::ValuePathStart(
+    "value-path-start",
+    "Start location for value path analysis (e.g., file.c:123)",
+    ""
+);
+
+const Option<std::string> Options::ValuePathOp(
+    "value-path-op",
+    "Operand index for the value path start location (-1 for defined value)",
+    "-1"
+);
+
+const Option<std::string> Options::ValuePathInsideStart(
+    "value-path-inside-start",
+    "Start location for intra-procedural value path analysis (e.g., file.c:123)",
+    ""
+);
+
+
+// const Option<int> Options::StartOp(
+//     "start-op",
+//     "Operand index for the start location (-1 for defined value)",
+//     -1
+// );
+
+// const Option<int> Options::EndOp(
+//     "end-op",
+//     "Operand index for the end location (-1 for defined value)",
+//     -1
+// );
+
+const Option<std::string> Options::PathCondFuncStart(
+    "path-cond-func-start",
+    "Start location for path condition and function call analysis",
+    ""
+);
+
+const Option<std::string> Options::PathCondFuncEnd(
+    "path-cond-func-end",
+    "End location for path condition and function call analysis",
+    ""
+);
+
+const Option<std::string> Options::PathCondInsideStart(
+    "path-cond-inside-start",
+    "Start location for intra-procedural path condition analysis",
+    ""
+);
+
+const Option<std::string> Options::PathCondInsideEnd(
+    "path-cond-inside-end",
+    "End location for intra-procedural path condition analysis",
+    ""
+);
+
+const Option<std::string> Options::Analysis(
+    "analysis",
+    "Specify the type of analysis to run (e.g., svfg-check)",
+    ""
+);
+
+const Option<std::string> Options::ShowSVFGNode(
+    "show-svfg-node",
+    "Show SVFG nodes associated with a source location (e.g., file.c:123)",
+    ""
 );
 
 // SaberSVFGBuilder.cpp

@@ -29,6 +29,7 @@
 
 #include "Util/Options.h"
 #include "SABER/LeakChecker.h"
+#include "Graphs/VFGNode.h"
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -145,6 +146,18 @@ void LeakChecker::initSnks()
     }
 }
 
+static std::string getSinkNodeLoc(const SVFGNode* snk)
+{
+    const ICFGNode* icfgNode = nullptr;
+    if (SVFUtil::isa<ActualParmVFGNode>(snk))
+        icfgNode = SVFUtil::cast<ActualParmVFGNode>(snk)->getCallSite();
+    else if (SVFUtil::isa<StmtVFGNode>(snk))
+        icfgNode = SVFUtil::cast<StmtVFGNode>(snk)->getPAGEdge()->getICFGNode();
+    else
+        icfgNode = snk->getICFGNode();
+    return icfgNode ? icfgNode->getSourceLoc() : "(unknown)";
+}
+
 void LeakChecker::reportBug(ProgSlice* slice)
 {
 
@@ -156,6 +169,12 @@ void LeakChecker::reportBug(ProgSlice* slice)
             SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource()))
         };
         report.addSaberBug(GenericBug::NEVERFREE, eventStack);
+        // 仅在确认泄漏时输出 sink 点位置
+        for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
+        {
+            const SVFGNode* snk = *it;
+            SVFUtil::errs() << "\t\t sink at : ( " << getSinkNodeLoc(snk) << " )\n";
+        }
     }
     else if (isAllPathReachable() == false && isSomePathReachable() == true)
     {
@@ -165,6 +184,12 @@ void LeakChecker::reportBug(ProgSlice* slice)
         eventStack.push_back(
             SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource())));
         report.addSaberBug(GenericBug::PARTIALLEAK, eventStack);
+        // 仅在确认泄漏时输出 sink 点位置
+        for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
+        {
+            const SVFGNode* snk = *it;
+            SVFUtil::errs() << "\t\t sink at : ( " << getSinkNodeLoc(snk) << " )\n";
+        }
     }
 
     if(Options::ValidateTests())

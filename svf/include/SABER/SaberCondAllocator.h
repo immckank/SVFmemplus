@@ -56,6 +56,13 @@ public:
     typedef Map<const SVFBasicBlock*, Condition> BBToCondMap;	///< map a basic block to its condition during control-flow guard computation
     typedef FIFOWorkList<const SVFBasicBlock*> CFWorkList;	///< worklist for control-flow guard computation
     typedef Map<const SVFGNode*, Set<const SVFGNode*>> SVFGNodeToSVFGNodeSetMap;
+    typedef Map<u32_t, Condition> IdToConditionMap;
+
+    struct ConditionInfo
+    {
+        Condition cond;
+        bool isNeg;
+    };
 
 
     /// Constructor
@@ -201,6 +208,9 @@ public:
         return isEquivalentBranchCond(condition, Condition::getTrueCond());
     }
 
+    /// Return all boolean conditions associated with an instruction (if any)
+    std::vector<ConditionInfo> getConditionsForNode(const ICFGNode* inst) const;
+
     /// Whether lhs and rhs are equivalent branch conditions
     bool isEquivalentBranchCond(const Condition &lhs, const Condition &rhs) const;
 
@@ -302,6 +312,7 @@ private:
     BBToCondMap bbToCondMap;				///< map a basic block to its path condition starting from root
     const SVFGNode* curEvalSVFGNode{};			///< current llvm value to evaluate branch condition when computing guards
     IndexToTermInstMap idToTermInstMap;     ///key: z3 expression id, value: instruction
+    IdToConditionMap idToConditionMap;      ///key: z3 expression id, value: condition expr
     NodeBS negConds;                        ///bit vector for distinguish neg
     std::vector<Condition> conditionVec;          /// vector storing z3expression
     static u32_t totalCondNum; /// a counter for fresh condition

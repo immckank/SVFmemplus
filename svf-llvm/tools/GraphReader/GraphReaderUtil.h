@@ -1,0 +1,288 @@
+#ifndef GRAPH_READER_UTIL_H
+#define GRAPH_READER_UTIL_H
+
+#include "Graphs/ICFG.h"
+#include "SVFIR/SVFIR.h"
+#include "SVFIR/SVFVariables.h"
+#include "SVFIR/SVFValue.h"
+#include "Graphs/SVFG.h"
+#include "Graphs/SVFGNode.h"
+#include <llvm/ADT/StringRef.h>
+#include <llvm/IR/Function.h>
+#include <llvm/Support/JSON.h>
+#include <string>
+#include <vector>
+
+namespace SVF {
+
+class SVFIR; // Forward declaration
+class SVFG;  // Forward declaration
+class SaberCondAllocator;
+
+namespace GraphReaderUtil {
+
+    struct SourceLocation {
+        std::string fl;
+        int64_t ln = 0;
+        int64_t cl = -1;
+
+        bool isValid() const { return !fl.empty() && ln > 0; }
+    };
+
+    /// Register a global SaberCondAllocator instance for debug utilities
+    void setSaberCondAllocator(SaberCondAllocator* allocator);
+
+    /// Retrieve the currently registered SaberCondAllocator instance
+    SaberCondAllocator* getSaberCondAllocator();
+
+    /*!
+     * \brief Finds an ICFGNode based on a source code location string.
+     * \param icfg Pointer to the ICFG.
+     * \param location A string in "filename:line" format.
+     * \return A const pointer to the matched ICFGNode, or nullptr if not found.
+     */
+    const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const std::string& location);
+    const ICFGNode* findICFGNodeByLocation(const ICFG* icfg, const SourceLocation& location);
+
+    /*!
+     * \brief Finds ALL ICFGNodes matching a source code location string.
+     * \param icfg Pointer to the ICFG.
+     * \param location A string in "filename:line" format.
+     * \return A vector of all matching ICFGNodes.
+     */
+    std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const std::string& location);
+    std::vector<const ICFGNode*> findAllICFGNodesByLocation(const ICFG* icfg, const SourceLocation& location);
+ 
+
+    /*!
+     * \brief Parses an SVF source location string into a JSON object.
+     * This is a robust replacement for the old manual string parsing.
+     */
+    llvm::json::Object parseSourceLocation(const std::string& sourceLocString);
+    SourceLocation parseSourceLocationStruct(const std::string& sourceLocString);
+    llvm::json::Object toJson(const SourceLocation& location, bool includeAliases = true);
+    std::string toString(const SourceLocation& location);
+    std::string normalizePathLexically(const std::string& path);
+    std::string getLastLocationLookupDiagnostic();
+
+    /*!
+     * \brief Converts SVFGNode kind to a string representation.
+     * \param node Pointer to the SVFGNode.
+     * \param detailed When true, returns detailed class names (e.g. StoreVFGNode).
+     * \return A string describing the node kind.
+     */
+    std::string getSVFGNodeKindString(const SVFGNode* node, bool detailed = false);
+
+    /*!
+     * \brief Creates and prints a standardized JSON error response.
+     * \param message The error message to include in the JSON output.
+     */
+    void sendJsonError(const std::string& message);
+
+    /*!
+     * \brief Creates a JSON object containing a function's source information.
+     * \param llvmFun Pointer to the LLVM function.
+     * \return A llvm::json::Object with function_name, filename, start_line, and end_line.
+     */
+    llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun);
+
+    /*!
+     * \brief Formats an IntraCFGEdge's branch information into a JSON object.
+     * \param intraEdge The edge to format.
+     * \return A llvm::json::Object with type, location, and condition_value.
+     */
+    llvm::json::Object formatBranchInfo(const IntraCFGEdge* intraEdge);
+
+    /*!
+     * \brief Gets store operation column information at a given source location.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param location A string in "filename:line" format.
+     * \return A llvm::json::Object with location and store_cl array containing column numbers.
+     */
+    llvm::json::Object getStoreClInfoJson(SVFG* svfg, ICFG* icfg, const SourceLocation& location);
+
+    llvm::json::Object getGepClInfoJson(SVFG* svfg, ICFG* icfg, const SourceLocation& location);
+
+    /// Parse a JSON string into a list of command objects.
+    /// Supports: an array of objects; a single object; or an object with a
+    /// top-level "commands" array. Returns true on success; otherwise false and
+    /// sets errMsg.
+    bool parseCommandsLine(const std::string& jsonStr, std::vector<llvm::json::Object>& outCmds, std::string& errMsg);
+
+    bool fetchFunctionStartLocation(SVFIR* pag, const std::string& funcName, std::string& startLocation);
+
+    /*!
+     * \brief Gets the PAGNode for a specific function argument.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param funcName The name of the function.
+     * \param argIndex The index of the argument (0-based).
+     * \return A const pointer to the PAGNode of the argument, or nullptr if not found.
+     */
+    const PAGNode* getPAGNodeFromArg(SVFIR* pag, const std::string& funcName, int argIndex);
+
+    /*!
+     * \brief Gets the LHS PAGNode from a source location and equation position.
+     * \param icfg Pointer to the ICFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param location A string in "filename:line" format.
+     * \param eqPosition The equation position (column) to match.
+     * \return A const pointer to the LHS PAGNode, or nullptr if not found.
+     */
+    const PAGNode* getPAGNodeFromLvar(ICFG* icfg, SVFIR* pag, const SourceLocation& location, int eqPosition);
+
+    /*!
+     * \brief Gets the base PAGNode from a GEP operation at a source location and equation position.
+     * This function finds GEP statements and returns the base object (RHS) rather than the result (LHS).
+     * If the base is itself a GepValVar, it recursively extracts the ultimate base object.
+     * \param icfg Pointer to the ICFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param location A string in "filename:line" format.
+     * \param eqPosition The equation position (column) to match.
+     * \return A const pointer to the base PAGNode, or nullptr if not found.
+     */
+    const PAGNode* getPAGNodeFromLvarGEP(ICFG* icfg, SVFIR* pag, const SourceLocation& location, int eqPosition);
+
+    /*!
+     * \brief Gets the PAGNode for a call argument at a specific location.
+     * \param icfg Pointer to the ICFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param location A string in "filename:line" format for the call site.
+     * \param argIndex The argument index (0-based).
+     * \return A const pointer to the PAGNode of the argument, or nullptr if not found.
+     */
+    const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const SourceLocation& location, int argIndex, const std::string& functionName = "");
+
+
+    /*!
+     * \brief Recursively traces the definition chain of a PAGNode to its ultimate source.
+     * Follows LoadVFGNode → Store operations until reaching an ultimate source like
+     * FormalParmVFGNode, AddrVFGNode, or ActualRetVFGNode.
+     * Returns both the direct definition and the ultimate source in JSON format.
+     * \param svfg Pointer to the SVFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param pagNode The PAGNode to query.
+     */
+    void tracePAGStore(SVFG* svfg, SVFIR* pag, const SVFVar* pagNode);
+
+    /*!
+     * \brief Returns true if the given PAG node (l-value or r-value) can be traced back to a FormalParmVFGNode.
+     *        This function can handle arbitrary statement types, including:
+     *        - Store statements: checks if the destination (LHS) traces to a formal parameter
+     *        - GEP statements: checks if the LHS or RHS (source object) traces to a formal parameter
+     *        - Load statements: traces back through the loaded address and its stores
+     *        - Copy statements: traces back through the RHS
+     *        - Addr statements: checks if the alloca stores a parameter
+     *        This performs a lightweight backward walk similar to tracePAGStore, but stops as soon
+     *        as a formal parameter is discovered.
+     * \param svfg Pointer to the SVFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param pagNode The PAG node to check (can be LHS or RHS of any statement).
+     * \return true if the node can be traced back to a FormalParmVFGNode, false otherwise.
+     */
+    bool isLvarFormalParm(SVFG* svfg, SVFIR* pag, const PAGNode* pagNode);
+
+    /*!
+     * \brief Shows all ICFG nodes and their corresponding SVFG nodes at a given source location.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param location A string in "filename:line" format.
+     */
+    void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location);
+
+    /*!
+     * \brief Lists all formal-parameter SVFG nodes for a given function.
+     * \param svfg Pointer to the SVFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param functionName The callee function name.
+     * \return A JSON object with "formal_args" or "error" (string) on failure.
+     */
+    llvm::json::Object listFormalArgNodes(SVFG* svfg, SVFIR* pag, const std::string& functionName);
+
+    /*!
+     * \brief Lists all actual-parameter SVFG nodes at a callsite.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param location Callsite location in "filename:line" format.
+     * \param calleeFunctionName The callee function name.
+     * \return A JSON object with "actual_args" or "error" (string) on failure.
+     */
+    llvm::json::Object listCallsiteActualArgNodes(SVFG* svfg, ICFG* icfg, const SourceLocation& location, const std::string& calleeFunctionName);
+
+    /*!
+     * \brief Finds the return-value SVFG node at a callsite.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param location Callsite location in "filename:line" format.
+     * \param calleeFunctionName The callee function name.
+     * \return A JSON object with "return_node" or "error" (string) on failure.
+     */
+    llvm::json::Object findCallsiteReturnNode(SVFG* svfg, ICFG* icfg, const SourceLocation& location, const std::string& calleeFunctionName);
+
+    /*!
+     * \brief Lists all SVFG nodes bound to a given source code line.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param location A string in "filename:line" format.
+     * \return A JSON object with "svfg_nodes" or "error" (string) on failure.
+     */
+    llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const SourceLocation& location, int64_t column = -1);
+
+    /*!
+     * \brief Traces a call argument's value flow and finds its definition point.
+     * Combines argument tracing with backward data flow to find where the value was stored.
+     * Returns the PAGNode of the stored value (e.g., malloc result).
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param callLocation Source location of the function call.
+     * \param argIndex The argument index (0-based).
+     * \return The PAGNode representing the value's definition, or nullptr if not found.
+     */
+    const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& callLocation, const std::string& functionName, int argIndex);
+
+    /*!
+     * \brief Analyze the left-hand side of a Store statement at a given source location/column.
+     * \param svfg Pointer to the SVFG.
+     * \param icfg Pointer to the ICFG.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param location A string in "filename:line" format.
+     * \param eqPosition The column number of the store statement.
+     * \return A JSON object describing the LHS, including struct/member info, offsets, etc.
+     */
+    llvm::json::Object analyzeStoreLValue(SVFG* svfg,
+                                          ICFG* icfg,
+                                          SVFIR* pag,
+                                          const SourceLocation& location,
+                                          int eqPosition);
+
+    /*!
+     * \brief Checks if a function eventually calls any free function through the call graph.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param functionName The name of the function to check.
+     * \return A JSON object with isReachable (true/false) and callchains (array of function name arrays).
+     */
+    llvm::json::Object checkFunctionCallsFree(SVFIR* pag, const std::string& functionName);
+
+    /*!
+     * \brief Finds all functions that call free functions and records their distance to free.
+     * Distance: 0 = free function itself, 1 = directly calls free, 2+ = indirectly calls free.
+     * Uses bottom-up iterative analysis until convergence.
+     * \param pag Pointer to the SVFIR/PAG.
+     * \param silent If true, suppresses all debug output. Default is false.
+     * \return A JSON object with function distance map and iteration_info.
+     */
+    llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent = false);
+
+    /*!
+     * \brief Gets the map of function names to their distance to free functions.
+     * Distance: 0 = free function itself, 1 = directly calls free, 2+ = indirectly calls free.
+     * Smaller distance means higher priority (closer to free).
+     * \return A reference to the map of function names to distances.
+     */
+    const Map<std::string, int>& getFreeCallerDistances();
+
+} // namespace GraphReaderUtil
+} // namespace SVF
+
+#endif // GRAPH_READER_UTIL_H
