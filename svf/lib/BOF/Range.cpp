@@ -59,27 +59,22 @@ Range::BoundType Range::getUpper() const {
 }
 
 
-// ===== 运算符 =====
-Range Range::operator+(const Range& other) const {
-    return Range(
-        safeAdd(lower, other.lower),
-        safeAdd(upper, other.upper)
-    );
-}
-
-Range& Range::operator+=(const Range& other) {
-    *this = *this + other;
-    return *this;
-}
-
-
 // ===== tool =====
 bool Range::isBottom() const {
     return lower > upper;
 }
 
 bool Range::isTop() const {
-    return lower == INF && upper == NINF;
+    return lower == NINF && upper == INF;
+}
+
+bool Range::isConstant() const {
+    return lower == upper;
+}
+
+bool Range::isSubset(const Range& other) const {
+    return lower >= other.getLower() 
+    && upper <= other.getUpper(); 
 }
 
 Range::BoundType Range::safeAdd(BoundType lhs, BoundType rhs) {
@@ -105,16 +100,6 @@ Range::BoundType Range::safeMul(BoundType lhs, BoundType rhs) {
     else
         return lhs * rhs;
 }
-
-bool Range::isSubset(const Range& other) const {
-    return lower >= other.getLower() 
-    && upper <= other.getUpper(); 
-}
-
-bool Range::isConstant() const {
-    return lower == upper;
-}
-
 
 // ===== Lattice Alergbra =====
 // Arithmetic Operations
@@ -296,7 +281,6 @@ Range Range::logical_or(const Range& lhs, const Range& rhs) {
     );
 }
 
-// ===== 控制流 =====
 Range Range::join(const Range& lhs, const Range& rhs) {
     if (lhs.isBottom()) 
         return rhs;

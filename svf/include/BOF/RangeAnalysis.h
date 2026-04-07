@@ -39,14 +39,14 @@
 namespace SVF {
     class RangeAnalysis {
         public:
-            void analysisBufferRange(const StackObjVar* stackObjVar);
-            Range analysisIndexRange(const SVFVar* index, const GepStmt* gepStmt);
+            void analyzeBufferRange(const StackObjVar* stackObjVar);
+            Range analyzeVarRange(const SVFVar* var);
             Range getBufferRange(const SVFVar* buffer);
-            Range getIndexRange(const SVFVar* index);
+            Range getVarRange(const SVFVar* var);
 
         private:
             std::unordered_map<const SVFVar*, Range> bufferRanges;
-            std::unordered_map<const SVFVar*, Range> indexRanges;
+            std::unordered_map<const SVFVar*, Range> varRanges;
     };
 }
 

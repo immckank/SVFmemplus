@@ -31,7 +31,7 @@
 using namespace SVF;
 using namespace std;
 
-void RangeAnalysis::analysisBufferRange(const StackObjVar* stackObjVar){
+void RangeAnalysis::analyzeBufferRange(const StackObjVar* stackObjVar){
     u64_t size = 0;
     // handle case: %arrayidx = alloca [10*i32], align 16
     const SVFType* objType = stackObjVar->getType();
@@ -39,7 +39,7 @@ void RangeAnalysis::analysisBufferRange(const StackObjVar* stackObjVar){
     size = objInfo->getNumOfFlattenElements();
     if(size > 1)
     {
-        Range buffer_size = Range(0, size);
+        Range buffer_size = Range(0, size-1);
         bufferRanges[stackObjVar] = buffer_size;
         return;
     }
@@ -49,7 +49,7 @@ void RangeAnalysis::analysisBufferRange(const StackObjVar* stackObjVar){
     size = stackObjVar->getNumOfElements();
     if(size > 1)
     {      
-        Range buffer_size  = Range(0, size);
+        Range buffer_size  = Range(0, size-1);
         bufferRanges[stackObjVar] = buffer_size;
         return;
     }
@@ -73,126 +73,125 @@ void RangeAnalysis::analysisBufferRange(const StackObjVar* stackObjVar){
 };
          
 
+Range RangeAnalysis::analyzeVarRange(const SVFVar* var) {
+    // ===== Try to find in cahe =====
+    Range var_range_find = getVarRange(var);
+    if(!var_range_find.isBottom()) // found
+        return var_range_find;
+    else if(var_range_find.isTop()) // already defined
+        return var_range_find;
+        
+    // ===== Constant Computing =====
+    if(const ConstIntValVar* intVar = SVFUtil::dyn_cast<ConstIntValVar>(var)){
+        varRanges[var] = Range(intVar->getSExtValue());
+        return varRanges[var];
+    }
 
-Range RangeAnalysis::analysisIndexRange(const SVFVar* index, const GepStmt* gepStmt){
-    // calculate offset
-    AccessPath ap = gepStmt->getAccessPath();
-    s64_t offset = ap.computeConstantOffset();
-    return Range(offset, offset);
-};
+    // ===== Dynamic Computing =====
+    varRanges[var] = Range::TOP;
+    Range var_range = Range::BOTTOM;
 
-// // TODO
-// Range analyze(const SVFVar* var) {
-//     // 1. 用 map 作为 visited + memo
-//     auto it = indexRanges.find(var);
-//     if (it != indexRanges.end()) {
-//         return it->second;
-//     }
+    // Addr, Copy, Store, Load, Call, Ret, Gep, Phi, Select, Cmp, BinaryOp, UnaryOp, Branch, ThreadFork, ThreadJoin
+    SVFStmt::PEDGEK checkType;
 
-//     // 先放一个 UNDEFINED 防止递归环
-//     indexRanges[var] = Range::UNDEFINED;
+    checkType = SVFStmt::PEDGEK::Load;
+    if(var->hasIncomingEdges(checkType)){
+        // OrderedSet<SVFStmt*>
+        for(auto stmt = var->getIncomingEdgesBegin(checkType); stmt != var->getIncomingEdgesEnd(checkType); ++stmt){
+            if(const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(*stmt)){
+                const SVFVar* rhs = loadStmt->getRHSVar(); 
+                var_range = Range::join(var_range, analyzeVarRange(rhs));
+            }
+        }
+    }
 
-//     // 2. 拿到 LLVM Value
-//     auto llvmVal =
-//         LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(var);
+    checkType = SVFStmt::PEDGEK::Store;
+    if(var->hasIncomingEdges(checkType)){
+        // OrderedSet<SVFStmt*>
+        for(auto stmt = var->getIncomingEdgesBegin(checkType); stmt != var->getIncomingEdgesEnd(checkType); ++stmt){
+            if(const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(*stmt)){
+                const SVFVar* rhs = storeStmt->getRHSVar(); 
+                var_range = Range::join(var_range, analyzeVarRange(rhs));
+            }
+        }
+    }
 
-//     if (!llvmVal) {
-//         return Range::UNDEFINED;
-//     }
-
-//     Range result = Range::UNDEFINED;
-
-//     // -------------------------
-//     // 3. 常量
-//     // -------------------------
-//     if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(llvmVal)) {
-//         long long v = ci->getSExtValue();
-//         result = Range(v, v);
-//     }
-
-//     // -------------------------
-//     // 4. BinaryOperator
-//     // -------------------------
-//     else if (auto* bin = llvm::dyn_cast<llvm::BinaryOperator>(llvmVal)) {
-
-//         auto* lhsVal = bin->getOperand(0);
-//         auto* rhsVal = bin->getOperand(1);
-
-//         const SVFVar* lhs = LLVMModuleSet::getLLVMModuleSet()
-//                                 ->getSVFVar(lhsVal);
-//         const SVFVar* rhs = LLVMModuleSet::getLLVMModuleSet()
-//                                 ->getSVFVar(rhsVal);
-
-//         Range r1 = analyze(lhs);
-//         Range r2 = analyze(rhs);
-
-//         if (!r1.isUndefined() && !r2.isUndefined()) {
-
-//             switch (bin->getOpcode()) {
-
-//                 case llvm::Instruction::Add:
-//                     result = r1 + r2;
-//                     break;
-
-//                 case llvm::Instruction::Sub:
-//                     result = Range(
-//                         r1.getLower() - r2.getUpper(),
-//                         r1.getUpper() - r2.getLower()
-//                     );
-//                     break;
-
-//                 case llvm::Instruction::Mul:
-//                     result = multiplyRange(r1, r2);
-//                     break;
-
-//                 default:
-//                     result = Range::UNDEFINED;
-//             }
-//         }
-//     }
-
-//     // -------------------------
-//     // 5. PHI（关键）
-//     // -------------------------
-//     else if (auto* phi = llvm::dyn_cast<llvm::PHINode>(llvmVal)) {
-
-//         for (unsigned i = 0; i < phi->getNumIncomingValues(); ++i) {
-
-//             auto* incomingVal = phi->getIncomingValue(i);
-
-//             const SVFVar* v =
-//                 LLVMModuleSet::getLLVMModuleSet()->getSVFVar(incomingVal);
-
-//             Range r = analyze(v);
-
-//             result = Range::merge(result, r);
-//         }
-//     }
-
-//     // -------------------------
-//     // 6. Cast（常见）
-//     // -------------------------
-//     else if (auto* castInst = llvm::dyn_cast<llvm::CastInst>(llvmVal)) {
-
-//         auto* src = castInst->getOperand(0);
-//         const SVFVar* v =
-//             LLVMModuleSet::getLLVMModuleSet()->getSVFVar(src);
-
-//         result = analyze(v);
-//     }
-
-//     // -------------------------
-//     // 7. 其他（load/call/GEP等）
-//     // -------------------------
-//     else {
-//         result = Range::UNDEFINED;
-//     }
-
-//     // 8. 写回缓存（关键）
-//     indexRanges[var] = result;
-
-//     return result;
-// }
+    checkType = SVFStmt::PEDGEK::Copy;
+    if(var->hasIncomingEdges(checkType)){
+        // OrderedSet<SVFStmt*>
+        for(auto stmt = var->getIncomingEdgesBegin(checkType); stmt != var->getIncomingEdgesEnd(checkType); ++stmt){
+            if(const CopyStmt* copyStmt = SVFUtil::dyn_cast<CopyStmt>(*stmt)){
+                const SVFVar* rhs = copyStmt->getRHSVar(); 
+                var_range = Range::join(var_range, analyzeVarRange(rhs)); // TODO: handle other type of copy
+            }
+        }
+    }
+    
+    checkType = SVFStmt::PEDGEK::BinaryOp;
+    if(var->hasIncomingEdges(checkType)){
+        // OrderedSet<SVFStmt*>
+        for(auto stmt = var->getIncomingEdgesBegin(checkType); stmt != var->getIncomingEdgesEnd(checkType); ++stmt){
+            if(const BinaryOPStmt* binaryOPStmt = SVFUtil::dyn_cast<BinaryOPStmt>(*stmt)){
+                if(binaryOPStmt->getOpVarNum() == 2){
+                    const SVFVar* op1 = binaryOPStmt->getOpVar(0);
+                    const SVFVar* op2 = binaryOPStmt->getOpVar(1);
+                    
+                    switch(binaryOPStmt->getOpcode()){
+                        // FAdd = 14,      // Sum of floats
+                        // FSub = 16,      // Subtraction of floats
+                        // FMul = 18,      // Product of floats.
+                        // FDiv = 21,      // Float division.
+                        // FRem = 24,      // Float remainder
+                        case BinaryOPStmt::OpCode::Add:  // Sum of integers
+                            var_range = Range::join(var_range, Range::add(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        case BinaryOPStmt::OpCode::Sub:  // Subtraction of integers
+                            var_range = Range::join(var_range, Range::sub(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        case BinaryOPStmt::OpCode::Mul:  // Product of integers
+                            var_range = Range::join(var_range, Range::mul(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        case BinaryOPStmt::OpCode::UDiv:  // Unsigned division
+                            var_range = Range::join(var_range, Range::div(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        case BinaryOPStmt::OpCode::SDiv:  // Signed division
+                            var_range = Range::join(var_range, Range::div(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        case BinaryOPStmt::OpCode::URem:  // Unsigned remainder
+                            var_range = Range::join(var_range, Range::mod(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        case BinaryOPStmt::OpCode::SRem:  // Signed remainder
+                            var_range = Range::join(var_range, Range::mod(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        case BinaryOPStmt::OpCode::Shl:  // Shift left  (logical)
+                            var_range = Range::join(var_range, Range::shl(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        case BinaryOPStmt::OpCode::LShr:  // Shift right (logical)
+                            var_range = Range::join(var_range, Range::shr(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        // TODO: change ashr of Range
+                        case BinaryOPStmt::OpCode::AShr:  // Shift right (arithmetic)
+                            var_range = Range::join(var_range, Range::shr(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        case BinaryOPStmt::OpCode::And:  // Logical and
+                            var_range = Range::join(var_range, Range::logical_and(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        case BinaryOPStmt::OpCode::Or:  // Logical or
+                            var_range = Range::join(var_range, Range::logical_or(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            break;
+                        // TODO: finish logical xor
+                        // case BinaryOPStmt::OpCode::Xor:  // Logical xor
+                        //     var_range = Range::join(var_range, Range::logical_or(analyze(op1), analyze(op2)));
+                        //     break;
+                    }
+                }
+            }
+        }
+    }
+    // Put in cache
+    varRanges[var] = var_range;
+    return var_range;
+}
 
 
 
@@ -206,9 +205,9 @@ Range RangeAnalysis::getBufferRange(const SVFVar* buffer){
 
 
             
-Range RangeAnalysis::getIndexRange(const SVFVar* index){
-    auto it = indexRanges.find(index);
-    if (it != indexRanges.end()) {
+Range RangeAnalysis::getVarRange(const SVFVar* var){
+    auto it = varRanges.find(var);
+    if (it != varRanges.end()) {
         return it->second;
     }
     return Range::BOTTOM;

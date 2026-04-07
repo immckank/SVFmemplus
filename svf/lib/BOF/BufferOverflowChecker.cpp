@@ -55,7 +55,7 @@ void BufferOverflowChecker::initialize(SVFIR* pag)
             
             // handle alloca instruction with stack obj
             if(const StackObjVar* stackObjVar = SVFUtil::dyn_cast<StackObjVar>(src)){
-                rangeAnalysis.analysisBufferRange(stackObjVar);
+                rangeAnalysis.analyzeBufferRange(stackObjVar);
                 worklist.push(RangeFlowNode(dst, src, Range(0,0)));
             }
         }   
@@ -64,6 +64,9 @@ void BufferOverflowChecker::initialize(SVFIR* pag)
 
 void BufferOverflowChecker::propagate(SVFIR* pag)
 {
+    // if(Options::ModelArrays()){
+    //     SVFUtil::outs << "model array is enabled!"
+    // }
     while (!worklist.empty())
     {
         RangeFlowNode srcNode = worklist.front();
@@ -71,22 +74,57 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
 
         // cout << srcNode.accumulate_offset.getLower() << " " << srcNode.accumulate_offset.getUpper() << endl;
 
-        for(const auto &svfStmt: srcNode.base->getOutEdges())
+        for(const auto& svfStmt: srcNode.base->getOutEdges())
         {   
             // Gep instruction
-            if(auto *gepStmt = SVFUtil::dyn_cast<GepStmt>(svfStmt))
+            if(const auto& gepStmt = SVFUtil::dyn_cast<GepStmt>(svfStmt))
             {
-                // get destination node
+                // Destination node
                 SVFVar* dstVar = gepStmt->getLHSVar();  // gepStmt->getDstNode(); 
+                const AccessPath& ap = gepStmt->getAccessPath();
+                const AccessPath::IdxOperandPairs& idxOperandPairs = ap.getIdxOperandPairVec();
                 
-                Range accumulate_offset = Range::add(rangeAnalysis.analysisIndexRange(dstVar, gepStmt),
-                                                    srcNode.accumulate_offset);
+                // s64_t offset = ap.computeConstantOffset();
+
+                Range total_offset = Range(0);
+                // if (idxOperandPairs.size() == 0)
+                //     return getConstantStructFldIdx();
+                for(int i = idxOperandPairs.size() - 1; i >= 0; i--)
+                {
+                    const SVFVar* var = idxOperandPairs[i].first;
+                    const SVFType* type = idxOperandPairs[i].second;
+
+                    Range var_offset = rangeAnalysis.analyzeVarRange(var);
+                    if(type == nullptr)
+                    {
+                        total_offset = Range::add(total_offset, var_offset);
+                        continue;
+                    }
+
+                    if(SVFUtil::isa<SVFPointerType>(type))
+                        total_offset = Range::add(total_offset, Range::mul(var_offset, Range(ap.getElementNum(ap.gepSrcPointeeType()))));
+                    else
+                    {
+                        const std::vector<u32_t>& so = PAG::getPAG()->getTypeInfo(type)->getFlattenedElemIdxVec();
+                        Range type_size = Range(0, so.size()-1);
+                        if(!var_offset.isSubset(type_size)){
+                            reportBufferOverflowError(dstVar, type, var_offset, type_size);
+                            var_offset = Range::meet(var_offset, type_size);
+                        }
+
+                        total_offset = Range::join(total_offset, Range(
+                            PAG::getPAG()->getFlattenedElemIdx(type, var_offset.getLower()),
+                            PAG::getPAG()->getFlattenedElemIdx(type, var_offset.getUpper())
+                        ));
+                    }
+                }
+                Range accumulate_offset = Range::add(total_offset, srcNode.accumulate_offset);
                 Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
                 // printf("Access index: [%lld,%lld], Array size: [%lld,%lld]\n", accumulate_offset.getLower(), accumulate_offset.getUpper(), buffer_size.getLower(), buffer_size.getUpper());
 
                 if(!accumulate_offset.isSubset(buffer_size)){
-                    reportBufferOverflowError(dstVar, accumulate_offset, buffer_size);
+                    reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size);
                 }
                 worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset));
 
@@ -103,7 +141,7 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
                 Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
                 if(!accumulate_offset.isSubset(buffer_size)){
-                    reportBufferOverflowError(dstVar, accumulate_offset, buffer_size);
+                    reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size);
                 }
 
                 worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset));
@@ -113,11 +151,19 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
 }
 
 
-void BufferOverflowChecker::reportBufferOverflowError(const SVFVar* base, Range offset, Range array_size)
+void BufferOverflowChecker::reportBufferOverflowError(const SVFVar* base, const SVFType* type, const Range& offset, const Range& array_size)
 {
-    SVFUtil::outs() << "[BufferOverflowChecker] Buffer Overflow Error detected! \n"
-                    << "Base: " << base->toString() << "\n"
-                    << "Buffer index: [" << offset.getLower() << "," << offset.getUpper() << "]\n"
-                    << "Buffer size: [" << array_size.getLower() << "," << array_size.getUpper() << "]\n"
-                    << "\n";
+    if(type != nullptr)
+        SVFUtil::outs() << "[BufferOverflowChecker] Buffer Overflow Error detected! \n"
+                        << "Base: " << base->toString() << "\n"
+                        << "Type: " << type->toString() << "\n"
+                        << "Buffer index: [" << offset.getLower() << "," << offset.getUpper() << "]\n"
+                        << "Buffer size: [" << array_size.getLower() << "," << array_size.getUpper() << "]\n"
+                        << "\n";
+    else
+        SVFUtil::outs() << "[BufferOverflowChecker] Buffer Overflow Error detected! \n"
+                        << "Base: " << base->toString() << "\n"
+                        << "Buffer index: [" << offset.getLower() << "," << offset.getUpper() << "]\n"
+                        << "Buffer size: [" << array_size.getLower() << "," << array_size.getUpper() << "]\n"
+                        << "\n";
 }

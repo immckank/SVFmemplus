@@ -44,7 +44,7 @@ namespace SVF {
             void runOnModule(SVFIR* pag);
             void initialize(SVFIR* pag);
             void propagate(SVFIR* pag);
-            void reportBufferOverflowError(const SVFVar* base, Range offset, Range size);
+            void reportBufferOverflowError(const SVFVar* base, const SVFType* type, const Range& offset, const Range& size);
 
         private:
             std::queue<RangeFlowNode>worklist;

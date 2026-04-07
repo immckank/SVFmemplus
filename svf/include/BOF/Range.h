@@ -53,10 +53,6 @@ namespace SVF {
             // getter
             BoundType getLower() const;
             BoundType getUpper() const;
-
-            // Operator
-            Range operator+(const Range& other) const;
-            Range& operator+=(const Range& other);
             
             // ===== Lattice Alergbra =====
             // Arithmetic Operations
