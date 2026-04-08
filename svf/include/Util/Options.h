@@ -200,6 +200,8 @@ public:
 
     // SVFUtil.cpp
     static const Option<bool> DisableWarn;
+    /// Program entry function name for analysis (default: main)
+    static const Option<std::string> EntryFunction;
 
     // Andersen.cpp
     static const Option<bool> ConsCGDotGraph;
@@ -216,7 +218,7 @@ public:
     // WPAPass.cpp
     static const Option<std::string> ExtAPIPath;
     static const Option<bool> AnderSVFG;
-    static const Option<bool> SABERFULLSVFG;
+    static Option<bool> SABERFULLSVFG;
     static const Option<bool> PrintAliases;
     static OptionMultiple<PointerAnalysis::PTATY> PASelected;
     static OptionMultiple<u32_t> AliasRule;
@@ -259,6 +261,8 @@ public:
     static const Option<bool> DFreeCheck;
     /// use after free checker, Default: false
     static const Option<bool> UAFCheck;
+    /// use of uninit checker, Default: false
+    static const Option<bool> UninitCheck;
     /// data race checker, Default: false
     static const Option<bool> RaceCheck;
     /// if the access index of gepstmt is unknown, skip it, Default: false
@@ -269,6 +273,28 @@ public:
 
     // float precision for symbolic abstraction
     static const Option<u32_t> AEPrecision;
+
+    // Whether to keep DerefDirSVFGEdges in SaberSVFGBuilder::buildSVFG, Default: false
+    static Option<bool> SaberKeepDerefDirSVFGEdges;
+
+    // GraphReader
+    static const Option<std::string> FindCallSites;
+    static const Option<std::string> FindCalleeBody;
+    static const Option<std::string> FindFuncBody;
+    static const Option<std::string> FindBodyByName;
+    static const Option<std::string> FindAllCallees;
+    static const Option<std::string> FindVarByLocation;
+    static const Option<std::string> PathCondStart;
+    static const Option<std::string> PathCondEnd;
+    static const Option<std::string> ValuePathStart;
+    static const Option<std::string> ValuePathOp;
+    static const Option<std::string> ValuePathInsideStart;
+    static const Option<std::string> PathCondFuncStart;
+    static const Option<std::string> PathCondFuncEnd;
+    static const Option<std::string> PathCondInsideStart;
+    static const Option<std::string> PathCondInsideEnd;
+    static const Option<std::string> Analysis;
+    static const Option<std::string> ShowSVFGNode;
 };
 }  // namespace SVF
 

@@ -37,8 +37,47 @@ public:
     void reportBug(ProgSlice* slice) override;
 
 
-    virtual void initSrcs() override;
     virtual void initSnks() override;
+
+    inline const SVFGNodeSet& getFreeNodes() const
+    {
+        return freeNodes;
+    }
+    inline SVFGNodeSetIter freeNodesBegin() const
+    {
+        return freeNodes.begin();
+    }
+    inline SVFGNodeSetIter freeNodesEnd() const
+    {
+        return freeNodes.end();
+    }
+    inline void addToFreeNodes(const SVFGNode* node)
+    {
+        freeNodes.insert(node);
+    }
+    inline const SVFGNodeSet& getUseNodes() const
+    {
+        return useNodes;
+    }
+    inline SVFGNodeSetIter useNodesBegin() const
+    {
+        return useNodes.begin();
+    }
+    inline SVFGNodeSetIter useNodesEnd() const
+    {
+        return useNodes.end();
+    }
+    inline void addToUseNodes(const SVFGNode* node)
+    {
+        useNodes.insert(node);
+    }
+
+    bool isSatisfiableForFreeAndUsePairs(ProgSlice* slice, GenericBug::EventStack& eventStack);
+
+private:
+    SVFGNodeSet freeNodes;
+    SVFGNodeSet useNodes;
+
 };
 
 } // End namespace SVF

@@ -36,6 +36,7 @@
 #include "Util/Z3Expr.h"
 
 #include "SABER/UseAfterFreeChecker.h"
+#include "SABER/UninitChecker.h"
 
 
 using namespace llvm;
@@ -69,6 +70,8 @@ int main(int argc, char ** argv)
         saber = std::make_unique<DoubleFreeChecker>();
     else if(Options::UAFCheck())
         saber = std::make_unique<UseAfterFreeChecker>();
+    else if(Options::UninitCheck())
+        saber = std::make_unique<UninitChecker>();
     else
         saber = std::make_unique<LeakChecker>();  // if no checker is specified, we use leak checker as the default one.
 

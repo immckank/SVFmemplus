@@ -72,7 +72,6 @@ SVFIR* SVFIRBuilder::build()
     createFunObjVars();
 
     /// build icfg
-    //PIN: 构建控制流图的位置
     ICFGBuilder icfgbuilder;
     pag->icfg = icfgbuilder.build();
 

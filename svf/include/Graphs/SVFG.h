@@ -30,6 +30,7 @@
 #ifndef SVFG_H_
 #define SVFG_H_
 
+#include "Graphs/IRGraph.h"
 #include "Graphs/VFG.h"
 #include "Graphs/SVFGNode.h"
 
@@ -66,6 +67,7 @@ class SVFG : public VFG
 {
     friend class SVFGBuilder;
     friend class SaberSVFGBuilder;
+    friend class GraphReaderSVFGBuilder;  // GraphReader's specialized builder
     friend class CFLSVFGBuilder;
     friend class TaintSVFGBuilder;
     friend class DDASVFGBuilder;

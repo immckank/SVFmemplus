@@ -28,6 +28,7 @@
 
 #include "AE/Svfexe/AbstractInterpretation.h"
 #include "AE/Svfexe/AbsExtAPI.h"
+#include "Graphs/IRGraph.h"
 #include "SVFIR/SVFIR.h"
 #include "Util/Options.h"
 #include "Util/WorkList.h"

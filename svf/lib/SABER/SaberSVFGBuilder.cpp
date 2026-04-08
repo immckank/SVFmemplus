@@ -50,7 +50,7 @@ void SaberSVFGBuilder::buildSVFG()
 
     DBOUT(DGENERAL, outs() << pasMsg("\tRemove Dereference Direct SVFG Edge\n"));
 
-    rmDerefDirSVFGEdges(pta);
+    if(!Options::SaberKeepDerefDirSVFGEdges()) rmDerefDirSVFGEdges(pta);
 
     assert(saberCondAllocator && "saber condition allocator not set yet!");
     rmIncomingEdgeForSUStore(pta);
