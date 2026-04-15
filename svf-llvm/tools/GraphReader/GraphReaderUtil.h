@@ -10,6 +10,7 @@
 #include <llvm/ADT/StringRef.h>
 #include <llvm/IR/Function.h>
 #include <llvm/Support/JSON.h>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -281,6 +282,17 @@ namespace GraphReaderUtil {
      * \return A reference to the map of function names to distances.
      */
     const Map<std::string, int>& getFreeCallerDistances();
+
+    /*!
+     * \brief P0/P1: scan source for nested #if/#ifdef/#ifndef/#elif/#else/#endif and describe
+     *        which branch contains line \p ln. Optional \p macroDefs + \p includeBranchHints
+     *        enable P1 branch_active_hint (active/inactive/unknown).
+     */
+    llvm::json::Object macroContextAtLineJson(const std::string& fl,
+                                             int64_t ln,
+                                             int64_t scanThroughLine,
+                                             bool includeBranchHints,
+                                             const std::map<std::string, std::string>& macroDefs);
 
 } // namespace GraphReaderUtil
 } // namespace SVF
