@@ -31,9 +31,15 @@
 using namespace SVF;
 using namespace std;
 
-void RangeAnalysis::analyzeBufferRange(const StackObjVar* stackObjVar){
+const int RangeAnalysis::MAX_RECURSION_DEPTH = 200;
+
+RangeAnalysis::RangeAnalysis(){
+    
+}
+
+bool RangeAnalysis::analyzeBufferRange(const StackObjVar* stackObjVar){
     u64_t size = 0;
-    // handle case: %arrayidx = alloca [10*i32], align 16
+    // int a[16] -> %arrayidx = alloca [10*i32], align 16
     const SVFType* objType = stackObjVar->getType();
     const StInfo* objInfo = objType->getTypeInfo();
     size = objInfo->getNumOfFlattenElements();
@@ -41,57 +47,67 @@ void RangeAnalysis::analyzeBufferRange(const StackObjVar* stackObjVar){
     {
         Range buffer_size = Range(0, size-1);
         bufferRanges[stackObjVar] = buffer_size;
-        return;
+        return true;
     }
 
 
-    // handle case: int a[n] -> %a = alloca i32, i32 %n, align 4
+    // int a[n] -> %a = alloca i32, i32 %n, align 4
     size = stackObjVar->getNumOfElements();
     if(size > 1)
     {      
         Range buffer_size  = Range(0, size-1);
         bufferRanges[stackObjVar] = buffer_size;
-        return;
+        return true;
     }
-
-    // handle case: int a[n] -> %a = alloca i32, i32 %n, align 4
-    // size = 0;
-    // const std::vector<SVFVar*>& sizeVec = addrStmt->getArrSize();
-    // if(sizeVec.size() > 0)
-    // {   
-    //     if(const auto constVar = SVFUtil::dyn_cast<ConstIntObjVar>(sizeVec[0]))
-    //         size = constVar->getZExtValue();
-    //     cout << "size from vec = " << sizeVec.size() << endl;
-    //     if(size > 1){
-    //         cout << "add case from type, size = " << size << endl;
-    //         this->worklist.push(BFSNode(dest, 0, size));
-    //         // continue;
-    //     }
-            
-    // }
-    bufferRanges[stackObjVar] = Range::BOTTOM;
+    return false;
 };
+
+bool RangeAnalysis::analyzeBufferRange(const HeapObjVar* heapObjVar){
+    u64_t size = 0;
+    size = heapObjVar->getNumOfElements();
+    if(size > 1)
+    {      
+        Range buffer_size  = Range(0, size-1);
+        bufferRanges[heapObjVar] = buffer_size;
+        return true;
+    }
+    return false;
+}
          
 
-Range RangeAnalysis::analyzeVarRange(const SVFVar* var) {
-    // ===== Try to find in cahe =====
+Range RangeAnalysis::analyzeVarRange(const SVFVar* var, int depth) {
+    // ==== Check if the maximum recursion depth is reached ====
+    if(depth == MAX_RECURSION_DEPTH){
+        return Range::TOP;
+    }
+
+    // ===== Attempt to retrieve range from cache =====
     Range var_range_find = getVarRange(var);
-    if(!var_range_find.isBottom()) // found
+    // Cache hit: Found a valid range (not Bottom)
+    if(!var_range_find.isBottom())
         return var_range_find;
-    else if(var_range_find.isTop()) // already defined
+    // Cache hit: The value is already defined as TOP (cannot refine further)
+    else if(var_range_find.isTop())
         return var_range_find;
         
-    // ===== Constant Computing =====
+    /// ===== Constant Value Calculation =====
     if(const ConstIntValVar* intVar = SVFUtil::dyn_cast<ConstIntValVar>(var)){
         varRanges[var] = Range(intVar->getSExtValue());
         return varRanges[var];
     }
 
-    // ===== Dynamic Computing =====
+    // ===== Dynamic Value Calculation =====
+    // Handling dynamic instructions that affect the range:
+    // This includes operations such as: 
+    // - Address calculation (Addr)
+    // - Variable copy (Copy)
+    // - Memory operations (Store, Load)
+    // - Instruction branches (Gep, Phi, Select, Cmp, BinaryOp, UnaryOp, Branch)
+    // Instructions are not supported:
+    // - Function calls (Call, Ret)
+    // - Thread-related operations (ThreadFork, ThreadJoin)
     varRanges[var] = Range::TOP;
     Range var_range = Range::BOTTOM;
-
-    // Addr, Copy, Store, Load, Call, Ret, Gep, Phi, Select, Cmp, BinaryOp, UnaryOp, Branch, ThreadFork, ThreadJoin
     SVFStmt::PEDGEK checkType;
 
     checkType = SVFStmt::PEDGEK::Load;
@@ -100,7 +116,7 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var) {
         for(auto stmt = var->getIncomingEdgesBegin(checkType); stmt != var->getIncomingEdgesEnd(checkType); ++stmt){
             if(const LoadStmt* loadStmt = SVFUtil::dyn_cast<LoadStmt>(*stmt)){
                 const SVFVar* rhs = loadStmt->getRHSVar(); 
-                var_range = Range::join(var_range, analyzeVarRange(rhs));
+                var_range = Range::join(var_range, analyzeVarRange(rhs, depth+1));
             }
         }
     }
@@ -111,7 +127,7 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var) {
         for(auto stmt = var->getIncomingEdgesBegin(checkType); stmt != var->getIncomingEdgesEnd(checkType); ++stmt){
             if(const StoreStmt* storeStmt = SVFUtil::dyn_cast<StoreStmt>(*stmt)){
                 const SVFVar* rhs = storeStmt->getRHSVar(); 
-                var_range = Range::join(var_range, analyzeVarRange(rhs));
+                var_range = Range::join(var_range, analyzeVarRange(rhs, depth+1));
             }
         }
     }
@@ -122,7 +138,7 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var) {
         for(auto stmt = var->getIncomingEdgesBegin(checkType); stmt != var->getIncomingEdgesEnd(checkType); ++stmt){
             if(const CopyStmt* copyStmt = SVFUtil::dyn_cast<CopyStmt>(*stmt)){
                 const SVFVar* rhs = copyStmt->getRHSVar(); 
-                var_range = Range::join(var_range, analyzeVarRange(rhs)); // TODO: handle other type of copy
+                var_range = Range::join(var_range, analyzeVarRange(rhs, depth+1)); // TODO: handle other type of copy
             }
         }
     }
@@ -143,53 +159,54 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var) {
                         // FDiv = 21,      // Float division.
                         // FRem = 24,      // Float remainder
                         case BinaryOPStmt::OpCode::Add:  // Sum of integers
-                            var_range = Range::join(var_range, Range::add(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::add(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         case BinaryOPStmt::OpCode::Sub:  // Subtraction of integers
-                            var_range = Range::join(var_range, Range::sub(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::sub(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         case BinaryOPStmt::OpCode::Mul:  // Product of integers
-                            var_range = Range::join(var_range, Range::mul(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::mul(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         case BinaryOPStmt::OpCode::UDiv:  // Unsigned division
-                            var_range = Range::join(var_range, Range::div(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::div(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         case BinaryOPStmt::OpCode::SDiv:  // Signed division
-                            var_range = Range::join(var_range, Range::div(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::div(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         case BinaryOPStmt::OpCode::URem:  // Unsigned remainder
-                            var_range = Range::join(var_range, Range::mod(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::mod(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         case BinaryOPStmt::OpCode::SRem:  // Signed remainder
-                            var_range = Range::join(var_range, Range::mod(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::mod(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         case BinaryOPStmt::OpCode::Shl:  // Shift left  (logical)
-                            var_range = Range::join(var_range, Range::shl(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::shl(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         case BinaryOPStmt::OpCode::LShr:  // Shift right (logical)
-                            var_range = Range::join(var_range, Range::shr(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::lshr(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         // TODO: change ashr of Range
                         case BinaryOPStmt::OpCode::AShr:  // Shift right (arithmetic)
-                            var_range = Range::join(var_range, Range::shr(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::ashr(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         case BinaryOPStmt::OpCode::And:  // Logical and
-                            var_range = Range::join(var_range, Range::logical_and(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::bit_and(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
                         case BinaryOPStmt::OpCode::Or:  // Logical or
-                            var_range = Range::join(var_range, Range::logical_or(analyzeVarRange(op1), analyzeVarRange(op2)));
+                            var_range = Range::join(var_range, Range::bit_or(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
                             break;
-                        // TODO: finish logical xor
-                        // case BinaryOPStmt::OpCode::Xor:  // Logical xor
-                        //     var_range = Range::join(var_range, Range::logical_or(analyze(op1), analyze(op2)));
-                        //     break;
+                        case BinaryOPStmt::OpCode::Xor:  // Logical xor
+                            var_range = Range::join(var_range, Range::bit_xor(analyzeVarRange(op1, depth+1), analyzeVarRange(op2, depth+1)));
+                            break;
                     }
                 }
             }
         }
     }
+    
     // Put in cache
-    varRanges[var] = var_range;
+    if(!var_range.isBottom())
+        varRanges[var] = var_range;
     return var_range;
 }
 

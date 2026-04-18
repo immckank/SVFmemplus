@@ -53,10 +53,15 @@ void BufferOverflowChecker::initialize(SVFIR* pag)
             const SVFVar* src = addrStmt->getRHSVar();
             const SVFVar* dst = addrStmt->getLHSVar();
             
-            // handle alloca instruction with stack obj
+            // handle alloca instructions(Stack Objects)
             if(const StackObjVar* stackObjVar = SVFUtil::dyn_cast<StackObjVar>(src)){
-                rangeAnalysis.analyzeBufferRange(stackObjVar);
-                worklist.push(RangeFlowNode(dst, src, Range(0,0)));
+                if(rangeAnalysis.analyzeBufferRange(stackObjVar))
+                    worklist.push(RangeFlowNode(dst, src, Range(0,0)));
+            }
+            // handle malloc instructions(Heap Objects)
+            else if(const HeapObjVar* heapObjVar = SVFUtil::dyn_cast<HeapObjVar>(src)){
+                if(rangeAnalysis.analyzeBufferRange(heapObjVar))
+                    worklist.push(RangeFlowNode(dst, src, Range(0,0)));
             }
         }   
     }
@@ -64,15 +69,10 @@ void BufferOverflowChecker::initialize(SVFIR* pag)
 
 void BufferOverflowChecker::propagate(SVFIR* pag)
 {
-    // if(Options::ModelArrays()){
-    //     SVFUtil::outs << "model array is enabled!"
-    // }
     while (!worklist.empty())
     {
         RangeFlowNode srcNode = worklist.front();
         worklist.pop();
-
-        // cout << srcNode.accumulate_offset.getLower() << " " << srcNode.accumulate_offset.getUpper() << endl;
 
         for(const auto& svfStmt: srcNode.base->getOutEdges())
         {   
