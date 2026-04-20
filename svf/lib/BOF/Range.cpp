@@ -160,9 +160,32 @@ Range Range::div(const Range& lhs, const Range& rhs) {
 Range Range::mod(const Range& lhs, const Range& rhs) {
     if (lhs.isBottom() || rhs.isBottom()) 
         return BOTTOM;
+
+    // Case 1: Division/Mod by zero risk
+    // If rhs can be 0, we must return TOP to remain sound.
     if (rhs.lower <= 0 && rhs.upper >= 0)
         return TOP;
 
+    // Case 2: Both are constants
+    if (lhs.isConstant() && rhs.isConstant()) {
+        return Range(lhs.lower % rhs.lower);
+    }
+
+    // Case 3: Only rhs is constant
+    // If lhs is [a, b] and rhs is a constant C, 
+    // the result is more restricted than the general case.
+    if (rhs.isConstant()) {
+        BoundType C = std::abs(rhs.lower);
+        if (lhs.lower >= 0) {
+            // If lhs is non-negative, result is [0, min(lhs.upper, C-1)]
+            return Range(0, std::min(lhs.upper, C - 1));
+        }
+        // General case for constant rhs: result is in (-(|C|-1), |C|-1)
+        return Range(-(C - 1), C - 1);
+    }
+
+    // Case 4: General Range
+    // The result of x % y is always within (-max|rhs|, max|rhs|)
     BoundType maxAbs = std::max(std::abs(rhs.lower), std::abs(rhs.upper));
     return Range(-maxAbs + 1, maxAbs - 1);
 }
@@ -176,14 +199,70 @@ Range Range::negate(const Range& operand) {
 
 // Bitwise Operations
 Range Range::bit_and(const Range& lhs, const Range& rhs) { 
-    return TOP; 
+    if (lhs.isBottom() || rhs.isBottom()) 
+        return BOTTOM;
+
+    // Constant Folding: if both ranges are single points, compute the exact value
+    if (lhs.isConstant() && rhs.isConstant()) {
+        return Range(lhs.lower & rhs.lower);
+    }
+
+    // Optimization for non-negative ranges
+    // For x, y >= 0, (x & y) is always in [0, min(max_x, max_y)]
+    if (lhs.lower >= 0 && rhs.lower >= 0) {
+        return Range(0, std::min(lhs.upper, rhs.upper));
+    }
+
+    // If one operand is non-negative, the result is at least 0 
+    // and cannot exceed the maximum of the non-negative operand
+    if (lhs.lower >= 0) 
+        return Range(0, lhs.upper);
+    if (rhs.lower >= 0) 
+        return Range(0, rhs.upper);
+
+    // Fallback to TOP for complex cases involving negative numbers
+    return TOP;
 }
 
 Range Range::bit_or(const Range& lhs, const Range& rhs) { 
+    if (lhs.isBottom() || rhs.isBottom()) 
+        return BOTTOM;
+
+    if (lhs.isConstant() && rhs.isConstant()) {
+        return Range(lhs.lower | rhs.lower);
+    }
+
+    // For non-negative ranges, we can estimate the upper bound
+    // by finding the smallest (2^n - 1) that covers both ranges
+    if (lhs.lower >= 0 && rhs.lower >= 0) {
+        BoundType max_val = std::max(lhs.upper, rhs.upper);
+        unsigned long long msb = 1;
+        while (msb <= (unsigned long long)max_val) msb <<= 1;
+        return Range(std::max(lhs.lower, rhs.lower), (BoundType)(msb - 1));
+    }
+
     return TOP;
 }
 
 Range Range::bit_xor(const Range& lhs, const Range& rhs) { 
+    if (lhs.isBottom() || rhs.isBottom()) 
+        return BOTTOM;
+
+    if (lhs.isConstant() && rhs.isConstant()) {
+        return Range(lhs.lower ^ rhs.lower);
+    }
+
+    // For non-negative ranges, the result is bounded by 
+    // the smallest power of 2 minus 1 that is greater than both upper bounds
+    if (lhs.lower >= 0 && rhs.lower >= 0) {
+        BoundType max_val = std::max(lhs.upper, rhs.upper);
+        if (max_val == 0) 
+            return Range(0, 0);
+        unsigned long long msb = 1;
+        while (msb <= (unsigned long long)max_val) msb <<= 1;
+        return Range(0, (BoundType)(msb - 1));
+    }
+
     return TOP;
 }
 
@@ -196,22 +275,51 @@ Range Range::bit_not(const Range& operand) {
 
 // Shift Operations
 Range Range::shl(const Range& lhs, const Range& rhs) {
-    if (lhs.isBottom() || rhs.isBottom()) 
-        return BOTTOM;
-    else if (rhs.lower < 0) 
-        return TOP;
-    else
-        return Range(
-            safeMul(lhs.lower, 1LL << rhs.lower),
-            safeMul(lhs.upper, 1LL << rhs.upper)
-        );
+    if (lhs.isBottom() || rhs.isBottom()) return BOTTOM;
+    if (rhs.lower < 0) return TOP;
+
+    // If shift amount is too large, it likely overflows to 0 or sign bit
+    if (rhs.upper >= 63) return TOP; 
+
+    // Left shift is multiplication by 2^k.
+    // Min is lhs.lower * 2^rhs.lower (if positive)
+    // Max is lhs.upper * 2^rhs.upper (if positive)
+    // We must handle negative lhs bounds carefully.
+    BoundType low = safeMul(lhs.lower, 1LL << (lhs.lower >= 0 ? rhs.lower : rhs.upper));
+    BoundType high = safeMul(lhs.upper, 1LL << (lhs.upper >= 0 ? rhs.upper : rhs.lower));
+
+    return Range(low, high);
 }
 
-Range Range::shr(const Range& a, const Range& rhs) {
-    if (a.isBottom() || rhs.isBottom()) 
-        return BOTTOM;
-    else
-        return TOP;
+Range Range::lshr(const Range& lhs, const Range& rhs) {
+    if (lhs.isBottom() || rhs.isBottom()) return BOTTOM;
+    if (rhs.lower < 0) return TOP;
+
+    // If the range can be negative, logical shift makes it huge (top)
+    // Unless we want to do precision bit-analysis.
+    if (lhs.lower < 0) return TOP;
+
+    // For non-negative numbers, lshr is same as ashr
+    BoundType shiftL = std::min(rhs.lower, 63LL);
+    BoundType shiftU = std::min(rhs.upper, 63LL);
+    return Range(lhs.lower >> shiftU, lhs.upper >> shiftL);
+}
+
+Range Range::ashr(const Range& lhs, const Range& rhs) {
+    if (lhs.isBottom() || rhs.isBottom()) return BOTTOM;
+    
+    // Negative shift amounts are undefined behavior in C++
+    if (rhs.lower < 0) return TOP;
+
+    // Shift amount should be clamped to the bit-width (e.g., 63 for long long)
+    // to avoid UB. Here we assume 64-bit signed long long.
+    BoundType shiftL = std::min(rhs.lower, 63LL);
+    BoundType shiftU = std::min(rhs.upper, 63LL);
+
+    // For arithmetic shift, the function is monotonic.
+    // To get the minimum: shift the lower bound by the maximum possible distance
+    // To get the maximum: shift the upper bound by the minimum possible distance
+    return Range(lhs.lower >> shiftU, lhs.upper >> shiftL);
 }
 
 // ===== Compare Operations =====

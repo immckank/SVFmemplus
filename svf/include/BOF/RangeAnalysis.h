@@ -39,12 +39,15 @@
 namespace SVF {
     class RangeAnalysis {
         public:
-            void analyzeBufferRange(const StackObjVar* stackObjVar);
-            Range analyzeVarRange(const SVFVar* var);
+            RangeAnalysis();
+            bool analyzeBufferRange(const StackObjVar* stackObjVar);
+            bool analyzeBufferRange(const HeapObjVar* heapObjVar);
+            Range analyzeVarRange(const SVFVar* var, int depth = 0);
             Range getBufferRange(const SVFVar* buffer);
             Range getVarRange(const SVFVar* var);
 
         private:
+            const static int MAX_RECURSION_DEPTH;
             std::unordered_map<const SVFVar*, Range> bufferRanges;
             std::unordered_map<const SVFVar*, Range> varRanges;
     };

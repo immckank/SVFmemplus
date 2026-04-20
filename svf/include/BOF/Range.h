@@ -71,7 +71,8 @@ namespace SVF {
 
             // Shift Operations
             static Range shl(const Range& lhs, const Range& rhs);
-            static Range shr(const Range& lhs, const Range& rhs);
+            static Range lshr(const Range& lhs, const Range& rhs);
+            static Range ashr(const Range& lhs, const Range& rhs);
 
             // ===== Compare Operations =====
             static bool eq(const Range& lhs, const Range& rhs);
