@@ -17,7 +17,13 @@
 #include "llvm/IR/Operator.h"
 #include <algorithm>
 #include <cctype>
+#include <climits>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
+#include <optional>
+#include <sstream>
 #include <map>
 #include <memory>
 #include <queue>
@@ -2750,6 +2756,7 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const SourceL
     std::unordered_set<NodeID> seen;
     struct NodeEntry {
         NodeID id;
+        int preferenceRank;
         llvm::json::Object obj;
     };
     std::vector<NodeEntry> entries;
@@ -2779,7 +2786,14 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const SourceL
         llvm::json::Object locObj = parseSourceLocation(nodeDesc);
         appendLocationFields(nodeObj, locObj);
         nodeObj["llvm_ir"] = getICFGNodeInstructionString(icfgNode);
-        entries.push_back({nodeId, std::move(nodeObj)});
+        int preferenceRank = 2;
+        if (SVFUtil::isa<StoreVFGNode>(svfgNode)) {
+            preferenceRank = 0;
+        }
+        else if (SVFUtil::isa<AddrVFGNode>(svfgNode)) {
+            preferenceRank = 1;
+        }
+        entries.push_back({nodeId, preferenceRank, std::move(nodeObj)});
     }
 
     if (entries.empty()) {
@@ -2789,8 +2803,12 @@ llvm::json::Object listSVFGNodesByLocation(SVFG* svfg, ICFG* icfg, const SourceL
         return makeErrorObject("No SVFG nodes found at location: " + toString(location));
     }
 
-    std::sort(entries.begin(), entries.end(),
-              [](const NodeEntry& a, const NodeEntry& b) { return a.id < b.id; });
+    std::sort(entries.begin(), entries.end(), [](const NodeEntry& a, const NodeEntry& b) {
+        if (a.preferenceRank != b.preferenceRank) {
+            return a.preferenceRank < b.preferenceRank;
+        }
+        return a.id < b.id;
+    });
 
     llvm::json::Array nodesArray;
     for (auto& entry : entries) {
@@ -3076,6 +3094,609 @@ llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
 const Map<std::string, int>& getFreeCallerDistances() {
     return g_freeCallerDistances;
 }
+
+namespace {
+
+static std::string trimSpaces(std::string s) {
+    size_t a = 0;
+    while (a < s.size() && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n')) {
+        ++a;
+    }
+    size_t b = s.size();
+    while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' || s[b - 1] == '\n')) {
+        --b;
+    }
+    return s.substr(a, b - a);
+}
+
+static std::string stripLineComment(std::string s) {
+    size_t p = 0;
+    while ((p = s.find("//", p)) != std::string::npos) {
+        bool inStr = false;
+        for (size_t i = 0; i < p; ++i) {
+            if (s[i] == '"' || s[i] == '\'') {
+                inStr = !inStr;
+            }
+        }
+        if (!inStr) {
+            return trimSpaces(s.substr(0, p));
+        }
+        p += 2;
+    }
+    return trimSpaces(s);
+}
+
+static std::string resolveMacroContextSourcePath(const std::string& fl, std::string& attempted) {
+    namespace fs = std::filesystem;
+    attempted.clear();
+    if (fl.empty()) {
+        return "";
+    }
+    std::vector<std::string> candidates;
+    candidates.push_back(fl);
+    if (const char* sr = std::getenv("SOURCE_ROOT")) {
+        if (sr[0] != '\0') {
+            candidates.push_back((fs::path(sr) / fl).string());
+        }
+    }
+    if (const char* put = std::getenv("PUT")) {
+        if (put[0] != '\0') {
+            candidates.push_back((fs::path(put) / fl).string());
+        }
+    }
+    for (const auto& c : candidates) {
+        attempted += c + "; ";
+        std::error_code ec;
+        fs::path p(c);
+        if (fs::exists(p, ec) && fs::is_regular_file(p, ec)) {
+            return c;
+        }
+    }
+    return "";
+}
+
+enum class TriBool { False, True, Unknown };
+
+struct PpBranch {
+    std::string label;
+    int start_line = -1;
+    int end_line = -1;
+    std::string expr;
+    bool is_else = false;
+};
+
+struct PpBlock {
+    int directive_line = -1;
+    std::string opening_directive;
+    std::string condition_text;
+    std::string normalized_condition;
+    int block_end_line = -1;
+    bool closed = false;
+    std::vector<PpBranch> branches;
+    int current_branch_index = -1;
+};
+
+static TriBool macroDefined(const std::string& name, const std::map<std::string, std::string>& defs) {
+    return defs.find(name) != defs.end() ? TriBool::True : TriBool::False;
+}
+
+static void skipSpaces(const std::string& s, size_t& i) {
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) {
+        ++i;
+    }
+}
+
+static TriBool parseIntLiteral(const std::string& s, size_t& i, int64_t& out) {
+    skipSpaces(s, i);
+    if (i >= s.size()) {
+        return TriBool::Unknown;
+    }
+    try {
+        size_t consumed = 0;
+        out = std::stoll(s.substr(i), &consumed, 0);
+        i += consumed;
+        return TriBool::True;
+    } catch (...) {
+        return TriBool::Unknown;
+    }
+}
+
+static TriBool evalDefinedExpr(const std::string& s, size_t& i, const std::map<std::string, std::string>& defs);
+static TriBool evalPrimary(const std::string& s, size_t& i, const std::map<std::string, std::string>& defs) {
+    skipSpaces(s, i);
+    if (i >= s.size()) {
+        return TriBool::Unknown;
+    }
+    if (s[i] == '(') {
+        ++i;
+        TriBool v = evalDefinedExpr(s, i, defs);
+        skipSpaces(s, i);
+        if (i >= s.size() || s[i] != ')') {
+            return TriBool::Unknown;
+        }
+        ++i;
+        return v;
+    }
+    if (s[i] == '!') {
+        ++i;
+        TriBool a = evalPrimary(s, i, defs);
+        if (a == TriBool::Unknown) {
+            return TriBool::Unknown;
+        }
+        return a == TriBool::True ? TriBool::False : TriBool::True;
+    }
+    if (i + 7 <= s.size() && s.compare(i, 7, "defined") == 0 && (i + 7 == s.size() || !std::isalnum(static_cast<unsigned char>(s[i + 7])))) {
+        i += 7;
+        skipSpaces(s, i);
+        bool hasParen = (i < s.size() && s[i] == '(');
+        if (hasParen) {
+            ++i;
+        }
+        skipSpaces(s, i);
+        size_t idStart = i;
+        while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s[i])) || s[i] == '_')) {
+            ++i;
+        }
+        if (idStart == i) {
+            return TriBool::Unknown;
+        }
+        std::string id = s.substr(idStart, i - idStart);
+        skipSpaces(s, i);
+        if (hasParen) {
+            if (i >= s.size() || s[i] != ')') {
+                return TriBool::Unknown;
+            }
+            ++i;
+        }
+        return macroDefined(id, defs);
+    }
+    int64_t k = 0;
+    size_t save = i;
+    if (parseIntLiteral(s, i, k) == TriBool::True) {
+        return k != 0 ? TriBool::True : TriBool::False;
+    }
+    i = save;
+    size_t idStart = i;
+    while (i < s.size() && (std::isalnum(static_cast<unsigned char>(s[i])) || s[i] == '_')) {
+        ++i;
+    }
+    if (idStart == i) {
+        return TriBool::Unknown;
+    }
+    std::string id = s.substr(idStart, i - idStart);
+    auto it = defs.find(id);
+    if (it == defs.end()) {
+        return TriBool::False;
+    }
+    std::string rep = trimSpaces(it->second);
+    if (rep.empty()) {
+        return TriBool::True;
+    }
+    size_t z = 0;
+    int64_t v = 0;
+    if (parseIntLiteral(rep, z, v) == TriBool::True && z == rep.size()) {
+        return v != 0 ? TriBool::True : TriBool::False;
+    }
+    return TriBool::Unknown;
+}
+
+static TriBool evalDefinedExpr(const std::string& s, size_t& i, const std::map<std::string, std::string>& defs) {
+    TriBool a = evalPrimary(s, i, defs);
+    while (true) {
+        skipSpaces(s, i);
+        if (i + 2 <= s.size() && s[i] == '&' && s[i + 1] == '&') {
+            i += 2;
+            TriBool b = evalPrimary(s, i, defs);
+            if (a == TriBool::Unknown || b == TriBool::Unknown) {
+                return TriBool::Unknown;
+            }
+            a = (a == TriBool::True && b == TriBool::True) ? TriBool::True : TriBool::False;
+        } else if (i + 2 <= s.size() && s[i] == '|' && s[i + 1] == '|') {
+            i += 2;
+            TriBool b = evalPrimary(s, i, defs);
+            if (a == TriBool::Unknown || b == TriBool::Unknown) {
+                return TriBool::Unknown;
+            }
+            a = (a == TriBool::True || b == TriBool::True) ? TriBool::True : TriBool::False;
+        } else {
+            break;
+        }
+    }
+    skipSpaces(s, i);
+    return a;
+}
+
+static TriBool evalPreprocessorCondition(const std::string& openingKind,
+                                         const std::string& conditionText,
+                                         const std::string& exprForIf,
+                                         const std::map<std::string, std::string>& defs) {
+    if (openingKind == "ifdef") {
+        std::string id = trimSpaces(conditionText);
+        return macroDefined(id, defs);
+    }
+    if (openingKind == "ifndef") {
+        std::string id = trimSpaces(conditionText);
+        TriBool d = macroDefined(id, defs);
+        if (d == TriBool::Unknown) {
+            return TriBool::Unknown;
+        }
+        return d == TriBool::True ? TriBool::False : TriBool::True;
+    }
+    std::string e = trimSpaces(exprForIf.empty() ? conditionText : exprForIf);
+    size_t z = 0;
+    TriBool v = evalDefinedExpr(e, z, defs);
+    skipSpaces(e, z);
+    if (z != e.size()) {
+        return TriBool::Unknown;
+    }
+    return v;
+}
+
+static int branchIndexContainingLine(const PpBlock& b, int64_t ln) {
+    for (int i = 0; i < static_cast<int>(b.branches.size()); ++i) {
+        const PpBranch& br = b.branches[i];
+        if (br.start_line < 0) {
+            continue;
+        }
+        int hi = br.end_line >= 0 ? br.end_line : INT_MAX / 2;
+        if (ln >= br.start_line && ln <= hi) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static std::optional<int> activeBranchIndexP1(const PpBlock& b, const std::map<std::string, std::string>& defs) {
+    if (b.opening_directive == "ifdef" || b.opening_directive == "ifndef") {
+        TriBool first = evalPreprocessorCondition(b.opening_directive, b.condition_text, "", defs);
+        if (first == TriBool::Unknown) {
+            return std::nullopt;
+        }
+        if (first == TriBool::True) {
+            return 0;
+        }
+        if (b.branches.size() == 1) {
+            return std::nullopt;
+        }
+        for (size_t i = 1; i < b.branches.size(); ++i) {
+            if (b.branches[i].is_else) {
+                return static_cast<int>(i);
+            }
+            TriBool t = evalPreprocessorCondition("if", "", b.branches[i].expr, defs);
+            if (t == TriBool::Unknown) {
+                return std::nullopt;
+            }
+            if (t == TriBool::True) {
+                return static_cast<int>(i);
+            }
+        }
+        for (size_t i = 1; i < b.branches.size(); ++i) {
+            if (b.branches[i].is_else) {
+                return static_cast<int>(i);
+            }
+        }
+        return std::nullopt;
+    }
+    for (size_t i = 0; i < b.branches.size(); ++i) {
+        if (b.branches[i].is_else) {
+            return static_cast<int>(i);
+        }
+        TriBool t = evalPreprocessorCondition("if", "", b.branches[i].expr, defs);
+        if (t == TriBool::Unknown) {
+            return std::nullopt;
+        }
+        if (t == TriBool::True) {
+            return static_cast<int>(i);
+        }
+    }
+    for (size_t i = 0; i < b.branches.size(); ++i) {
+        if (b.branches[i].is_else) {
+            return static_cast<int>(i);
+        }
+    }
+    return std::nullopt;
+}
+
+static std::string readDirectiveKeyword(const std::string& line, size_t& p) {
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) {
+        ++p;
+    }
+    if (p >= line.size() || line[p] != '#') {
+        return "";
+    }
+    ++p;
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) {
+        ++p;
+    }
+    size_t w = p;
+    while (p < line.size() && std::isalpha(static_cast<unsigned char>(line[p]))) {
+        ++p;
+    }
+    return line.substr(w, p - w);
+}
+
+static std::string restAfterKeyword(const std::string& line, size_t p) {
+    while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) {
+        ++p;
+    }
+    return stripLineComment(trimSpaces(line.substr(p)));
+}
+
+static bool readIdentifier(const std::string& s, size_t& p, std::string& out) {
+    skipSpaces(s, p);
+    size_t st = p;
+    while (p < s.size() && (std::isalnum(static_cast<unsigned char>(s[p])) || s[p] == '_')) {
+        ++p;
+    }
+    if (st == p) {
+        return false;
+    }
+    out = s.substr(st, p - st);
+    return true;
+}
+
+} // namespace
+
+llvm::json::Object macroContextAtLineJson(const std::string& fl,
+                                          int64_t ln,
+                                          int64_t scanThroughLine,
+                                          bool includeBranchHints,
+                                          const std::map<std::string, std::string>& macroDefs) {
+    std::string tried;
+    if (ln <= 0) {
+        return makeErrorObject("invalid 'ln' (must be >= 1)");
+    }
+    const std::string path = resolveMacroContextSourcePath(fl, tried);
+    if (path.empty()) {
+        return makeErrorObject("cannot open source file: " + fl + " (tried: " + trimSpaces(tried) + ")");
+    }
+
+    std::ifstream in(path);
+    if (!in) {
+        return makeErrorObject("cannot open source file: " + path);
+    }
+
+    std::vector<PpBlock> blocks;
+    std::vector<size_t> stack;
+    std::vector<size_t> snapStack;
+
+    auto closeBranchTo = [&](int lineEnd) {
+        if (stack.empty()) {
+            return;
+        }
+        PpBlock& top = blocks[stack.back()];
+        if (top.current_branch_index >= 0 &&
+            top.current_branch_index < static_cast<int>(top.branches.size())) {
+            PpBranch& br = top.branches[top.current_branch_index];
+            if (br.end_line < 0) {
+                br.end_line = lineEnd;
+            }
+        }
+    };
+
+    std::string line;
+    int64_t lineNum = 0;
+    bool snapCaptured = false;
+
+    while (std::getline(in, line)) {
+        ++lineNum;
+        while (!line.empty() && line.back() == '\\') {
+            line.pop_back();
+            std::string cont;
+            if (!std::getline(in, cont)) {
+                break;
+            }
+            ++lineNum;
+            line += cont;
+        }
+
+        std::string raw = line;
+        std::string work = stripLineComment(trimSpaces(raw));
+        size_t hashPos = 0;
+        while (hashPos < work.size() && (work[hashPos] == ' ' || work[hashPos] == '\t')) {
+            ++hashPos;
+        }
+        std::string kw;
+        size_t hp = hashPos;
+        if (hashPos < work.size() && work[hashPos] == '#') {
+            kw = readDirectiveKeyword(work, hp);
+        }
+        if (kw.empty()) {
+            if (lineNum == ln) {
+                snapStack = stack;
+                snapCaptured = true;
+            }
+            continue;
+        }
+
+        if (kw == "if") {
+            closeBranchTo(static_cast<int>(lineNum - 1));
+            PpBlock nb;
+            nb.directive_line = static_cast<int>(lineNum);
+            nb.opening_directive = "if";
+            std::string rest = restAfterKeyword(work, hp);
+            nb.condition_text = rest;
+            nb.normalized_condition = rest;
+            PpBranch br0;
+            br0.label = "then";
+            br0.start_line = static_cast<int>(lineNum + 1);
+            br0.end_line = -1;
+            br0.expr = rest;
+            br0.is_else = false;
+            nb.branches.push_back(std::move(br0));
+            nb.current_branch_index = 0;
+            blocks.push_back(std::move(nb));
+            stack.push_back(blocks.size() - 1);
+        } else if (kw == "ifdef") {
+            closeBranchTo(static_cast<int>(lineNum - 1));
+            std::string rest = restAfterKeyword(work, hp);
+            std::string id;
+            size_t rp = 0;
+            if (!readIdentifier(rest, rp, id)) {
+                id = trimSpaces(rest);
+            }
+            PpBlock nb;
+            nb.directive_line = static_cast<int>(lineNum);
+            nb.opening_directive = "ifdef";
+            nb.condition_text = id;
+            nb.normalized_condition = "defined(" + id + ")";
+            PpBranch br0;
+            br0.label = "then";
+            br0.start_line = static_cast<int>(lineNum + 1);
+            br0.expr = "defined(" + id + ")";
+            nb.branches.push_back(std::move(br0));
+            nb.current_branch_index = 0;
+            blocks.push_back(std::move(nb));
+            stack.push_back(blocks.size() - 1);
+        } else if (kw == "ifndef") {
+            closeBranchTo(static_cast<int>(lineNum - 1));
+            std::string rest = restAfterKeyword(work, hp);
+            std::string id;
+            size_t rp = 0;
+            if (!readIdentifier(rest, rp, id)) {
+                id = trimSpaces(rest);
+            }
+            PpBlock nb;
+            nb.directive_line = static_cast<int>(lineNum);
+            nb.opening_directive = "ifndef";
+            nb.condition_text = id;
+            nb.normalized_condition = "defined(" + id + ")";
+            PpBranch br0;
+            br0.label = "then";
+            br0.start_line = static_cast<int>(lineNum + 1);
+            br0.expr = "!defined(" + id + ")";
+            nb.branches.push_back(std::move(br0));
+            nb.current_branch_index = 0;
+            blocks.push_back(std::move(nb));
+            stack.push_back(blocks.size() - 1);
+        } else if (kw == "elif") {
+            if (!stack.empty()) {
+                closeBranchTo(static_cast<int>(lineNum - 1));
+                PpBlock& top = blocks[stack.back()];
+                std::string rest = restAfterKeyword(work, hp);
+                int n = 0;
+                for (const PpBranch& b : top.branches) {
+                    if (b.label.rfind("elif:", 0) == 0) {
+                        ++n;
+                    }
+                }
+                PpBranch br;
+                br.label = "elif:" + std::to_string(n);
+                br.start_line = static_cast<int>(lineNum + 1);
+                br.expr = rest;
+                br.is_else = false;
+                top.branches.push_back(std::move(br));
+                top.current_branch_index = static_cast<int>(top.branches.size()) - 1;
+            }
+        } else if (kw == "else") {
+            if (!stack.empty()) {
+                closeBranchTo(static_cast<int>(lineNum - 1));
+                PpBlock& top = blocks[stack.back()];
+                PpBranch br;
+                br.label = "else";
+                br.start_line = static_cast<int>(lineNum + 1);
+                br.expr = "";
+                br.is_else = true;
+                top.branches.push_back(std::move(br));
+                top.current_branch_index = static_cast<int>(top.branches.size()) - 1;
+            }
+        } else if (kw == "endif") {
+            if (!stack.empty()) {
+                closeBranchTo(static_cast<int>(lineNum - 1));
+                PpBlock& top = blocks[stack.back()];
+                top.block_end_line = static_cast<int>(lineNum);
+                top.closed = true;
+                if (top.current_branch_index >= 0 &&
+                    top.current_branch_index < static_cast<int>(top.branches.size())) {
+                    PpBranch& br = top.branches[top.current_branch_index];
+                    if (br.end_line < 0) {
+                        br.end_line = static_cast<int>(lineNum - 1);
+                    }
+                }
+                stack.pop_back();
+            }
+        }
+
+        if (lineNum == ln) {
+            snapStack = stack;
+            snapCaptured = true;
+        }
+    }
+
+    if (ln > lineNum) {
+        return makeErrorObject("invalid 'ln' beyond end of file (" + path + ")");
+    }
+    if (!snapCaptured) {
+        snapStack = stack;
+    }
+
+    for (size_t idx : stack) {
+        PpBlock& b = blocks[idx];
+        if (!b.closed && b.current_branch_index >= 0 &&
+            b.current_branch_index < static_cast<int>(b.branches.size())) {
+            PpBranch& br = b.branches[b.current_branch_index];
+            if (br.end_line < 0) {
+                br.end_line = static_cast<int>(lineNum);
+            }
+        }
+    }
+
+    llvm::json::Array frames;
+    for (size_t si = 0; si < snapStack.size(); ++si) {
+        const PpBlock& b = blocks[snapStack[si]];
+        llvm::json::Object fo;
+        fo["directive_line"] = static_cast<int64_t>(b.directive_line);
+        fo["directive_kind"] = b.opening_directive;
+        fo["condition_text"] = b.condition_text;
+        fo["normalized_condition"] = b.normalized_condition;
+        fo["block_start_line"] = static_cast<int64_t>(b.directive_line);
+        fo["block_end_line"] =
+            static_cast<int64_t>((b.closed && b.block_end_line >= 0) ? b.block_end_line : -1);
+        int bi = branchIndexContainingLine(b, ln);
+        if (bi < 0 && !b.branches.empty()) {
+            bi = 0;
+        }
+        if (bi >= 0) {
+            const PpBranch& br = b.branches[bi];
+            fo["branch"] = br.label;
+            fo["branch_start_line"] = static_cast<int64_t>(br.start_line);
+            fo["branch_end_line"] = static_cast<int64_t>(br.end_line >= 0 ? br.end_line : -1);
+        } else {
+            fo["branch"] = "";
+            fo["branch_start_line"] = static_cast<int64_t>(-1);
+            fo["branch_end_line"] = static_cast<int64_t>(-1);
+        }
+        std::string hint = "unknown";
+        if (includeBranchHints && !macroDefs.empty()) {
+            std::optional<int> act = activeBranchIndexP1(b, macroDefs);
+            if (!act) {
+                hint = "unknown";
+            } else if (bi < 0) {
+                hint = "unknown";
+            } else if (*act == bi) {
+                hint = "active";
+            } else {
+                hint = "inactive";
+            }
+        } else if (!includeBranchHints) {
+            hint = "unknown";
+        }
+        fo["branch_active_hint"] = hint;
+        fo["children_closed"] = b.closed;
+        frames.push_back(std::move(fo));
+    }
+
+    llvm::json::Object result;
+    result["schema_version"] = static_cast<int64_t>(1);
+    result["fl"] = fl;
+    result["ln"] = ln;
+    result["nesting_depth"] = static_cast<int64_t>(snapStack.size());
+    result["frames"] = std::move(frames);
+    result["error"] = false;
+    (void)scanThroughLine;
+    return result;
+}
+
 
 } // namespace GraphReaderUtil
 } // namespace SVF

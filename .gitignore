@@ -27,10 +27,12 @@ cmake-build-debug/
 compile_commands.json
 Release-build/
 *.dot
+test/
 *.txt
-/PUT
-/saber_rep
+PUT/
+saber_rep/
 AGENTS.md
-
 *.py
 bug_stats.md
+partition_checker/
+script/

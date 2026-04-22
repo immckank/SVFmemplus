@@ -195,6 +195,10 @@ SaberCondAllocator::evaluateTestNullLikeExpr(const BranchStmt *branchStmt, const
         //  br i1 false, label %44, label %75, !dbg !7669 { "ln": 2033, "cl": 7, "fl": "re_lexer.c" }
         return Condition::nullExpr();
     }
+
+    // 额外修改；经测试uaf/uninit有的地方会因为此处出现nullptr报出assertion错误，提前进行检查，nullExpr表示无法判断
+    if(condVar->getICFGNode() == nullptr) return Condition::nullExpr();
+
     if (isTestNullExpr(SVFUtil::cast<ICFGNode>(condVar->getICFGNode())))
     {
         // succ is then branch
@@ -654,6 +658,7 @@ void SaberCondAllocator::extractSubConds(const Condition &condition, NodeBS &sup
     }
 
 }
+
 
 std::vector<SaberCondAllocator::ConditionInfo> SaberCondAllocator::getConditionsForNode(const ICFGNode* inst) const
 {

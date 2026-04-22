@@ -16,6 +16,7 @@
 #include "FunctionQuery.h"
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/Support/JSON.h>
+#include <map>
 #include <memory>
 
 using namespace llvm;
@@ -825,6 +826,40 @@ int main(int argc, char ** argv) {
                         llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                         llvm::outs().flush();
                     }
+                }
+            } else if (cname == "macro-context-at-line") {
+                SVF::GraphReaderUtil::SourceLocation location;
+                std::string locationError;
+                if (!readStructuredLocation(cmd, "location", location, nullptr, locationError)) {
+                    SVF::GraphReaderUtil::sendJsonError(locationError);
+                } else {
+                    int64_t scanThrough = location.ln;
+                    if (auto st = cmd.getInteger("scan_through_line")) {
+                        scanThrough = *st;
+                    }
+                    bool includeHints = false;
+                    if (auto ib = cmd.getBoolean("include_branch_hints")) {
+                        includeHints = *ib;
+                    }
+                    std::map<std::string, std::string> macroDefs;
+                    if (const llvm::json::Object* md = cmd.getObject("macro_defs")) {
+                        for (const auto& kv : *md) {
+                            std::string key = kv.first.str();
+                            std::string val;
+                            if (auto s = kv.second.getAsString()) {
+                                val = s->str();
+                            } else if (auto n = kv.second.getAsInteger()) {
+                                val = std::to_string(*n);
+                            } else if (auto b = kv.second.getAsBoolean()) {
+                                val = *b ? "1" : "0";
+                            }
+                            macroDefs[key] = std::move(val);
+                        }
+                    }
+                    llvm::json::Object result = SVF::GraphReaderUtil::macroContextAtLineJson(
+                        location.fl, location.ln, scanThrough, includeHints, macroDefs);
+                    llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                    llvm::outs().flush();
                 }
             } else if (cname == "exit") {
                 shouldExit = true;

@@ -187,8 +187,8 @@ message(
   SVF option - Enabling link-time optimisations:    ${SVF_USE_LTO}
   SVF option - Using ld.lld as default linker:      ${SVF_USE_LLD}
   SVF option - Enabling coverage build:             ${SVF_COVERAGE}
-  SVF option - Treating warnings as errors:         ${SVF_DEBUG_INFO}
-  SVF option - Generating debug information:        ${SVF_WARN_AS_ERROR}
+  SVF option - Treating warnings as errors:         ${SVF_WARN_AS_ERROR}
+  SVF option - Generating debug information:        ${SVF_DEBUG_INFO}
   SVF option - Exporting all dynamic symbols:       ${SVF_EXPORT_DYNAMIC}
   SVF option - Forcefully enabling assertions:      ${SVF_ENABLE_ASSERTIONS}
 
