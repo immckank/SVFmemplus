@@ -81,6 +81,81 @@ bool UninitChecker::shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGN
     return shouldConsiderStoreForMode(store, slice, shouldIgnorePtrStoreForLoad(load));
 }
 
+bool UninitChecker::shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const
+{
+    if (storeNodes.find(node) == storeNodes.end())
+        return false;
+    if (!ignorePtrStore)
+        return true;
+    return node->toString().find("store ptr") == std::string::npos;
+}
+
+bool UninitChecker::isSummaryBoundaryNode(const SVFGNode* node) const
+{
+    return ActualParmVFGNode::classof(node) || ActualRetVFGNode::classof(node) ||
+           FormalParmVFGNode::classof(node) || FormalRetVFGNode::classof(node) ||
+           ActualINSVFGNode::classof(node) || ActualOUTSVFGNode::classof(node) ||
+           FormalINSVFGNode::classof(node) || FormalOUTSVFGNode::classof(node);
+}
+
+u64_t UninitChecker::getSummaryKey(const SVFGNode* node, bool ignorePtrStore) const
+{
+    u64_t key = static_cast<u64_t>(node->getId());
+    if (ignorePtrStore)
+        key |= (1ULL << 63);
+    return key;
+}
+
+void UninitChecker::getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore, SVFGNodeSet& reachableLoads, SVFGNodeSet& nextBoundaries)
+{
+    u64_t key = getSummaryKey(boundary, ignorePtrStore);
+    auto itLoad = summaryBoundaryToLoads.find(key);
+    auto itBoundary = summaryBoundaryToBoundaries.find(key);
+    if (itLoad != summaryBoundaryToLoads.end() && itBoundary != summaryBoundaryToBoundaries.end())
+    {
+        reachableLoads = itLoad->second;
+        nextBoundaries = itBoundary->second;
+        return;
+    }
+
+    SVFGNodeSet localLoads;
+    SVFGNodeSet localBoundaries;
+    SVFGNodeSet visited;
+    ForwardWorkList workList;
+
+    visited.insert(boundary);
+    workList.push(boundary);
+
+    while (!workList.empty())
+    {
+        const SVFGNode* node = workList.pop();
+
+        for (auto edge : node->getOutEdges())
+        {
+            const SVFGNode* succ = edge->getDstNode();
+            if (shouldConsiderStoreForSummaryMode(succ, ignorePtrStore))
+                continue;
+
+            if (loadNodes.find(succ) != loadNodes.end())
+                localLoads.insert(succ);
+
+            if (succ != boundary && isSummaryBoundaryNode(succ))
+            {
+                localBoundaries.insert(succ);
+                continue;
+            }
+
+            if (visited.insert(succ).second)
+                workList.push(succ);
+        }
+    }
+
+    summaryBoundaryToLoads[key] = localLoads;
+    summaryBoundaryToBoundaries[key] = localBoundaries;
+    reachableLoads = summaryBoundaryToLoads[key];
+    nextBoundaries = summaryBoundaryToBoundaries[key];
+}
+
 bool UninitChecker::shouldIgnorePtrStoreForLoad(const SVFGNode* load) const
 {
     if (load->toString().find("load ptr") == std::string::npos)
@@ -116,78 +191,78 @@ bool UninitChecker::shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice*
     return cur_alloc && formal_param;
 }
 
-void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, Map<const SVFGNode*, bool>& inState) const
+void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable)
 {
-    inState.clear();
-
-    const bool Init = false;
-    const bool Uninit = true;
+    mayUninitReachable.clear();
     const SVFGNode* source = slice->getSource();
-    SVFGNodeSet reached;
     ForwardWorkList workList;
 
-    inState[source] = Uninit;
-    reached.insert(source);
     workList.push(source);
 
     while (!workList.empty())
     {
         const SVFGNode* node = workList.pop();
-        auto inIt = inState.find(node);
-        bool in = (inIt == inState.end()) ? Init : inIt->second;
-        bool out = in;
+        if (!slice->inBackwardSlice(node))
+            continue;
+        if (!mayUninitReachable.insert(node).second)
+            continue;
 
-        if (storeNodes.find(node) != storeNodes.end() && shouldConsiderStoreForMode(node, slice, ignorePtrStore))
-            out = Init;
+        if (isSummaryBoundaryNode(node))
+        {
+            SVFGNodeSet summaryLoads;
+            SVFGNodeSet summaryBoundaries;
+            getOrBuildSummaryForBoundary(node, ignorePtrStore, summaryLoads, summaryBoundaries);
+
+            for (SVFGNodeSetIter lit = summaryLoads.begin(), elit = summaryLoads.end(); lit != elit; ++lit)
+            {
+                if (slice->inBackwardSlice(*lit))
+                    mayUninitReachable.insert(*lit);
+            }
+            for (SVFGNodeSetIter bit = summaryBoundaries.begin(), ebit = summaryBoundaries.end(); bit != ebit; ++bit)
+            {
+                if (slice->inBackwardSlice(*bit))
+                    workList.push(*bit);
+            }
+            continue;
+        }
 
         for (auto edge : node->getOutEdges())
         {
             const SVFGNode* succ = edge->getDstNode();
             if (!slice->inBackwardSlice(succ))
                 continue;
-
-            bool firstReach = reached.insert(succ).second;
-            auto succIt = inState.find(succ);
-            bool oldIn = (succIt == inState.end()) ? Init : succIt->second;
-            bool newIn = oldIn || out;
-            if (firstReach || newIn != oldIn)
-            {
-                inState[succ] = newIn;
-                workList.push(succ);
-            }
+            if (shouldConsiderStoreForSummaryMode(succ, ignorePtrStore))
+                continue;
+            workList.push(succ);
         }
     }
 
 }
 
-bool UninitChecker::isDefinitelyInitInComputedState(const Map<const SVFGNode*, bool>& inState, const SVFGNode* load) const
+bool UninitChecker::isDefinitelyInitInComputedState(const SVFGNodeSet& mayUninitReachable, const SVFGNode* load) const
 {
-    const bool Init = false;
-    auto loadStateIt = inState.find(load);
-    if (loadStateIt == inState.end())
-        return false;
-    return loadStateIt->second == Init;
+    return mayUninitReachable.find(load) == mayUninitReachable.end();
 }
 
 bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventStack& eventStack){
     bool flag = true;
-    Map<const SVFGNode*, bool> qualifierStateIgnorePtrStore;
-    Map<const SVFGNode*, bool> qualifierStateAllStore;
+    SVFGNodeSet qualifierStateIgnorePtrStore;
+    SVFGNodeSet qualifierStateAllStore;
     computeQualifierInferenceState(slice, true, qualifierStateIgnorePtrStore);
     computeQualifierInferenceState(slice, false, qualifierStateAllStore);
 
-    for(SVFGNodeSetIter lit = loadNodesBegin(), elit = loadNodesEnd(); lit!=elit; ++lit){
-        
-        if(!slice->inBackwardSlice(*lit)) continue;
+    for(SVFGNodeSetIter lit = qualifierStateIgnorePtrStore.begin(), elit = qualifierStateIgnorePtrStore.end(); lit!=elit; ++lit){
+        const SVFGNode* load = *lit;
+        if(loadNodes.find(load) == loadNodes.end()) continue;
 
-        bool ignorePtrStore = shouldIgnorePtrStoreForLoad(*lit);
-        const Map<const SVFGNode*, bool>& qualifierState = ignorePtrStore ? qualifierStateIgnorePtrStore : qualifierStateAllStore;
-        if(isDefinitelyInitInComputedState(qualifierState, *lit)) continue;
+        bool ignorePtrStore = shouldIgnorePtrStoreForLoad(load);
+        const SVFGNodeSet& qualifierState = ignorePtrStore ? qualifierStateIgnorePtrStore : qualifierStateAllStore;
+        if(isDefinitelyInitInComputedState(qualifierState, load)) continue;
 
         SVFGNodeSet curStoreSet;
 
         BackwardWorkList backwardWorkList;
-        backwardWorkList.push(*lit);
+        backwardWorkList.push(load);
 
         while (!backwardWorkList.empty())
         {
@@ -199,7 +274,7 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventSta
                 backwardWorkList.push(pre);
             }
 
-            if(storeNodes.find(node) != storeNodes.end() && shouldConsiderStoreForLoad(*lit, node, slice))
+            if(storeNodes.find(node) != storeNodes.end() && shouldConsiderStoreForLoad(load, node, slice))
                 curStoreSet.insert(node);
         }
 
@@ -209,10 +284,10 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventSta
             guard = slice->condOr(guard,slice->getVFCond(*sit));
         }
 
-        ProgSlice::Condition loadGuard = slice->getVFCond(*lit);
+        ProgSlice::Condition loadGuard = slice->getVFCond(load);
         if(!slice->isEquivalentBranchCond(slice->condOr(slice->condNeg(loadGuard), guard), slice->getTrueCond())){
             flag = false;
-            eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, (*lit)->getICFGNode()));
+            eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, load->getICFGNode()));
         }
     }
     return flag;
