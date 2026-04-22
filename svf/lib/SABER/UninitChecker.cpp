@@ -251,20 +251,18 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventSta
     computeQualifierInferenceState(slice, true, qualifierStateIgnorePtrStore);
     computeQualifierInferenceState(slice, false, qualifierStateAllStore);
 
-    for(SVFGNodeSetIter lit = loadNodesBegin(), elit = loadNodesEnd(); lit!=elit; ++lit){
-        
-        if(!slice->inBackwardSlice(*lit)) continue;
-    
-        bool ignorePtrStore = shouldIgnorePtrStoreForLoad(*lit);
+    for(SVFGNodeSetIter lit = qualifierStateIgnorePtrStore.begin(), elit = qualifierStateIgnorePtrStore.end(); lit!=elit; ++lit){
+        const SVFGNode* load = *lit;
+        if(loadNodes.find(load) == loadNodes.end()) continue;
+
+        bool ignorePtrStore = shouldIgnorePtrStoreForLoad(load);
         const SVFGNodeSet& qualifierState = ignorePtrStore ? qualifierStateIgnorePtrStore : qualifierStateAllStore;
-        if(isDefinitelyInitInComputedState(qualifierState, *lit)){
-            continue;
-        }
+        if(isDefinitelyInitInComputedState(qualifierState, load)) continue;
 
         SVFGNodeSet curStoreSet;
 
         BackwardWorkList backwardWorkList;
-        backwardWorkList.push(*lit);
+        backwardWorkList.push(load);
 
         while (!backwardWorkList.empty())
         {
@@ -276,7 +274,7 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventSta
                 backwardWorkList.push(pre);
             }
 
-            if(storeNodes.find(node) != storeNodes.end() && shouldConsiderStoreForLoad(*lit, node, slice))
+            if(storeNodes.find(node) != storeNodes.end() && shouldConsiderStoreForLoad(load, node, slice))
                 curStoreSet.insert(node);
         }
 
@@ -286,10 +284,10 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventSta
             guard = slice->condOr(guard,slice->getVFCond(*sit));
         }
 
-        ProgSlice::Condition loadGuard = slice->getVFCond(*lit);
+        ProgSlice::Condition loadGuard = slice->getVFCond(load);
         if(!slice->isEquivalentBranchCond(slice->condOr(slice->condNeg(loadGuard), guard), slice->getTrueCond())){
             flag = false;
-            eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, (*lit)->getICFGNode()));
+            eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, load->getICFGNode()));
         }
     }
     return flag;
