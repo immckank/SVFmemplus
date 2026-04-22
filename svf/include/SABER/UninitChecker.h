@@ -3,6 +3,7 @@
 #define UNINITCHECKER_H_
 
 #include "SABER/LeakChecker.h"
+#include <unordered_map>
 
 namespace SVF
 {
@@ -66,11 +67,17 @@ public:
 private:
     SVFGNodeSet storeNodes;
     SVFGNodeSet loadNodes;
+    std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
+    std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToBoundaries;
+    bool shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const;
+    bool isSummaryBoundaryNode(const SVFGNode* node) const;
+    u64_t getSummaryKey(const SVFGNode* node, bool ignorePtrStore) const;
+    void getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore, SVFGNodeSet& reachableLoads, SVFGNodeSet& nextBoundaries);
     bool shouldIgnorePtrStoreForLoad(const SVFGNode* load) const;
     bool shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const;
     bool shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
-    void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, Map<const SVFGNode*, bool>& inState) const;
-    bool isDefinitelyInitInComputedState(const Map<const SVFGNode*, bool>& inState, const SVFGNode* load) const;
+    void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable);
+    bool isDefinitelyInitInComputedState(const SVFGNodeSet& mayUninitReachable, const SVFGNode* load) const;
 
 };
 
