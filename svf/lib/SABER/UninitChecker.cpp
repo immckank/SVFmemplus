@@ -263,15 +263,21 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventSta
 
         BackwardWorkList backwardWorkList;
         backwardWorkList.push(load);
+        const u32_t maxBackwardSteps = Options::SaberUninitMaxBackwardSteps();
+        u32_t backwardSteps = 0;
 
         while (!backwardWorkList.empty())
         {
+            if (backwardSteps >= maxBackwardSteps)
+                break;
+
             const SVFGNode* node = backwardWorkList.pop();
-            if(!slice->inBackwardSlice(node)) continue;
+            ++backwardSteps;
+            // if(!slice->inBackwardSlice(node)) continue;
 
             for(auto edge : node->getInEdges()){
                 SVFGNode* pre = edge->getSrcNode();
-                backwardWorkList.push(pre);
+                if(slice->inBackwardSlice(pre)) backwardWorkList.push(pre);
             }
 
             if(storeNodes.find(node) != storeNodes.end() && shouldConsiderStoreForLoad(load, node, slice))

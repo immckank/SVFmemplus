@@ -881,7 +881,15 @@ void SVFIRBuilder::InitialGlobal(const GlobalVariable *gvar, Constant *C,
         setCurrentLocation(gvar, (SVFBasicBlock*) nullptr);
         NodeID field = getGlobalVarField(gvar, offset, llvmModuleSet()->getSVFType(C->getType()));
 
-        if (SVFUtil::isa<GlobalVariable, Function>(C))
+        // Bug 说明（在含有 LLVM GlobalAlias 的真实模块(openeuler object1)中发现）：
+        // 之前将 GlobalAlias 视为未知指针常量，可能会在 fallback 分支中添加一条保守的 Copy(null → alias) 定义。
+        // 而 visitGlobal() 也会为其添加语义上的复制 Copy(aliasee → alias)。
+        // 这导致同一个 PAG 节点在 VFG::setDef 中获得两个不同定义，从而触发断言异常“一个 SVFVar 只能有唯一定义”。
+        //
+        // 修复方式：
+        // 将 GlobalAlias 当作已知的全局值（与全局变量/函数同类）处理，
+        // 从而使其采用基于 store 的建模方式，避免在 fallback 分支中生成多余的 null 初始化复制。
+        if (SVFUtil::isa<GlobalVariable, Function, GlobalAlias>(C))
         {
             setCurrentLocation(C, (SVFBasicBlock*) nullptr);
             addStoreEdge(src, field);

@@ -965,4 +965,10 @@ Option<bool> Options::SaberKeepDerefDirSVFGEdges(
     false
 );
 
+const Option<u32_t> Options::SaberUninitMaxBackwardSteps(
+    "saber-uninit-max-backward-steps",
+    "Maximum backward traversal steps per load in UninitChecker",
+    500
+);
+
 } // namespace SVF.
