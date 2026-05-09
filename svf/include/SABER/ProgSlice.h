@@ -171,7 +171,7 @@ public:
     //@}
 
     /// Guarded reachability solve
-    bool AllPathReachableSolve();
+    bool AllPathReachableSolve(bool runAllPathCheck = true);
     bool isSatisfiableForAll();
     bool isSatisfiableForPairs();
 

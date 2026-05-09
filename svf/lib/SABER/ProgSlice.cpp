@@ -40,7 +40,7 @@ using namespace SVFUtil;
  * C = \bigvee Guard(path_i),  0 < i < m
  * Guard(path_i) = \bigwedge VFGGuard(x,y),  suppose (x,y) are two SVFGNode nodes on path_i
  */
-bool ProgSlice::AllPathReachableSolve()
+bool ProgSlice::AllPathReachableSolve(bool runAllPathCheck)
 {
     const SVFGNode* source = getSource();
     VFWorkList worklist;
@@ -88,7 +88,9 @@ bool ProgSlice::AllPathReachableSolve()
         }
     }
 
-    return isSatisfiableForAll();
+    if (runAllPathCheck)
+        return isSatisfiableForAll();
+    return true;
 }
 
 /*!

@@ -3,6 +3,7 @@
 #define UNINITCHECKER_H_
 
 #include "SABER/LeakChecker.h"
+#include <memory>
 #include <unordered_map>
 
 namespace SVF
@@ -62,9 +63,24 @@ public:
         loadNodes.insert(node);
     }
 
-    bool isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventStack& eventStack);
+    bool isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardSlice,
+                               const SVFGNodeSet& candidateLoads,
+                               const SVFGNodeSet& qualifierStateIgnorePtrStore,
+                               const SVFGNodeSet& qualifierStateAllStore,
+                               GenericBug::EventStack& eventStack);
+
+protected:
+    bool needDefaultAllPathSolve() const override
+    {
+        return false;
+    }
 
 private:
+    void collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnorePtrStore,
+                               const SVFGNodeSet& qualifierStateAllStore,
+                               SVFGNodeSet& candidateLoads) const;
+    std::unique_ptr<ProgSlice> buildGuardSlice(ProgSlice* rawSlice,
+                                               const SVFGNodeSet& candidateLoads) const;
     SVFGNodeSet storeNodes;
     SVFGNodeSet loadNodes;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
