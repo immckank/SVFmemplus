@@ -2,6 +2,7 @@ Release*/
 install/
 Debug*/
 build/
+coredump/
 html/
 Test-Suite
 Release+Asserts/

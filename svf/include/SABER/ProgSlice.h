@@ -280,8 +280,10 @@ protected:
     /// (e.g. PAGEdge is an global assignment or NullPtrSVFGNode)
     inline const SVFBasicBlock* getSVFGNodeBB(const SVFGNode* node) const
     {
+        if (node == nullptr)
+            return nullptr;
         const ICFGNode* icfgNode = node->getICFGNode();
-        if(SVFUtil::isa<NullPtrSVFGNode>(node) == false)
+        if(icfgNode != nullptr && SVFUtil::isa<NullPtrSVFGNode>(node) == false)
         {
             return icfgNode->getBB();
         }

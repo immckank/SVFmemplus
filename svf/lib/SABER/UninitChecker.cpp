@@ -13,6 +13,11 @@ using namespace SVFUtil;
 typedef VisitedFIFOWorkList<const SVFGNode*> BackwardWorkList;
 typedef FIFOWorkList<const SVFGNode*> ForwardWorkList;
 
+static const ICFGNode* getBugEventICFGNode(const SVFGNode* node)
+{
+    return node == nullptr ? nullptr : node->getICFGNode();
+}
+
 UninitChecker::UninitChecker() : LeakChecker() {
     Options::SaberKeepDerefDirSVFGEdges.setValue(true);
     Options::SABERFULLSVFG.setValue(true);
@@ -352,7 +357,8 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardS
         ProgSlice::Condition loadGuard = guardSlice->getVFCond(load);
         if(!guardSlice->isEquivalentBranchCond(guardSlice->condOr(guardSlice->condNeg(loadGuard), guard), guardSlice->getTrueCond())){
             flag = false;
-            eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, load->getICFGNode()));
+            if (const ICFGNode* loadICFG = getBugEventICFGNode(load))
+                eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, loadICFG));
         }
     }
     return flag;
@@ -381,7 +387,10 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
     if(!isSatisfiableForLoads(rawSlice, guardSlice.get(), candidateLoads,
                               qualifierStateIgnorePtrStore, qualifierStateAllStore, eventStack))
     {
-        eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, rawSlice->getSource()->getICFGNode()));
+        const ICFGNode* sourceICFG = getBugEventICFGNode(rawSlice->getSource());
+        if (sourceICFG == nullptr)
+            return;
+        eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, sourceICFG));
         report.addSaberBug(GenericBug::UNINIT, eventStack);
     }
 }
