@@ -6,6 +6,9 @@
 #include "SABER/ProgSlice.h"
 #include "Util/WorkList.h"
 #include "SVFIR/SVFValue.h"
+#include "Graphs/ICFG.h"
+#include <deque>
+#include <unordered_set>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -16,6 +19,134 @@ typedef FIFOWorkList<const SVFGNode*> ForwardWorkList;
 static const ICFGNode* getBugEventICFGNode(const SVFGNode* node)
 {
     return node == nullptr ? nullptr : node->getICFGNode();
+}
+
+static bool hasUsableSourceLoc(const ICFGNode* node)
+{
+    return node != nullptr && node->getSourceLoc().empty() == false;
+}
+
+static int icfgNodeKindPenalty(const ICFGNode* node)
+{
+    if (node == nullptr)
+        return 100;
+    if (SVFUtil::isa<IntraICFGNode>(node))
+        return 0;
+    if (SVFUtil::isa<CallICFGNode>(node) || SVFUtil::isa<RetICFGNode>(node))
+        return 2;
+    if (SVFUtil::isa<FunEntryICFGNode>(node) || SVFUtil::isa<FunExitICFGNode>(node))
+        return 5;
+    return 10;
+}
+
+static const ICFGNode* findNearbySourceICFGNode(const SVFGNode* source, u32_t maxDepth, u32_t maxVisited)
+{
+    if (source == nullptr)
+        return nullptr;
+
+    std::deque<std::pair<const SVFGNode*, u32_t>> worklist;
+    std::unordered_set<const SVFGNode*> visited;
+    worklist.push_back(std::make_pair(source, 0));
+    visited.insert(source);
+
+    const ICFGNode* bestAtCurrentDepth = nullptr;
+    u32_t currentDepth = 0;
+    u32_t visitedCount = 0;
+
+    while (!worklist.empty() && visitedCount < maxVisited)
+    {
+        const SVFGNode* node = worklist.front().first;
+        const u32_t depth = worklist.front().second;
+        worklist.pop_front();
+        ++visitedCount;
+
+        if (depth > maxDepth)
+            continue;
+
+        if (depth != currentDepth)
+        {
+            if (bestAtCurrentDepth)
+                return bestAtCurrentDepth;
+            currentDepth = depth;
+        }
+
+        const ICFGNode* icfgNode = getBugEventICFGNode(node);
+        if (hasUsableSourceLoc(icfgNode))
+        {
+            if (bestAtCurrentDepth == nullptr ||
+                    icfgNodeKindPenalty(icfgNode) < icfgNodeKindPenalty(bestAtCurrentDepth))
+            {
+                bestAtCurrentDepth = icfgNode;
+            }
+        }
+
+        if (depth == maxDepth)
+            continue;
+
+        for (const auto* edge : node->getInEdges())
+        {
+            const SVFGNode* pred = edge->getSrcNode();
+            if (visited.insert(pred).second)
+                worklist.push_back(std::make_pair(pred, depth + 1));
+        }
+
+        for (const auto* edge : node->getOutEdges())
+        {
+            const SVFGNode* succ = edge->getDstNode();
+            if (visited.insert(succ).second)
+                worklist.push_back(std::make_pair(succ, depth + 1));
+        }
+    }
+
+    return bestAtCurrentDepth;
+}
+
+static const ICFGNode* findFallbackICFGFromEvents(const GenericBug::EventStack& eventStack)
+{
+    for (auto it = eventStack.rbegin(); it != eventStack.rend(); ++it)
+    {
+        if (it->getEventType() == SVFBugEvent::Use && hasUsableSourceLoc(it->getEventInst()))
+            return it->getEventInst();
+    }
+
+    for (auto it = eventStack.rbegin(); it != eventStack.rend(); ++it)
+    {
+        if (hasUsableSourceLoc(it->getEventInst()))
+            return it->getEventInst();
+    }
+
+    return nullptr;
+}
+
+static const ICFGNode* findFunctionLevelFallbackICFG(const SVFGNode* source, SVFIR* pag)
+{
+    const ICFGNode* sourceICFG = getBugEventICFGNode(source);
+    if (sourceICFG == nullptr || sourceICFG->getFun() == nullptr || pag == nullptr || pag->getICFG() == nullptr)
+        return sourceICFG;
+
+    if (FunEntryICFGNode* funEntry = pag->getICFG()->getFunEntryICFGNode(sourceICFG->getFun()))
+        return funEntry;
+
+    return sourceICFG;
+}
+
+static const ICFGNode* selectBestSourceICFGNode(const SVFGNode* source, const GenericBug::EventStack& eventStack, SVFIR* pag)
+{
+    // P0: original source if it already has usable source location.
+    const ICFGNode* sourceICFG = getBugEventICFGNode(source);
+    if (hasUsableSourceLoc(sourceICFG))
+        return sourceICFG;
+
+    // P1: nearest reachable SVFG node with non-empty source location.
+    if (const ICFGNode* nearby = findNearbySourceICFGNode(source, 8, 200))
+        return nearby;
+
+    // P2: use nearest event location in current bug path (prefer Use events).
+    if (const ICFGNode* fromEvents = findFallbackICFGFromEvents(eventStack))
+        return fromEvents;
+
+    // P3: function-level fallback to keep a stable, non-empty anchor.
+    return findFunctionLevelFallbackICFG(source, pag);
 }
 
 UninitChecker::UninitChecker() : LeakChecker() {
@@ -387,7 +518,7 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
     if(!isSatisfiableForLoads(rawSlice, guardSlice.get(), candidateLoads,
                               qualifierStateIgnorePtrStore, qualifierStateAllStore, eventStack))
     {
-        const ICFGNode* sourceICFG = getBugEventICFGNode(rawSlice->getSource());
+        const ICFGNode* sourceICFG = selectBestSourceICFGNode(rawSlice->getSource(), eventStack, getPAG());
         if (sourceICFG == nullptr)
             return;
         eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, sourceICFG));
