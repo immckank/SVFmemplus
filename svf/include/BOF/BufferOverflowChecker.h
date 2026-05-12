@@ -27,13 +27,14 @@
  *      Author: Yaokun Yang
  */
 
-// BufferOverflowChecker.h
+
 #ifndef BUFFER_OVERFLOW_CHECKER_H_
 #define BUFFER_OVERFLOW_CHECKER_H_
 
 #include "MemoryModel/PointerAnalysisImpl.h"
 #include "RangeFlowNode.h"
 #include "RangeAnalysis.h"
+#include "HeapAllocationHandler.h"
 
 #include <queue>
 
@@ -41,14 +42,16 @@
 namespace SVF {
     class BufferOverflowChecker {
         public:
+            BufferOverflowChecker();
             void runOnModule(SVFIR* pag);
             void initialize(SVFIR* pag);
             void propagate(SVFIR* pag);
-            void reportBufferOverflowError(const SVFVar* base, const SVFType* type, const Range& offset, const Range& size);
+            void reportBufferOverflowError(const SVFVar* base, const SVFType* type, const Range& offset, const Range& size, bool isHeap = false);
 
         private:
             std::queue<RangeFlowNode>worklist;
             RangeAnalysis rangeAnalysis;
+            HeapAllocationHandler heapAllocationHandler;
     };
 }
 

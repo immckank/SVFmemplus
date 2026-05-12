@@ -64,7 +64,7 @@ bool RangeAnalysis::analyzeBufferRange(const StackObjVar* stackObjVar){
 
 bool RangeAnalysis::analyzeBufferRange(const HeapObjVar* heapObjVar){
     u64_t size = 0;
-    size = heapObjVar->getNumOfElements();
+    size = heapObjVar->getByteSizeOfObj();
     if(size > 1)
     {      
         Range buffer_size  = Range(0, size-1);

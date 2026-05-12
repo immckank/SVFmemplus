@@ -77,6 +77,28 @@ bool Range::isSubset(const Range& other) const {
     && upper <= other.getUpper(); 
 }
 
+std::string Range::toString() const {
+    std::ostringstream oss;
+    
+    // 下界
+    if (lower == NINF || lower - NINF < 1000)
+        oss << "-INF";
+    else
+        oss << lower;
+    
+    oss << ", ";
+    
+    // 上界
+    if (upper == INF || INF - upper < 1000)
+        oss << "INF";
+    else
+        oss << upper;
+    
+    return "[" + oss.str() + "]";
+}
+
+
+
 Range::BoundType Range::safeAdd(BoundType lhs, BoundType rhs) {
     if (rhs > 0 && lhs > INF - rhs) 
         return INF;
