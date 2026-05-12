@@ -93,6 +93,9 @@ static const ei_pair ei_pairs[]=
     {"kmem_cache_zalloc", SaberCheckerAPI::CK_ALLOC},
     {"VOS_MemAlloc", SaberCheckerAPI::CK_ALLOC},
     {"_TIFFmalloc", SaberCheckerAPI::CK_ALLOC},
+    {"__kmalloc", SaberCheckerAPI::CK_ALLOC},
+    {"kmalloc_large", SaberCheckerAPI::CK_ALLOC},
+    {"kmalloc_trace", SaberCheckerAPI::CK_ALLOC},
 
     {"VOS_MemFree", SaberCheckerAPI::CK_FREE},
     {"cfree", SaberCheckerAPI::CK_FREE},
@@ -122,6 +125,9 @@ static const ei_pair ei_pairs[]=
     {"SSL_free", SaberCheckerAPI::CK_FREE},
     {"XFree", SaberCheckerAPI::CK_FREE},
     {"_TIFFfree", SaberCheckerAPI::CK_FREE},
+    {"kfree", SaberCheckerAPI::CK_FREE},
+    {"kvfree", SaberCheckerAPI::CK_FREE},
+    {"vfree", SaberCheckerAPI::CK_FREE},
 
     {"fopen", SaberCheckerAPI::CK_FOPEN},
     {"\01_fopen", SaberCheckerAPI::CK_FOPEN},
