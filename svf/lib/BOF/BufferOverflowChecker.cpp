@@ -31,6 +31,10 @@
 using namespace SVF;
 using namespace std;
 
+BufferOverflowChecker::BufferOverflowChecker()
+        : heapAllocationHandler(&rangeAnalysis) {         
+}
+
 void BufferOverflowChecker::runOnModule(SVFIR* pag)
 {
     assert(pag && "PAG must not be null");
@@ -46,10 +50,11 @@ void BufferOverflowChecker::runOnModule(SVFIR* pag)
 
 void BufferOverflowChecker::initialize(SVFIR* pag)
 {   
+    // handle alloca instructions(Stack Objects)
     SVFStmt::SVFStmtSetTy addrStmtSet = pag->getSVFStmtSet(SVFStmt::Addr);
-    for (auto stmt: addrStmtSet)
+    for (const auto& stmt: addrStmtSet)
     {   
-        if(auto addrStmt = SVFUtil::dyn_cast<AddrStmt>(stmt)){
+        if(const auto& addrStmt = SVFUtil::dyn_cast<AddrStmt>(stmt)){
             const SVFVar* src = addrStmt->getRHSVar();
             const SVFVar* dst = addrStmt->getLHSVar();
             
@@ -61,9 +66,25 @@ void BufferOverflowChecker::initialize(SVFIR* pag)
             // handle malloc instructions(Heap Objects)
             else if(const HeapObjVar* heapObjVar = SVFUtil::dyn_cast<HeapObjVar>(src)){
                 if(rangeAnalysis.analyzeBufferRange(heapObjVar))
-                    worklist.push(RangeFlowNode(dst, src, Range(0,0)));
+                    worklist.push(RangeFlowNode(dst, src, Range(0,0), true));
             }
         }   
+    }
+
+    // handle external api calls(Heap Objects)
+    SVFStmt::SVFStmtSetTy callStmtSet = pag->getSVFStmtSet(SVFStmt::Call);
+    for (const auto& stmt: callStmtSet){
+        if(const auto& callPE = SVFUtil::dyn_cast<CallPE>(stmt)){
+            const SVFVar* dst = callPE->getLHSVar();
+            const CallICFGNode* callInst = callPE->getCallInst();
+            const FunObjVar* funObjVar = callInst->getCalledFunction();
+            if(heapAllocationHandler.isAllocAPI(funObjVar->getName(), funObjVar->arg_size())){
+                Range sizeRange = heapAllocationHandler.analyzeAllocSize(funObjVar);
+                if(sizeRange.getUpper() > 0)
+                    worklist.push(RangeFlowNode(dst, dst, sizeRange, true));
+            }
+            
+        }
     }
 }
 
@@ -100,8 +121,14 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
                         total_offset = Range::add(total_offset, var_offset);
                         continue;
                     }
-
-                    if(SVFUtil::isa<SVFPointerType>(type))
+                    
+                    if(srcNode.isHeap){
+                        if(SVFUtil::isa<SVFPointerType>(type))
+                            total_offset = Range::mul(var_offset, Range(ap.gepSrcPointeeType()->getByteSize()));
+                        else
+                            total_offset = Range::mul(var_offset, Range(1));
+                    }
+                    else if(SVFUtil::isa<SVFPointerType>(type))
                         total_offset = Range::add(total_offset, Range::mul(var_offset, Range(ap.getElementNum(ap.gepSrcPointeeType()))));
                     else
                     {
@@ -124,9 +151,9 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
                 // printf("Access index: [%lld,%lld], Array size: [%lld,%lld]\n", accumulate_offset.getLower(), accumulate_offset.getUpper(), buffer_size.getLower(), buffer_size.getUpper());
 
                 if(!accumulate_offset.isSubset(buffer_size)){
-                    reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size);
+                    reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size, srcNode.isHeap);
                 }
-                worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset));
+                worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset, srcNode.isHeap));
 
             }
             
@@ -141,29 +168,77 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
                 Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
                 if(!accumulate_offset.isSubset(buffer_size)){
-                    reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size);
+                    reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size, srcNode.isHeap);
                 }
 
-                worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset));
+                worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset, srcNode.isHeap));
+            }
+
+            // Store instruction 
+            else if(auto *copyStmt = SVFUtil::dyn_cast<StoreStmt>(svfStmt))
+            {
+                // get destination node
+                SVFVar* dstVar = copyStmt->getLHSVar(); // copyStmt->getDstNode();
+
+                // copy offset
+                Range accumulate_offset = srcNode.accumulate_offset;
+                Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
+
+                if(!accumulate_offset.isSubset(buffer_size)){
+                    reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size, srcNode.isHeap);
+                }
+
+                worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset, srcNode.isHeap));
+            }
+
+            // Load instruction
+            else if(auto *copyStmt = SVFUtil::dyn_cast<LoadStmt>(svfStmt))
+            {
+                // get destination node
+                SVFVar* dstVar = copyStmt->getLHSVar(); // copyStmt->getDstNode();
+
+                // copy offset
+                Range accumulate_offset = srcNode.accumulate_offset;
+                Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
+
+                if(!accumulate_offset.isSubset(buffer_size)){
+                    reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size, srcNode.isHeap);
+                }
+
+                worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset, srcNode.isHeap));
             }
         }
     }
 }
 
 
-void BufferOverflowChecker::reportBufferOverflowError(const SVFVar* base, const SVFType* type, const Range& offset, const Range& array_size)
+void BufferOverflowChecker::reportBufferOverflowError(const SVFVar* base, const SVFType* type, const Range& offset, const Range& array_size, bool isHeap)
 {
-    if(type != nullptr)
-        SVFUtil::outs() << "[BufferOverflowChecker] Buffer Overflow Error detected! \n"
-                        << "Base: " << base->toString() << "\n"
-                        << "Type: " << type->toString() << "\n"
-                        << "Buffer index: [" << offset.getLower() << "," << offset.getUpper() << "]\n"
-                        << "Buffer size: [" << array_size.getLower() << "," << array_size.getUpper() << "]\n"
-                        << "\n";
-    else
-        SVFUtil::outs() << "[BufferOverflowChecker] Buffer Overflow Error detected! \n"
-                        << "Base: " << base->toString() << "\n"
-                        << "Buffer index: [" << offset.getLower() << "," << offset.getUpper() << "]\n"
-                        << "Buffer size: [" << array_size.getLower() << "," << array_size.getUpper() << "]\n"
-                        << "\n";
+    if(!isHeap){
+        if(type != nullptr)
+            SVFUtil::errs() << "[BufferOverflowChecker] Buffer Overflow Error detected! \n"
+                            << "Base: " << base->toString() << "\n"
+                            << "Type: " << type->toString() << "\n"
+                            << "Buffer index: " << offset.toString() << "\n"
+                            << "Buffer size(number of elements): " << array_size.toString() << "\n\n";
+        else
+            SVFUtil::errs() << "[BufferOverflowChecker] Buffer Overflow Error detected! \n"
+                            << "Base: " << base->toString() << "\n"
+                            << "Buffer index: " << offset.toString() << "\n"
+                            << "Buffer size(number of elements): " << array_size.toString() << "\n\n";
+    }
+    else{
+        if(type != nullptr)
+            SVFUtil::errs() << "[BufferOverflowChecker] Buffer Overflow Error detected! \n"
+                            << "Base: " << base->toString() << "\n"
+                            << "Type: " << type->toString() << "\n"
+                            << "Buffer index: " << offset.toString() << "\n"
+                            << "Buffer size(bytes): " << array_size.toString() << "\n\n";
+        else
+            SVFUtil::errs() << "[BufferOverflowChecker] Buffer Overflow Error detected! \n"
+                            << "Base: " << base->toString() << "\n"
+                            << "Buffer index: " << offset.toString() << "\n"
+                            << "Buffer size(bytes): " << array_size.toString() << "\n\n";
+    }
+                        
 }

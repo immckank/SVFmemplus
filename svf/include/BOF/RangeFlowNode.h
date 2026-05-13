@@ -41,8 +41,9 @@ namespace SVF {
             const SVFVar* base;
             const SVFVar* parent;
             Range accumulate_offset;
+            const bool isHeap;
 
-            RangeFlowNode(const SVFVar* _base, const SVFVar* _parent, Range _accumulate_offset);
+            RangeFlowNode(const SVFVar* _base, const SVFVar* _parent, Range _accumulate_offset, bool _isHeap = false);
     };
 }
 
