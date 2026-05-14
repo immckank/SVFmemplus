@@ -31,6 +31,8 @@
 #define HEAP_ALLOCATION_HANDLER_H
 
 #include "RangeAnalysis.h"
+#include <map>
+#include <string>
 
 namespace SVF {
 
@@ -72,8 +74,22 @@ public:
      *       if the allocation size cannot be determined at compile time.
      */
     Range analyzeAllocSize(const FunObjVar* funObjVar);
+    Range analyzeAllocSize(const CallICFGNode* callInst);
 
 private:
+    enum AllocSizeKind {
+        AS_UNKNOWN,
+        AS_ARG,
+        AS_MUL_ARGS
+    };
+
+    struct AllocSizeSpec {
+        u32_t requiredArgs;
+        AllocSizeKind kind;
+        u32_t arg0;
+        u32_t arg1;
+    };
+
     RangeAnalysis* ra;
 
     /**
@@ -86,7 +102,12 @@ private:
      * 
      * @note Storage structure: function name -> expected parameter count
      */
-    static const std::map<std::string, u32_t> allocApiMap;
+    static const std::map<std::string, AllocSizeSpec> allocApiMap;
+
+    Range analyzeArgRange(const CallICFGNode* callInst, u32_t idx) const;
+    Range analyzeArgRange(const FunObjVar* funObjVar, u32_t idx) const;
+    Range analyzeBySpec(const AllocSizeSpec& spec, const CallICFGNode* callInst) const;
+    Range analyzeBySpec(const AllocSizeSpec& spec, const FunObjVar* funObjVar) const;
 };
 }
 

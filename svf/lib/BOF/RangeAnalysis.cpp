@@ -63,15 +63,23 @@ bool RangeAnalysis::analyzeBufferRange(const StackObjVar* stackObjVar){
 };
 
 bool RangeAnalysis::analyzeBufferRange(const HeapObjVar* heapObjVar){
-    u64_t size = 0;
-    size = heapObjVar->getByteSizeOfObj();
-    if(size > 1)
-    {      
-        Range buffer_size  = Range(0, size-1);
-        bufferRanges[heapObjVar] = buffer_size;
-        return true;
-    }
-    return false;
+    if(!heapObjVar->isConstantByteSize())
+        return false;
+
+    u64_t size = heapObjVar->getByteSizeOfObj();
+    return setBufferByteRange(heapObjVar, Range(static_cast<Range::BoundType>(size)));
+}
+
+bool RangeAnalysis::setBufferByteRange(const SVFVar* buffer, const Range& byteSizeRange){
+    if(byteSizeRange.isBottom() || byteSizeRange.isTop())
+        return false;
+
+    Range::BoundType upper = byteSizeRange.getUpper();
+    if(upper == Range::INF || upper <= 0)
+        return false;
+
+    bufferRanges[buffer] = Range(0, upper - 1);
+    return true;
 }
          
 
@@ -83,11 +91,8 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var, int depth) {
 
     // ===== Attempt to retrieve range from cache =====
     Range var_range_find = getVarRange(var);
-    // Cache hit: Found a valid range (not Bottom)
+    // Cache hit: Found a valid range (including TOP).
     if(!var_range_find.isBottom())
-        return var_range_find;
-    // Cache hit: The value is already defined as TOP (cannot refine further)
-    else if(var_range_find.isTop())
         return var_range_find;
         
     /// ===== Constant Value Calculation =====
@@ -204,10 +209,11 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var, int depth) {
         }
     }
     
-    // Put in cache
+    // Put in cache. Values without a supported defining edge are unknown, not
+    // unreachable; propagate TOP so callers still perform conservative checks.
     if(!var_range.isBottom())
         varRanges[var] = var_range;
-    return var_range;
+    return varRanges[var];
 }
 
 

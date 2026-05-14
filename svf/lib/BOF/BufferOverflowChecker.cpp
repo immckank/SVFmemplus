@@ -65,26 +65,19 @@ void BufferOverflowChecker::initialize(SVFIR* pag)
             }
             // handle malloc instructions(Heap Objects)
             else if(const HeapObjVar* heapObjVar = SVFUtil::dyn_cast<HeapObjVar>(src)){
-                if(rangeAnalysis.analyzeBufferRange(heapObjVar))
+                bool hasBufferRange = rangeAnalysis.analyzeBufferRange(heapObjVar);
+                if(!hasBufferRange)
+                {
+                    if(const CallICFGNode* callNode = SVFUtil::dyn_cast<CallICFGNode>(heapObjVar->getICFGNode()))
+                    {
+                        Range sizeRange = heapAllocationHandler.analyzeAllocSize(callNode);
+                        hasBufferRange = rangeAnalysis.setBufferByteRange(heapObjVar, sizeRange);
+                    }
+                }
+                if(hasBufferRange)
                     worklist.push(RangeFlowNode(dst, src, Range(0,0), true));
             }
         }   
-    }
-
-    // handle external api calls(Heap Objects)
-    SVFStmt::SVFStmtSetTy callStmtSet = pag->getSVFStmtSet(SVFStmt::Call);
-    for (const auto& stmt: callStmtSet){
-        if(const auto& callPE = SVFUtil::dyn_cast<CallPE>(stmt)){
-            const SVFVar* dst = callPE->getLHSVar();
-            const CallICFGNode* callInst = callPE->getCallInst();
-            const FunObjVar* funObjVar = callInst->getCalledFunction();
-            if(heapAllocationHandler.isAllocAPI(funObjVar->getName(), funObjVar->arg_size())){
-                Range sizeRange = heapAllocationHandler.analyzeAllocSize(funObjVar);
-                if(sizeRange.getUpper() > 0)
-                    worklist.push(RangeFlowNode(dst, dst, sizeRange, true));
-            }
-            
-        }
     }
 }
 
@@ -150,7 +143,7 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
 
                 // printf("Access index: [%lld,%lld], Array size: [%lld,%lld]\n", accumulate_offset.getLower(), accumulate_offset.getUpper(), buffer_size.getLower(), buffer_size.getUpper());
 
-                if(!accumulate_offset.isSubset(buffer_size)){
+                if(!buffer_size.isBottom() && !accumulate_offset.isSubset(buffer_size)){
                     reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size, srcNode.isHeap);
                 }
                 worklist.push(RangeFlowNode(dstVar, srcNode.parent, accumulate_offset, srcNode.isHeap));
@@ -167,7 +160,7 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
                 Range accumulate_offset = srcNode.accumulate_offset;
                 Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
-                if(!accumulate_offset.isSubset(buffer_size)){
+                if(!buffer_size.isBottom() && !accumulate_offset.isSubset(buffer_size)){
                     reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size, srcNode.isHeap);
                 }
 
@@ -184,7 +177,7 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
                 Range accumulate_offset = srcNode.accumulate_offset;
                 Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
-                if(!accumulate_offset.isSubset(buffer_size)){
+                if(!buffer_size.isBottom() && !accumulate_offset.isSubset(buffer_size)){
                     reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size, srcNode.isHeap);
                 }
 
@@ -201,7 +194,7 @@ void BufferOverflowChecker::propagate(SVFIR* pag)
                 Range accumulate_offset = srcNode.accumulate_offset;
                 Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
-                if(!accumulate_offset.isSubset(buffer_size)){
+                if(!buffer_size.isBottom() && !accumulate_offset.isSubset(buffer_size)){
                     reportBufferOverflowError(dstVar, nullptr, accumulate_offset, buffer_size, srcNode.isHeap);
                 }
 

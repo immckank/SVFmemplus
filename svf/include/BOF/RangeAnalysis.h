@@ -42,6 +42,7 @@ namespace SVF {
             RangeAnalysis();
             bool analyzeBufferRange(const StackObjVar* stackObjVar);
             bool analyzeBufferRange(const HeapObjVar* heapObjVar);
+            bool setBufferByteRange(const SVFVar* buffer, const Range& byteSizeRange);
             Range analyzeVarRange(const SVFVar* var, int depth = 0);
             Range getBufferRange(const SVFVar* buffer);
             Range getVarRange(const SVFVar* var);

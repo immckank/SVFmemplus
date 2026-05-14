@@ -3,51 +3,117 @@
 using namespace SVF;
 
 /**
- * Define the allocation API map with expected parameter counts.
- * This map is independent of SABER's internal implementation.
+ * Define the allocation API map with the allocation-size expression.
+ * This follows SaberCheckerAPI's table-driven API classification, but BOF also
+ * needs the argument expression that represents the allocated byte size.
  */
-const std::map<std::string, u32_t> HeapAllocationHandler::allocApiMap = {
-    {"malloc", 1},          {"xmalloc", 1},         {"VOS_MemAlloc", 1},
-    {"calloc", 2},          {"SoftBusCalloc", 2},   {"SysCalloc", 2},
-    {"realloc", 2},         {"LOS_MemAlloc", 2},    {"LOS_MemRealloc", 3},
-    {"alloca", 1},          {"strdup", 1},          {"strndup", 2},
-    {"_TIFFmalloc", 1},     {"kmem_cache_alloc", 2}
+const std::map<std::string, HeapAllocationHandler::AllocSizeSpec> HeapAllocationHandler::allocApiMap = {
+    {"alloc", {1, AS_ARG, 0, 0}},
+    {"alloc_check", {1, AS_ARG, 0, 0}},
+    {"alloc_clear", {1, AS_ARG, 0, 0}},
+    {"calloc", {2, AS_MUL_ARGS, 0, 1}},
+    {"lalloc", {1, AS_ARG, 0, 0}},
+    {"lalloc_clear", {1, AS_ARG, 0, 0}},
+    {"malloc", {1, AS_ARG, 0, 0}},
+    {"safe_calloc", {2, AS_MUL_ARGS, 0, 1}},
+    {"safe_malloc", {1, AS_ARG, 0, 0}},
+    {"safecalloc", {2, AS_MUL_ARGS, 0, 1}},
+    {"safemalloc", {1, AS_ARG, 0, 0}},
+    {"safexcalloc", {2, AS_MUL_ARGS, 0, 1}},
+    {"safexmalloc", {1, AS_ARG, 0, 0}},
+    {"savealloc", {1, AS_ARG, 0, 0}},
+    {"xalloc", {1, AS_ARG, 0, 0}},
+    {"xcalloc", {2, AS_MUL_ARGS, 0, 1}},
+    {"xmalloc", {1, AS_ARG, 0, 0}},
+    {"SoftBusMalloc", {1, AS_ARG, 0, 0}},
+    {"SoftBusCalloc", {2, AS_MUL_ARGS, 0, 1}},
+    {"SysMalloc", {1, AS_ARG, 0, 0}},
+    {"SysCalloc", {2, AS_MUL_ARGS, 0, 1}},
+    {"FillpMemAlloc", {1, AS_ARG, 0, 0}},
+    {"FillpMemCalloc", {2, AS_MUL_ARGS, 0, 1}},
+    {"OhosMalloc", {1, AS_ARG, 0, 0}},
+    {"VOS_MemAlloc", {1, AS_ARG, 0, 0}},
+    {"_TIFFmalloc", {1, AS_ARG, 0, 0}},
+    {"__kmalloc", {1, AS_ARG, 0, 0}},
+    {"kmalloc_large", {1, AS_ARG, 0, 0}},
+    {"kmalloc_trace", {1, AS_ARG, 0, 0}},
+    {"realloc", {2, AS_ARG, 1, 0}},
+    {"strndup", {2, AS_ARG, 1, 0}},
+    {"LOS_MemAlloc", {2, AS_ARG, 1, 0}},
+    {"LOS_MemAllocAlign", {3, AS_ARG, 1, 0}},
+    {"LOS_MemRealloc", {3, AS_ARG, 2, 0}},
+    {"alloca", {1, AS_ARG, 0, 0}},
+
+    {"strdup", {0, AS_UNKNOWN, 0, 0}},
+    {"realpath", {0, AS_UNKNOWN, 0, 0}},
+    {"jpeg_alloc_huff_table", {0, AS_UNKNOWN, 0, 0}},
+    {"jpeg_alloc_quant_table", {0, AS_UNKNOWN, 0, 0}},
+    {"png_create_info_struct", {0, AS_UNKNOWN, 0, 0}},
+    {"png_create_write_struct", {0, AS_UNKNOWN, 0, 0}},
+    {"SSL_CTX_new", {0, AS_UNKNOWN, 0, 0}},
+    {"SSL_new", {0, AS_UNKNOWN, 0, 0}},
+    {"kmem_cache_alloc", {0, AS_UNKNOWN, 0, 0}},
+    {"kmem_cache_zalloc", {0, AS_UNKNOWN, 0, 0}}
 };
 
 HeapAllocationHandler::HeapAllocationHandler(RangeAnalysis* _ra) : ra(_ra) {}
 
 bool HeapAllocationHandler::isAllocAPI(const std::string& funcName, size_t actualParamCount) const {
     auto it = allocApiMap.find(funcName);
-    if (it != allocApiMap.end()) {
-        // Validate if the number of parameters matches the pre-defined count
-        return it->second == actualParamCount;
-    }
-    return false;
+    return it != allocApiMap.end() && actualParamCount >= it->second.requiredArgs;
 }
 
 Range HeapAllocationHandler::analyzeAllocSize(const FunObjVar* funObjVar) {
-    // Case 1: calloc-style APIs (Size = arg0 * arg1)
+    if(funObjVar == nullptr)
+        return Range::BOTTOM;
+
+    auto it = allocApiMap.find(funObjVar->getName());
+    if(it == allocApiMap.end() || funObjVar->arg_size() < it->second.requiredArgs)
+        return Range::BOTTOM;
+
+    return analyzeBySpec(it->second, funObjVar);
+}
+
+Range HeapAllocationHandler::analyzeAllocSize(const CallICFGNode* callInst) {
+    if(callInst == nullptr || callInst->isIndirectCall())
+        return Range::BOTTOM;
+
+    const FunObjVar* funObjVar = callInst->getCalledFunction();
+    if(funObjVar == nullptr)
+        return Range::BOTTOM;
+
     std::string funcName = funObjVar->getName();
-    if (funcName == "calloc" || funcName == "SoftBusCalloc" || funcName == "SysCalloc") {
-        const ArgValVar* arg0 = funObjVar->getArg(0);
-        Range r0 = ra->analyzeVarRange(arg0);
+    auto it = allocApiMap.find(funcName);
+    if(it == allocApiMap.end() || callInst->arg_size() < it->second.requiredArgs)
+        return Range::BOTTOM;
 
-        const ArgValVar* arg1 = funObjVar->getArg(1);
-        Range r1 = ra->analyzeVarRange(arg1);
+    return analyzeBySpec(it->second, callInst);
+}
 
-        return Range::mul(r0, r1);
-    }
-    
-    // Case 2: standard malloc-style APIs (Size = arg0)
-    // Most allocation APIs put the size in the first argument
-    if (funObjVar->arg_size() >= 1) {
-        const ArgValVar* size = funObjVar->getArg(0);
-        Range sizeRange = ra->analyzeVarRange(size);
-        
-        // Example usage of Range.add() if needed (e.g., adding a dummy offset)
-        // Here we just return the analyzed range directly
-        return sizeRange;
-    }
+Range HeapAllocationHandler::analyzeArgRange(const CallICFGNode* callInst, u32_t idx) const {
+    if(callInst == nullptr || idx >= callInst->arg_size())
+        return Range::BOTTOM;
+    return ra->analyzeVarRange(callInst->getArgument(idx));
+}
 
-    return Range(0);
+Range HeapAllocationHandler::analyzeArgRange(const FunObjVar* funObjVar, u32_t idx) const {
+    if(funObjVar == nullptr || idx >= funObjVar->arg_size())
+        return Range::BOTTOM;
+    return ra->analyzeVarRange(funObjVar->getArg(idx));
+}
+
+Range HeapAllocationHandler::analyzeBySpec(const AllocSizeSpec& spec, const CallICFGNode* callInst) const {
+    if(spec.kind == AS_ARG)
+        return analyzeArgRange(callInst, spec.arg0);
+    if(spec.kind == AS_MUL_ARGS)
+        return Range::mul(analyzeArgRange(callInst, spec.arg0), analyzeArgRange(callInst, spec.arg1));
+    return Range::TOP;
+}
+
+Range HeapAllocationHandler::analyzeBySpec(const AllocSizeSpec& spec, const FunObjVar* funObjVar) const {
+    if(spec.kind == AS_ARG)
+        return analyzeArgRange(funObjVar, spec.arg0);
+    if(spec.kind == AS_MUL_ARGS)
+        return Range::mul(analyzeArgRange(funObjVar, spec.arg0), analyzeArgRange(funObjVar, spec.arg1));
+    return Range::TOP;
 }
