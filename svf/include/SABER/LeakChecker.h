@@ -90,6 +90,11 @@ public:
     //@}
 
 protected:
+    bool enableReachGlobalPrune() const override
+    {
+        return true;
+    }
+
     /// Report leaks
     //@{
     virtual void reportBug(ProgSlice* slice) override;

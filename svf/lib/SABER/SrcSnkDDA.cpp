@@ -77,7 +77,7 @@ void SrcSnkDDA::analyze()
 
         /// do not consider there is bug when reaching a global SVFGNode
         /// if we touch a global, then we assume the client uses this memory until the program exits.
-        if (getCurSlice()->isReachGlobal())
+        if (enableReachGlobalPrune() && getCurSlice()->isReachGlobal())
         {
             DBOUT(DSaber, outs() << "Forward analysis reaches globals for slice:" << (*iter)->getId() << ")\n");
         }
@@ -203,7 +203,7 @@ void SrcSnkDDA::FWProcessOutgoingEdge(const DPIm& item, SVFGEdge* edge)
     DPIm newItem(dstNode->getId(),item.getContexts());
 
     /// handle globals here
-    if(isGlobalSVFGNode(dstNode) || getCurSlice()->isReachGlobal())
+    if(enableReachGlobalPrune() && (isGlobalSVFGNode(dstNode) || getCurSlice()->isReachGlobal()))
     {
         getCurSlice()->setReachGlobal();
         return;

@@ -75,6 +75,11 @@ protected:
         return false;
     }
 
+    bool enableReachGlobalPrune() const override
+    {
+        return false;
+    }
+
 private:
     void collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnorePtrStore,
                                const SVFGNodeSet& qualifierStateAllStore,

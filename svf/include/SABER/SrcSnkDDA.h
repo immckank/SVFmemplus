@@ -303,6 +303,11 @@ protected:
     }
     //@}
 
+    virtual bool enableReachGlobalPrune() const
+    {
+        return false;
+    }
+
     /// Whether it is all path reachable from a source
     virtual bool needDefaultAllPathSolve() const
     {

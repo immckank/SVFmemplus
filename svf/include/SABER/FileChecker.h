@@ -73,6 +73,12 @@ public:
     }
     /// Report file/close bugs
     void reportBug(ProgSlice* slice);
+
+protected:
+    bool enableReachGlobalPrune() const override
+    {
+        return true;
+    }
 };
 
 } // End namespace SVF
