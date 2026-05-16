@@ -451,8 +451,10 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardS
         const SVFGNode* load = *lit;
         bool ignorePtrStore = shouldIgnorePtrStoreForLoad(load);
         const SVFGNodeSet& qualifierState = ignorePtrStore ? qualifierStateIgnorePtrStore : qualifierStateAllStore;
-        if(isDefinitelyInitInComputedState(qualifierState, load)) continue;
-        if(!guardSlice->inBackwardSlice(load)) continue;
+        if(isDefinitelyInitInComputedState(qualifierState, load))
+            continue;
+        if(!guardSlice->inBackwardSlice(load))
+            continue;
 
         SVFGNodeSet curStoreSet;
 

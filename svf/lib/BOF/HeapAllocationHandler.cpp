@@ -43,6 +43,10 @@ const std::map<std::string, HeapAllocationHandler::AllocSizeSpec> HeapAllocation
     {"LOS_MemAllocAlign", {3, AS_ARG, 1, 0}},
     {"LOS_MemRealloc", {3, AS_ARG, 2, 0}},
     {"alloca", {1, AS_ARG, 0, 0}},
+    // Project-specific helper that allocates dest->buffer internally via malloc.
+    // The copied byte count is not exposed as a direct return-size expression here,
+    // so keep it as unknown-size heap allocation for BOF propagation.
+    {"CopyResponseBody", {0, AS_UNKNOWN, 0, 0}},
 
     {"strdup", {0, AS_UNKNOWN, 0, 0}},
     {"realpath", {0, AS_UNKNOWN, 0, 0}},

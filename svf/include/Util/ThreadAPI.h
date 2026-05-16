@@ -78,6 +78,12 @@ private:
     /// API map, from a string to threadAPI type
     TDAPIMap tdAPIMap;
 
+    /// Return the argument index carrying the start routine function.
+    u32_t getForkedFunArgNo(const CallICFGNode *inst) const;
+
+    /// Return the argument index carrying the start routine argument.
+    u32_t getForkedParmArgNo(const CallICFGNode *inst) const;
+
     /// Constructor
     ThreadAPI ()
     {

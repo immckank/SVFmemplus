@@ -63,6 +63,9 @@ static const ei_pair ei_pairs[]=
     //The current llvm-gcc puts in the \01.
     {"pthread_create", ThreadAPI::TD_FORK},
     {"apr_thread_create", ThreadAPI::TD_FORK},
+    {"kthread_create_on_node", ThreadAPI::TD_FORK},
+    {"__kthread_create_on_node", ThreadAPI::TD_FORK},
+    {"kthread_create_on_cpu", ThreadAPI::TD_FORK},
     {"pthread_join", ThreadAPI::TD_JOIN},
     {"\01_pthread_join", ThreadAPI::TD_JOIN},
     {"pthread_cancel", ThreadAPI::TD_JOIN},
@@ -172,6 +175,38 @@ bool ThreadAPI::isTDBarWait(const CallICFGNode *inst) const
     return getType(inst->getCalledFunction()) == TD_BAR_WAIT;
 }
 
+u32_t ThreadAPI::getForkedFunArgNo(const CallICFGNode *inst) const
+{
+    assert(isTDFork(inst) && "not a thread fork function!");
+
+    const FunObjVar* calledFun = inst->getCalledFunction();
+    assert(calledFun && "thread fork call without a direct API function?");
+    const std::string& name = calledFun->getName();
+
+    if (name == "kthread_create_on_node" ||
+            name == "__kthread_create_on_node" ||
+            name == "kthread_create_on_cpu")
+        return 0;
+
+    return 2;
+}
+
+u32_t ThreadAPI::getForkedParmArgNo(const CallICFGNode *inst) const
+{
+    assert(isTDFork(inst) && "not a thread fork function!");
+
+    const FunObjVar* calledFun = inst->getCalledFunction();
+    assert(calledFun && "thread fork call without a direct API function?");
+    const std::string& name = calledFun->getName();
+
+    if (name == "kthread_create_on_node" ||
+            name == "__kthread_create_on_node" ||
+            name == "kthread_create_on_cpu")
+        return 1;
+
+    return 3;
+}
+
 
 const ValVar* ThreadAPI::getForkedThread(const CallICFGNode *inst) const
 {
@@ -182,7 +217,9 @@ const ValVar* ThreadAPI::getForkedThread(const CallICFGNode *inst) const
 const ValVar* ThreadAPI::getForkedFun(const CallICFGNode *inst) const
 {
     assert(isTDFork(inst) && "not a thread fork function!");
-    return inst->getArgument(2);
+    const u32_t argNo = getForkedFunArgNo(inst);
+    assert(inst->arg_size() > argNo && "thread fork call missing start routine argument");
+    return inst->getArgument(argNo);
 }
 
 /// Return the forth argument of the call,
@@ -190,7 +227,9 @@ const ValVar* ThreadAPI::getForkedFun(const CallICFGNode *inst) const
 const ValVar* ThreadAPI::getActualParmAtForkSite(const CallICFGNode *inst) const
 {
     assert(isTDFork(inst) && "not a thread fork function!");
-    return inst->getArgument(3);
+    const u32_t argNo = getForkedParmArgNo(inst);
+    assert(inst->arg_size() > argNo && "thread fork call missing start routine data argument");
+    return inst->getArgument(argNo);
 }
 
 const SVFVar* ThreadAPI::getFormalParmOfForkedFun(const FunObjVar* F) const
