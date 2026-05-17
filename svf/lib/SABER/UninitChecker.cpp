@@ -217,6 +217,22 @@ bool UninitChecker::shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGN
     return shouldConsiderStoreForMode(store, slice, shouldIgnorePtrStoreForLoad(load));
 }
 
+bool UninitChecker::isLoadCoveredByStores(ProgSlice* guardSlice,
+                                          const SVFGNode* load,
+                                          const SVFGNodeSet& curStoreSet) const
+{
+    auto& solver = ProgSlice::Condition::getSolver();
+    solver.push();
+    solver.add(guardSlice->getVFCond(load).getExpr());
+
+    for (SVFGNodeSetIter sit = curStoreSet.begin(), esit = curStoreSet.end(); sit != esit; ++sit)
+        solver.add(!guardSlice->getVFCond(*sit).getExpr());
+
+    z3::check_result res = solver.check();
+    solver.pop();
+    return res == z3::unsat;
+}
+
 bool UninitChecker::shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const
 {
     if (storeNodes.find(node) == storeNodes.end())
@@ -482,13 +498,7 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardS
         }
 
 
-        ProgSlice::Condition guard = guardSlice->getFalseCond();
-        for(SVFGNodeSetIter sit = curStoreSet.begin(), esit = curStoreSet.end(); sit!=esit; ++sit){
-            guard = guardSlice->condOr(guard,guardSlice->getVFCond(*sit));
-        }
-
-        ProgSlice::Condition loadGuard = guardSlice->getVFCond(load);
-        if(!guardSlice->isEquivalentBranchCond(guardSlice->condOr(guardSlice->condNeg(loadGuard), guard), guardSlice->getTrueCond())){
+        if(!isLoadCoveredByStores(guardSlice, load, curStoreSet)){
             flag = false;
             if (const ICFGNode* loadICFG = getBugEventICFGNode(load))
                 eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, loadICFG));
