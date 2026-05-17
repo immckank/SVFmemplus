@@ -50,7 +50,7 @@ void LeakChecker::initSrcs()
         /// if this callsite return reside in a dead function then we do not care about its leaks
         /// for example instruction `int* p = malloc(size)` is in a dead function, then program won't allocate this memory
         /// for example a customized malloc `int p = malloc()` returns an integer value, then program treat it as a system malloc
-        if(cs->getFun()->isUncalledFunction() || !cs->getType()->isPointerTy())
+        if((!Options::RunUncallFuncs() && cs->getFun()->isUncalledFunction()) || !cs->getType()->isPointerTy())
             continue;
 
         CallGraph::FunctionSet callees;
@@ -88,7 +88,7 @@ void LeakChecker::initSrcs()
                     else
                     {
                         // exclude sources in dead functions or sources in functions that have summary
-                        if (!cs->getFun()->isUncalledFunction() && !isExtCall(cs->getBB()->getParent()))
+                        if ((Options::RunUncallFuncs() || !cs->getFun()->isUncalledFunction()) &&                                !isExtCall(cs->getBB()->getParent()))
                         {
                             addToSources(node);
                             addSrcToCSID(node, cs);
