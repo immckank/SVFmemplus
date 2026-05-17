@@ -100,6 +100,10 @@ protected:
     virtual void reportBug(ProgSlice* slice) override;
     //@}
 
+    bool hasSinkBypassReturn(const ProgSlice* slice, const ICFGNode*& bypassRet) const;
+    const ICFGNode* getSinkICFGNode(const SVFGNode* snk) const;
+    bool isOwnershipTransferBarrier(const ICFGNode* node) const;
+
     /// Validate test cases for regression test purpose
     void testsValidation(const ProgSlice* slice);
     void validateSuccessTests(const SVFGNode* source, const FunObjVar* fun);
@@ -111,9 +115,9 @@ protected:
     {
         srcToCSIDMap[src] = cs;
     }
-    inline const CallICFGNode* getSrcCSID(const SVFGNode* src)
+    inline const CallICFGNode* getSrcCSID(const SVFGNode* src) const
     {
-        SVFGNodeToCSIDMap::iterator it =srcToCSIDMap.find(src);
+        SVFGNodeToCSIDMap::const_iterator it =srcToCSIDMap.find(src);
         assert(it!=srcToCSIDMap.end() && "source node not at a callsite??");
         return it->second;
     }

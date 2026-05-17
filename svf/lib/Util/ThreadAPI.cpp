@@ -63,9 +63,9 @@ static const ei_pair ei_pairs[]=
     //The current llvm-gcc puts in the \01.
     {"pthread_create", ThreadAPI::TD_FORK},
     {"apr_thread_create", ThreadAPI::TD_FORK},
-    {"kthread_create_on_node", ThreadAPI::TD_FORK},
-    {"__kthread_create_on_node", ThreadAPI::TD_FORK},
-    {"kthread_create_on_cpu", ThreadAPI::TD_FORK},
+    // Linux kthread creation passes a direct routine/data pair, but the current
+    // ThreadFork SVFG model over-approximates kernel object lifetimes in Saber.
+    // ICFGBuilder still exposes direct kthread start routines for reachability.
     {"pthread_join", ThreadAPI::TD_JOIN},
     {"\01_pthread_join", ThreadAPI::TD_JOIN},
     {"pthread_cancel", ThreadAPI::TD_JOIN},
