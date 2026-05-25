@@ -2573,10 +2573,12 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
 }
 
+const FunObjVar* resolveFunObjVar(SVFIR* pag, const std::string& name);
+
 namespace {
 
 static int countFormalArgs(SVFIR* pag, const std::string& functionName) {
-    const FunObjVar* fun = GraphReaderUtil::resolveFunObjVar(pag, functionName);
+    const FunObjVar* fun = resolveFunObjVar(pag, functionName);
     if (!fun) {
         return -1;
     }
@@ -2670,7 +2672,7 @@ static std::vector<std::string> tryMatchB2Mangled(SVFIR* pag, const CallGraph* c
     dedupePush(variants, keyword);
     appendItaniumDigitVariants(keyword, variants);
     for (const std::string& variant : variants) {
-        if (GraphReaderUtil::resolveFunObjVar(pag, variant)) {
+        if (resolveFunObjVar(pag, variant)) {
             dedupePush(matches, variant);
         }
     }
@@ -2761,7 +2763,7 @@ static llvm::json::Object makeMatchResult(SVFIR* pag,
 
 } // namespace
 
-const FunObjVar* GraphReaderUtil::resolveFunObjVar(SVFIR* pag, const std::string& name) {
+const FunObjVar* resolveFunObjVar(SVFIR* pag, const std::string& name) {
     if (name.empty()) {
         return nullptr;
     }
@@ -2777,7 +2779,7 @@ const FunObjVar* GraphReaderUtil::resolveFunObjVar(SVFIR* pag, const std::string
     return nullptr;
 }
 
-llvm::json::Object GraphReaderUtil::resolveFunctionNameExact(SVFIR* pag, const std::string& keyword) {
+llvm::json::Object resolveFunctionNameExact(SVFIR* pag, const std::string& keyword) {
     if (!pag) {
         llvm::json::Object err = makeErrorObject("Invalid PAG pointer");
         err["error_code"] = "invalid_pointer";
@@ -2795,7 +2797,7 @@ llvm::json::Object GraphReaderUtil::resolveFunctionNameExact(SVFIR* pag, const s
         "No exact function name \"" + keyword + "\" in loaded bitcode modules.");
 }
 
-llvm::json::Object GraphReaderUtil::fuzzyMatchFunctionNames(SVFIR* pag, const std::string& keyword) {
+llvm::json::Object fuzzyMatchFunctionNames(SVFIR* pag, const std::string& keyword) {
     if (!pag) {
         llvm::json::Object err = makeErrorObject("Invalid PAG pointer");
         err["error_code"] = "invalid_pointer";
@@ -2833,7 +2835,7 @@ llvm::json::Object GraphReaderUtil::fuzzyMatchFunctionNames(SVFIR* pag, const st
     return makeMatchResult(pag, keyword, "not_found", "", llvm::json::Array{}, hint);
 }
 
-llvm::json::Object GraphReaderUtil::matchFunctionName(SVFIR* pag, const std::string& keyword) {
+llvm::json::Object matchFunctionName(SVFIR* pag, const std::string& keyword) {
     llvm::json::Object exact = resolveFunctionNameExact(pag, keyword);
     if (exact.getString("error")) {
         return exact;
