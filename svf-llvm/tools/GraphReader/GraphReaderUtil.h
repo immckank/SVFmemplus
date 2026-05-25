@@ -201,6 +201,29 @@ namespace GraphReaderUtil {
     llvm::json::Object listFormalArgNodes(SVFG* svfg, SVFIR* pag, const std::string& functionName);
 
     /*!
+     * \brief Resolve a function by name: LLVMModuleSet first, then SVFIR call-graph index.
+     */
+    const FunObjVar* resolveFunObjVar(SVFIR* pag, const std::string& name);
+
+    /*!
+     * \brief Exact name match only (LLVM module + call-graph fallback).
+     * \return JSON with status: exact|not_found, resolved_name, formal_arg_count.
+     */
+    llvm::json::Object resolveFunctionNameExact(SVFIR* pag, const std::string& keyword);
+
+    /*!
+     * \brief Fuzzy callee match (destructor / Itanium / token cascade on call graph).
+     * \return JSON with status: exact|ambiguous|not_found, resolved_name, candidates, hint.
+     */
+    llvm::json::Object fuzzyMatchFunctionNames(SVFIR* pag, const std::string& keyword);
+
+    /*!
+     * \brief Match a fuzzy callee keyword (exact resolve, then fuzzy cascade).
+     * \return JSON with status: exact|ambiguous|not_found, resolved_name, candidates, hint.
+     */
+    llvm::json::Object matchFunctionName(SVFIR* pag, const std::string& keyword);
+
+    /*!
      * \brief Lists all actual-parameter SVFG nodes at a callsite.
      * \param svfg Pointer to the SVFG.
      * \param icfg Pointer to the ICFG.

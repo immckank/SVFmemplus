@@ -77,4 +77,5 @@ export DYLD_LIBRARY_PATH
 export PATH=$SVF_DIR/$Build/bin:$PATH
 
 # Add compiled library directories to $LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=$SVF_DIR/$Build/svf:$SVF_DIR/$Build/svf-llvm:$LD_LIBRARY_PATH
+# Libraries are installed under $Build/lib (see CMAKE_LIBRARY_OUTPUT_DIRECTORY in CMakeLists.txt)
+export LD_LIBRARY_PATH=$SVF_DIR/$Build/lib:$LD_LIBRARY_PATH

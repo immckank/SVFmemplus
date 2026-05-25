@@ -123,7 +123,7 @@ void SVF::FunctionQuery::findFunctionBodyByLocation(const GraphReaderUtil::Sourc
 
 void SVF::FunctionQuery::findFunctionBodyByName(const std::string& functionName) {
     llvm::json::Object result;
-    const FunObjVar* svfFun = pag->getFunObjVar(functionName);
+    const FunObjVar* svfFun = GraphReaderUtil::resolveFunObjVar(pag, functionName);
 
     if (!svfFun) {
         GraphReaderUtil::sendJsonError("Function '" + functionName + "' not found.");

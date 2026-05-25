@@ -686,6 +686,21 @@ int main(int argc, char ** argv) {
                 }
                 llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
                 llvm::outs().flush();
+            } else if (cname == "match-function-name") {
+                auto keyword = cmd.getString("keyword");
+                llvm::json::Object result;
+                if (!keyword) {
+                    auto alt = cmd.getString("function_name");
+                    if (alt) {
+                        result = SVF::GraphReaderUtil::matchFunctionName(pag, alt->str());
+                    } else {
+                        result["error"] = "missing 'keyword' or 'function_name'";
+                    }
+                } else {
+                    result = SVF::GraphReaderUtil::matchFunctionName(pag, keyword->str());
+                }
+                llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
+                llvm::outs().flush();
             } else if (cname == "list-callsite-actual-arg-nodes") {
                 SVF::GraphReaderUtil::SourceLocation location;
                 std::string locationError;

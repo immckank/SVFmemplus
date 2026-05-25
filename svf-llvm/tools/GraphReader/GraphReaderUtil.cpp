@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -2572,19 +2573,298 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
 }
 
-llvm::json::Object listFormalArgNodes(SVFG* svfg, SVFIR* pag, const std::string& functionName) {
-    if (!svfg || !pag) {
-        return makeErrorObject("Invalid SVFG or PAG pointer");
+namespace {
+
+static int countFormalArgs(SVFIR* pag, const std::string& functionName) {
+    const FunObjVar* fun = GraphReaderUtil::resolveFunObjVar(pag, functionName);
+    if (!fun) {
+        return -1;
+    }
+    return static_cast<int>(pag->getFunArgsList(fun).size());
+}
+
+static bool endsWith(const std::string& s, const std::string& suffix) {
+    if (suffix.size() > s.size()) {
+        return false;
+    }
+    return s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+static void dedupePush(std::vector<std::string>& out, const std::string& name) {
+    if (std::find(out.begin(), out.end(), name) == out.end()) {
+        out.push_back(name);
+    }
+}
+
+static void collectCallGraphMatches(const CallGraph* cg,
+                                    const std::function<bool(const std::string&)>& pred,
+                                    std::vector<std::string>& out) {
+    if (!cg) {
+        return;
+    }
+    for (auto it = cg->begin(); it != cg->end(); ++it) {
+        const std::string& name = it->second->getName();
+        if (pred(name)) {
+            dedupePush(out, name);
+        }
+    }
+}
+
+static std::vector<std::string> tryMatchB1Destructor(const CallGraph* cg, const std::string& keyword) {
+    std::vector<std::string> matches;
+    if (keyword.empty() || keyword[0] != '~') {
+        return matches;
+    }
+    const std::string classToken = keyword.substr(1);
+    if (classToken.size() < 2) {
+        return matches;
+    }
+    collectCallGraphMatches(cg, [&](const std::string& name) {
+        return (endsWith(name, "D1Ev") || endsWith(name, "D2Ev")) && name.find(classToken) != std::string::npos;
+    }, matches);
+    return matches;
+}
+
+static void appendItaniumDigitVariants(const std::string& mangled, std::vector<std::string>& variants) {
+    if (mangled.size() < 3 || mangled[0] != '_' || mangled[1] != 'Z') {
+        return;
+    }
+    for (size_t i = 2; i < mangled.size(); ++i) {
+        if (!std::isdigit(static_cast<unsigned char>(mangled[i]))) {
+            continue;
+        }
+        size_t j = i;
+        while (j < mangled.size() && std::isdigit(static_cast<unsigned char>(mangled[j]))) {
+            ++j;
+        }
+        if (j >= mangled.size() || !std::isupper(static_cast<unsigned char>(mangled[j]))) {
+            continue;
+        }
+        int value = 0;
+        for (size_t k = i; k < j; ++k) {
+            value = value * 10 + (mangled[k] - '0');
+        }
+        if (value <= 0) {
+            i = j - 1;
+            continue;
+        }
+        for (int delta : {-1, 1}) {
+            int next = value + delta;
+            if (next <= 0) {
+                continue;
+            }
+            std::string variant = mangled;
+            variant.replace(i, j - i, std::to_string(next));
+            dedupePush(variants, variant);
+        }
+        i = j - 1;
+    }
+}
+
+static std::vector<std::string> tryMatchB2Mangled(SVFIR* pag, const CallGraph* cg, const std::string& keyword) {
+    std::vector<std::string> matches;
+    if (keyword.size() < 2 || keyword[0] != '_' || keyword[1] != 'Z') {
+        return matches;
+    }
+    std::vector<std::string> variants;
+    dedupePush(variants, keyword);
+    appendItaniumDigitVariants(keyword, variants);
+    for (const std::string& variant : variants) {
+        if (GraphReaderUtil::resolveFunObjVar(pag, variant)) {
+            dedupePush(matches, variant);
+        }
+    }
+    if (!matches.empty()) {
+        return matches;
+    }
+    const size_t suffixLen = std::min<size_t>(32, keyword.size());
+    const std::string suffix = keyword.substr(keyword.size() - suffixLen);
+    collectCallGraphMatches(cg, [&](const std::string& name) {
+        return name.size() >= suffixLen && name.compare(name.size() - suffixLen, suffixLen, suffix) == 0;
+    }, matches);
+    return matches;
+}
+
+static std::string extractSearchToken(const std::string& keyword) {
+    if (keyword.size() >= 4 && keyword[0] != '_' && keyword[0] != '~') {
+        return keyword;
+    }
+    if (keyword.size() >= 2 && keyword[0] == '~') {
+        return keyword.substr(1);
+    }
+    std::string best;
+    for (size_t i = 0; i < keyword.size(); ++i) {
+        if (!std::isupper(static_cast<unsigned char>(keyword[i]))) {
+            continue;
+        }
+        size_t j = i;
+        while (j < keyword.size() &&
+               (std::isalnum(static_cast<unsigned char>(keyword[j])) || keyword[j] == '_')) {
+            ++j;
+        }
+        const std::string piece = keyword.substr(i, j - i);
+        if (piece.size() > best.size()) {
+            best = piece;
+        }
+        i = j;
+    }
+    return best;
+}
+
+static std::vector<std::string> tryMatchB3Token(const CallGraph* cg, const std::string& keyword) {
+    std::vector<std::string> matches;
+    const std::string token = extractSearchToken(keyword);
+    if (token.size() < 4) {
+        return matches;
+    }
+    collectCallGraphMatches(cg, [&](const std::string& name) {
+        return name.find(token) != std::string::npos;
+    }, matches);
+    return matches;
+}
+
+static llvm::json::Array buildCandidateArray(SVFIR* pag, const std::vector<std::string>& names, size_t maxCount) {
+    llvm::json::Array arr;
+    const size_t n = std::min(maxCount, names.size());
+    for (size_t i = 0; i < n; ++i) {
+        llvm::json::Object c;
+        c["name"] = names[i];
+        c["formal_arg_count"] = countFormalArgs(pag, names[i]);
+        arr.push_back(std::move(c));
+    }
+    return arr;
+}
+
+static llvm::json::Object makeMatchResult(SVFIR* pag,
+                                          const std::string& keyword,
+                                          const std::string& status,
+                                          const std::string& resolvedName,
+                                          llvm::json::Array candidates,
+                                          const std::string& hint) {
+    llvm::json::Object result;
+    result["status"] = status;
+    result["keyword"] = keyword;
+    if (!resolvedName.empty()) {
+        result["resolved_name"] = resolvedName;
+        result["formal_arg_count"] = countFormalArgs(pag, resolvedName);
+    }
+    if (!candidates.empty()) {
+        result["candidates"] = std::move(candidates);
+    } else {
+        result["candidates"] = llvm::json::Array{};
+    }
+    if (!hint.empty()) {
+        result["hint"] = hint;
+    }
+    return result;
+}
+
+} // namespace
+
+const FunObjVar* GraphReaderUtil::resolveFunObjVar(SVFIR* pag, const std::string& name) {
+    if (name.empty()) {
+        return nullptr;
+    }
+    LLVMModuleSet* llvmMs = LLVMModuleSet::getLLVMModuleSet();
+    if (llvmMs) {
+        if (const FunObjVar* fun = llvmMs->getFunObjVar(name)) {
+            return fun;
+        }
+    }
+    if (pag) {
+        return pag->getFunObjVar(name);
+    }
+    return nullptr;
+}
+
+llvm::json::Object GraphReaderUtil::resolveFunctionNameExact(SVFIR* pag, const std::string& keyword) {
+    if (!pag) {
+        llvm::json::Object err = makeErrorObject("Invalid PAG pointer");
+        err["error_code"] = "invalid_pointer";
+        return err;
+    }
+    if (keyword.empty()) {
+        return makeMatchResult(pag, keyword, "not_found", "", llvm::json::Array{},
+            "callee_function_name is empty. Provide a symbol keyword from Fun[...] or @mangled in IR.");
+    }
+    if (const FunObjVar* exactFun = resolveFunObjVar(pag, keyword)) {
+        (void)exactFun;
+        return makeMatchResult(pag, keyword, "exact", keyword, llvm::json::Array{}, "");
+    }
+    return makeMatchResult(pag, keyword, "not_found", "", llvm::json::Array{},
+        "No exact function name \"" + keyword + "\" in loaded bitcode modules.");
+}
+
+llvm::json::Object GraphReaderUtil::fuzzyMatchFunctionNames(SVFIR* pag, const std::string& keyword) {
+    if (!pag) {
+        llvm::json::Object err = makeErrorObject("Invalid PAG pointer");
+        err["error_code"] = "invalid_pointer";
+        return err;
+    }
+    if (keyword.empty()) {
+        return makeMatchResult(pag, keyword, "not_found", "", llvm::json::Array{},
+            "callee_function_name is empty.");
     }
 
-    const FunObjVar* fun = pag->getFunObjVar(functionName);
+    const CallGraph* cg = pag->getCallGraph();
+    std::vector<std::string> matches;
+    matches = tryMatchB1Destructor(cg, keyword);
+    if (matches.empty()) {
+        matches = tryMatchB2Mangled(pag, cg, keyword);
+    }
+    if (matches.empty()) {
+        matches = tryMatchB3Token(cg, keyword);
+    }
+
+    if (matches.size() == 1) {
+        return makeMatchResult(pag, keyword, "exact", matches[0], llvm::json::Array{}, "");
+    }
+    if (matches.size() > 1) {
+        return makeMatchResult(
+            pag, keyword, "ambiguous", "",
+            buildCandidateArray(pag, matches, 10),
+            "Multiple symbols matched. Re-call classify_subset with params.callee_function_name set to one exact name from candidates.");
+    }
+
+    const std::string hint =
+        "No function matched keyword \"" + keyword +
+        "\" in current partition bitcode. Pick a full symbol from node_desc Fun[...] or LLVM @mangled "
+        "and re-call classify_subset; for destructors try ~ClassName (matches D2Ev symbols).";
+    return makeMatchResult(pag, keyword, "not_found", "", llvm::json::Array{}, hint);
+}
+
+llvm::json::Object GraphReaderUtil::matchFunctionName(SVFIR* pag, const std::string& keyword) {
+    llvm::json::Object exact = resolveFunctionNameExact(pag, keyword);
+    if (exact.getString("error")) {
+        return exact;
+    }
+    if (auto status = exact.getString("status")) {
+        if (status->str() == "exact") {
+            return exact;
+        }
+    }
+    return fuzzyMatchFunctionNames(pag, keyword);
+}
+
+llvm::json::Object listFormalArgNodes(SVFG* svfg, SVFIR* pag, const std::string& functionName) {
+    if (!svfg || !pag) {
+        llvm::json::Object err = makeErrorObject("Invalid SVFG or PAG pointer");
+        err["error_code"] = "invalid_pointer";
+        return err;
+    }
+
+    const FunObjVar* fun = resolveFunObjVar(pag, functionName);
     if (!fun) {
-        return makeErrorObject("Cannot find formal parameters for function \"" + functionName + "\"");
+        llvm::json::Object err = makeErrorObject("Cannot find formal parameters for function \"" + functionName + "\"");
+        err["error_code"] = "function_not_found";
+        return err;
     }
 
     const SVFIR::SVFVarList& args = pag->getFunArgsList(fun);
     if (args.empty()) {
-        return makeErrorObject("Cannot find formal parameters for function \"" + functionName + "\"");
+        llvm::json::Object err = makeErrorObject("Cannot find formal parameters for function \"" + functionName + "\"");
+        err["error_code"] = "no_formal_args";
+        return err;
     }
 
     std::vector<std::string> argNames;
@@ -2620,7 +2900,9 @@ llvm::json::Object listFormalArgNodes(SVFG* svfg, SVFIR* pag, const std::string&
     }
 
     if (formalArgs.empty()) {
-        return makeErrorObject("Cannot find formal parameters for function \"" + functionName + "\"");
+        llvm::json::Object err = makeErrorObject("Cannot find formal parameters for function \"" + functionName + "\"");
+        err["error_code"] = "no_formal_vfg";
+        return err;
     }
 
     llvm::json::Object result;
