@@ -56,7 +56,7 @@ fi
 #########
 #export PATH FOR SVF and LLVM executables
 #########
-if [[ $1 =~ ^[Dd]ebug$ ]]; then
+if [[ "${1:-}" =~ ^[Dd]ebug$ ]]; then
     PTAOBJTY='Debug'
 else
     PTAOBJTY='Release'
