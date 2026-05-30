@@ -88,6 +88,11 @@ namespace GraphReaderUtil {
     llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun);
 
     /*!
+     * \brief True when the LLVM function has a definition and usable DWARF source location.
+     */
+    bool functionHasUsableSourceBody(const llvm::Function* llvmFun, std::string* diagnostic = nullptr);
+
+    /*!
      * \brief Formats an IntraCFGEdge's branch information into a JSON object.
      * \param intraEdge The edge to format.
      * \return A llvm::json::Object with type, location, and condition_value.

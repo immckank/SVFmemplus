@@ -1002,6 +1002,41 @@ std::string toString(const SourceLocation& location) {
     return location.fl + ":" + std::to_string(location.ln) + ":" + std::to_string(location.cl);
 }
 
+bool functionHasUsableSourceBody(const llvm::Function* llvmFun, std::string* diagnostic) {
+    if (!llvmFun) {
+        if (diagnostic) {
+            *diagnostic = "LLVM function is null.";
+        }
+        return false;
+    }
+    if (llvmFun->isDeclaration() && !llvmFun->isIntrinsic()) {
+        if (diagnostic) {
+            *diagnostic = "Function has no definition in loaded bitcode (declaration only).";
+        }
+        return false;
+    }
+    llvm::DISubprogram* disub = llvmFun->getSubprogram();
+    if (!disub) {
+        if (diagnostic) {
+            *diagnostic = "Function has no debug info in loaded bitcode.";
+        }
+        return false;
+    }
+    if (disub->getFilename().empty()) {
+        if (diagnostic) {
+            *diagnostic = "Function debug info has no source file.";
+        }
+        return false;
+    }
+    if (disub->getLine() == 0) {
+        if (diagnostic) {
+            *diagnostic = "Function debug info has invalid start line.";
+        }
+        return false;
+    }
+    return true;
+}
+
 llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun) {
     llvm::json::Object funInfoJson;
 
