@@ -212,6 +212,23 @@ namespace SVF {
             static Range meet(const Range& lhs, const Range& rhs); // Intersection
 
             /**
+             * @brief Widening operator for fixpoint acceleration.
+             *
+             * Classic interval widening: starting from a previous (stable) range
+             * @p prev and a newly computed range @p next, any bound that keeps
+             * growing is pushed to infinity so that ascending chains over loops /
+             * recursive back-edges terminate.
+             *
+             * @param prev The previously stabilized range (old value).
+             * @param next The newly computed range (new value, usually join(prev, delta)).
+             *
+             * @return A range no smaller than @p next, where a decreasing lower
+             *         bound is widened to NINF and an increasing upper bound is
+             *         widened to INF. BOTTOM operands are treated as the identity.
+             */
+            static Range widening(const Range& prev, const Range& next);
+
+            /**
              * @brief Computes the result range of a ternary conditional expression (cond ? t : f).
              *
              * This function analyzes the possible range of results when evaluating

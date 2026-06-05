@@ -81,7 +81,7 @@ std::string Range::toString() const {
     std::ostringstream oss;
     
     // 下界
-    if (lower == NINF || lower - NINF < 1000)
+    if (lower == NINF || lower <= NINF + 1000)
         oss << "-INF";
     else
         oss << lower;
@@ -89,7 +89,7 @@ std::string Range::toString() const {
     oss << ", ";
     
     // 上界
-    if (upper == INF || INF - upper < 1000)
+    if (upper == INF || upper >= INF - 1000)
         oss << "INF";
     else
         oss << upper;
@@ -437,6 +437,21 @@ Range Range::select(const Range& cond, const Range& t, const Range& f) {
     if (cond.lower == 1 && cond.upper == 1) return t;
     if (cond.lower == 0 && cond.upper == 0) return f;
     return join(t, f);
+}
+
+Range Range::widening(const Range& prev, const Range& next) {
+    // BOTTOM acts as the identity element of widening.
+    if (prev.isBottom())
+        return next;
+    if (next.isBottom())
+        return prev;
+
+    // Any bound that keeps growing w.r.t. the previous value is pushed to
+    // infinity so that ascending chains over loop / recursive back-edges
+    // terminate (classic interval widening).
+    BoundType low = (next.lower < prev.lower) ? NINF : prev.lower;
+    BoundType up  = (next.upper > prev.upper) ? INF  : prev.upper;
+    return Range(low, up);
 }
 
 
