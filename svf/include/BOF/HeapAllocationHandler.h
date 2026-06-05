@@ -90,6 +90,19 @@ public:
     bool getAllocSizeOperand(const CallICFGNode* call, AllocSizeSym& out);
 
 private:
+    enum AllocSizeKind {
+        AS_UNKNOWN,
+        AS_ARG,
+        AS_MUL_ARGS
+    };
+
+    struct AllocSizeSpec {
+        u32_t requiredArgs;
+        AllocSizeKind kind;
+        u32_t arg0;
+        u32_t arg1;
+    };
+
     RangeAnalysis* ra;
     AllocAPIRegistry registry;
 };

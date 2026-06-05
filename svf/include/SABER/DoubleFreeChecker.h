@@ -69,6 +69,12 @@ public:
     void testsValidation(ProgSlice* slice);
     void validateSuccessTests(ProgSlice* slice, const FunObjVar* fun);
     void validateExpectedFailureTests(ProgSlice* slice, const FunObjVar* fun);
+
+protected:
+    bool enableReachGlobalPrune() const override
+    {
+        return false;
+    }
 };
 
 } // End namespace SVF

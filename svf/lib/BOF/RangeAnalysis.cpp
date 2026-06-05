@@ -105,9 +105,6 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var, const ICFGNode* context,
     // Cache hit: Found a valid range (not Bottom)
     if(!var_range_find.isBottom())
         return var_range_find;
-    // Cache hit: The value is already defined as TOP (cannot refine further)
-    else if(var_range_find.isTop())
-        return var_range_find;
         
     /// ===== Constant Value Calculation =====
     if(const ConstIntValVar* intVar = SVFUtil::dyn_cast<ConstIntValVar>(var)){
@@ -255,7 +252,8 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var, const ICFGNode* context,
         }
     }
     
-    // Put in cache
+    // Put in cache. Values without a supported defining edge are unknown, not
+    // unreachable; propagate TOP so callers still perform conservative checks.
     if(!var_range.isBottom())
         setCachedVarRange(context, var, var_range);
     return var_range;

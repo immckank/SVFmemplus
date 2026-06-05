@@ -61,6 +61,7 @@ namespace SVF {
             RangeAnalysis();
             bool analyzeBufferRange(const StackObjVar* stackObjVar);
             bool analyzeBufferRange(const HeapObjVar* heapObjVar);
+            bool setBufferByteRange(const SVFVar* buffer, const Range& byteSizeRange);
             Range analyzeVarRange(const SVFVar* var, int depth = 0);
 
             /// Compute the set of symbolic affine forms a scalar integer

@@ -115,6 +115,19 @@ void SVF::FunctionQuery::findFunctionBodyByLocation(const GraphReaderUtil::Sourc
     const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(svfFun);
     const llvm::Function* llvmFun = SVFUtil::dyn_cast<llvm::Function>(llvmVal);
 
+    if (!llvmFun) {
+        GraphReaderUtil::sendJsonError("Could not retrieve LLVM function for location.");
+        return;
+    }
+
+    std::string bodyDiag;
+    if (!GraphReaderUtil::functionHasUsableSourceBody(llvmFun, &bodyDiag)) {
+        GraphReaderUtil::sendJsonError(bodyDiag.empty()
+                                          ? "Function has no usable source body in loaded bitcode."
+                                          : bodyDiag);
+        return;
+    }
+
     result = GraphReaderUtil::getFunctionInfoJson(llvmFun);
     result["error"] = false;
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
@@ -123,7 +136,7 @@ void SVF::FunctionQuery::findFunctionBodyByLocation(const GraphReaderUtil::Sourc
 
 void SVF::FunctionQuery::findFunctionBodyByName(const std::string& functionName) {
     llvm::json::Object result;
-    const FunObjVar* svfFun = pag->getFunObjVar(functionName);
+    const FunObjVar* svfFun = GraphReaderUtil::resolveFunObjVar(pag, functionName);
 
     if (!svfFun) {
         GraphReaderUtil::sendJsonError("Function '" + functionName + "' not found.");
@@ -145,7 +158,39 @@ void SVF::FunctionQuery::findFunctionBodyByName(const std::string& functionName)
         return;
     }
 
+    std::string bodyDiag;
+    if (!GraphReaderUtil::functionHasUsableSourceBody(llvmFun, &bodyDiag)) {
+        GraphReaderUtil::sendJsonError(bodyDiag.empty()
+                                          ? "Function has no usable source body in loaded bitcode."
+                                          : bodyDiag);
+        return;
+    }
+
     result = GraphReaderUtil::getFunctionInfoJson(llvmFun);
+    if (auto filename = result.getString("filename")) {
+        if (filename->empty()) {
+            GraphReaderUtil::sendJsonError("Function has no source file in debug info.");
+            return;
+        }
+    } else {
+        GraphReaderUtil::sendJsonError("Function has no source file in debug info.");
+        return;
+    }
+    if (auto startLine = result.getInteger("start_line")) {
+        if (*startLine <= 0) {
+            GraphReaderUtil::sendJsonError("Function has invalid start line in debug info.");
+            return;
+        }
+    }
+    if (auto endLine = result.getInteger("end_line")) {
+        if (auto startLine = result.getInteger("start_line")) {
+            if (*endLine < *startLine) {
+                GraphReaderUtil::sendJsonError("Function has invalid line range in debug info.");
+                return;
+            }
+        }
+    }
+
     result["error"] = false;
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
     llvm::outs().flush();

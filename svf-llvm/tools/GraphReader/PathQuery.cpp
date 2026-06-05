@@ -796,6 +796,17 @@ std::vector<const ICFGNode*> findActualReturnICFGNodes(ICFG* icfg, const FunObjV
 
     const auto srcNodes = collectPredecessors(retInstNodes);
     if (isVoidFunction) {
+        std::vector<const IntraICFGNode*> locatedRetInstNodes;
+        for (const auto* node : retInstNodes) {
+            if (node && !node->getSourceLoc().empty()) {
+                locatedRetInstNodes.push_back(node);
+            }
+        }
+        if (!locatedRetInstNodes.empty()) {
+            appendUnique(locatedRetInstNodes);
+            return actualReturnNodes;
+        }
+
         const auto branchNodes = collectUnconditionalBranches(srcNodes);
         if (!branchNodes.empty()) {
             appendUnique(branchNodes);

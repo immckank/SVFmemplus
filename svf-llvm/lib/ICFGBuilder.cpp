@@ -38,6 +38,34 @@
 using namespace SVF;
 using namespace SVFUtil;
 
+namespace
+{
+
+const Function* getDirectThreadStartRoutine(const CallBase* cb, const Function* callee)
+{
+    if (callee == nullptr)
+        return nullptr;
+
+    auto name = callee->getName();
+    unsigned routineArg = 0;
+    if (name == "kthread_create_on_node" ||
+            name == "__kthread_create_on_node" ||
+            name == "kthread_create_on_cpu")
+        routineArg = 0;
+    else if (name == "pthread_create" || name == "apr_thread_create")
+        routineArg = 2;
+    else
+        return nullptr;
+
+    if (cb->arg_size() <= routineArg)
+        return nullptr;
+
+    return SVFUtil::dyn_cast<Function>(
+               cb->getArgOperand(routineArg)->stripPointerCasts());
+}
+
+} // End anonymous namespace
+
 
 /*!
  * Create ICFG nodes and edges
@@ -279,6 +307,7 @@ void ICFGBuilder::addICFGInterEdges(const Instruction* cs, const Function* calle
 
     CallICFGNode* callICFGNode = getCallICFGNode(cs);
     RetICFGNode* retBlockNode = getRetICFGNode(cs);
+    const CallBase* cb = SVFUtil::dyn_cast<CallBase>(cs);
 
     /// direct call
     if(callee)
@@ -289,6 +318,16 @@ void ICFGBuilder::addICFGInterEdges(const Instruction* cs, const Function* calle
         if (SVFUtil::isExtCall(svfFun))
         {
             icfg->addIntraEdge(callICFGNode, retBlockNode);
+            if (const Function* threadRoutine = getDirectThreadStartRoutine(cb, callee))
+            {
+                if (!threadRoutine->isDeclaration())
+                {
+                    FunEntryICFGNode* routineEntryNode = getFunEntryICFGNode(threadRoutine);
+                    FunExitICFGNode* routineExitNode = getFunExitICFGNode(threadRoutine);
+                    icfg->addCallEdge(callICFGNode, routineEntryNode);
+                    icfg->addRetEdge(routineExitNode, retBlockNode);
+                }
+            }
         }
         /// otherwise connect interprocedural edges
         else

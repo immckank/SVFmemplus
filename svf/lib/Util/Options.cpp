@@ -831,7 +831,7 @@ const Option<bool> Options::RaceCheck(
 const Option<bool> Options::GepUnknownIdx(
     "gep-unknown-idx","Skip Gep Unknown Index",false);
 const Option<bool> Options::RunUncallFuncs(
-    "run-uncall-fun","Skip Gep Unknown Index",false);
+    "run-uncall-fun","Analyze allocation sources in functions without known callers",false);
 const Option<bool> Options::ICFGMergeAdjacentNodes(
     "icfg-merge-adjnodes","ICFG Simplification - Merge Adjacent Nodes in the Same Basic Block.",false);
 
@@ -963,6 +963,12 @@ Option<bool> Options::SaberKeepDerefDirSVFGEdges(
     "saber-keep-deref-dir-svfg-edges",
     "Don't rm DerefDirSVFGEdges in SaberSVFGBuilder::buildSVFG",
     false
+);
+
+const Option<u32_t> Options::SaberUninitMaxBackwardSteps(
+    "saber-uninit-max-backward-steps",
+    "Maximum backward traversal steps per load in UninitChecker",
+    500
 );
 
 } // namespace SVF.

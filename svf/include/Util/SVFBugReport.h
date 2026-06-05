@@ -75,6 +75,10 @@ public:
     {
         return typeAndInfoFlag & EVENTTYPEMASK;
     }
+    inline const ICFGNode* getEventInst() const
+    {
+        return eventInst;
+    }
     virtual const std::string getEventDescription() const;
     virtual const std::string getFuncName() const;
     virtual const std::string getEventLoc() const;

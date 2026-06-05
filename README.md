@@ -1,65 +1,91 @@
 # SVFmem+
+
 To provide detection support for use-after-free (UAF), undefined usages, and array out-of-bounds within the SABER framework of SVF (a static analysis tool).
 
-## 模块功能
+## 模块定位
 
-本模块将提供针对编译完成后的c语言程序(预期为.bc文件)，执行静态分析流程并产出静态分析报告。
+`SVFmemplus` 是交付件2“内存缺陷检测与细粒度程序语义记录工具”的源码实现，面向 LLVM bitcode（`.bc`）执行静态分析并输出缺陷告警。
 
-## 环境配置
+## 功能概览
 
-请参考dockerfile中给出的环境要求，在构建完成镜像后：
+### 内存缺陷检测（5类）
+
+- `-leak`：内存泄漏（`NeverFree`、`PartialLeak`）
+- `-dfree`：重复释放（`DoubleFree`）
+- `-uaf`：释放后使用（`UseAfterFree`）
+- `-uninit`：未初始化使用（`Uninitialized Use`）
+- `bof` 工具：缓冲区越界（`BufferOverflow`）
+
+对应入口与检查器：
+
+- `svf-llvm/tools/SABER/saber.cpp`
+  - `svf/lib/SABER/LeakChecker.cpp`
+  - `svf/lib/SABER/DoubleFreeChecker.cpp`
+  - `svf/lib/SABER/UseAfterFreeChecker.cpp`
+  - `svf/lib/SABER/UninitChecker.cpp`
+- `svf-llvm/tools/BOF/bof.cpp`
+  - `svf/lib/BOF/BufferOverflowChecker.cpp`
+
+### 细粒度程序语义记录
+
+`graph-reader` 在加载 bitcode 后构建 `SVFIR/ICFG/SVFG`，以常驻进程方式接收 JSON 命令并返回 JSON 结果，可用于查询：
+
+- 函数体、调用关系、条件路径
+- 形参/实参/返回值相关值流节点
+- 关键 `SVFG` 节点信息与值路径
+- 与 `free` 相关的调用闭包和距离
+- 指定源码行的宏上下文
+
+核心代码位于 `svf-llvm/tools/GraphReader/`。
+
+## 构建与环境
+
+请参考交付目录中的环境脚本（`linuxUbuntu环境` 与 `openEuler环境`）。在容器或主机环境满足依赖后：
 
 ```bash
-cd SVFmenplus && ./build.sh
-# 本命令将完成静态分析器的编译构建
-# 如果已经完成了编译构建情使用 ./setup.sh直接导出环境变量即可
+cd SVFmemplus
+./build.sh
 ```
 
-因为要下载llvm，时间可能比较久
-
-## 静态分析报告生成
+构建完成后加载环境变量：
 
 ```bash
-saber <option> bc_file.bc
+source ./setup.sh
 ```
 
-option就是指定分析的缺陷类型，包含：
-    - -leak: NeverFree、PartialLeak
-    - -dfree: DoubleFree
-    - -uaf: UseAfterFree    
-    
-构建后如果找不到libz3.so.4请执行
-    
+若运行时缺少 `libz3.so.4`，可按实际路径建立软链接：
+
 ```bash
 ln -s /src/SVFmemplus/z3.obj/bin/libz3.so /usr/lib/libz3.so.4
 ```
 
-## 其他说明
+## 使用方式
 
-1. 入口函数可以灵活调整，对于从入口函数开始分析但无法抵达的函数，指针分析不会对其进行建模。
-
-```c
-// svf/lib/Util/SVFUtil.cpp L442-445
-bool SVFUtil::isProgEntryFunction(const FunObjVar* funObjVar)
-{
-    return funObjVar && funObjVar->getName() == "main";
-}
-```
-
-2. 用户自定义的内存申请函数与内存释放函数一般可以直接识别，如果未能识别可以自行添加与完善。
-
-```c
-// svf/lib/SABER/SaberCheckerAPI.cpp L51-L138
-static const ei_pair ei_pairs[]=
-{
-    {"alloc", SaberCheckerAPI::CK_ALLOC},
-    {"alloc_check", SaberCheckerAPI::CK_ALLOC},
-    ...
-```
-
-3. 对于大型项目可以产出大量警报信息，工具默认使用标准输出流输出警报信息，可以使用输出重定向来使文件捕获输出。
+### SABER（泄漏/双重释放/UAF/未初始化）
 
 ```bash
-// 示例
-saber -leak bc_example.bc >> example.txt
+saber <option> <input.bc>
 ```
+
+示例：
+
+```bash
+saber -leak demo.bc > demo-leak.txt
+saber -dfree demo.bc > demo-dfree.txt
+saber -uaf demo.bc > demo-uaf.txt
+saber -uninit demo.bc > demo-uninit.txt
+```
+
+### BOF（缓冲区越界）
+
+```bash
+bof <input.bc> > demo-bof.txt
+```
+
+### GraphReader（语义查询）
+
+```bash
+graph-reader -stat=false <input.bc>
+```
+
+启动后会输出 `graphreader-initialized`，随后可按行输入 JSON 命令进行查询。

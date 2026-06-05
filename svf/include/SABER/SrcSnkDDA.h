@@ -303,7 +303,17 @@ protected:
     }
     //@}
 
+    virtual bool enableReachGlobalPrune() const
+    {
+        return false;
+    }
+
     /// Whether it is all path reachable from a source
+    virtual bool needDefaultAllPathSolve() const
+    {
+        return true;
+    }
+
     virtual bool isAllPathReachable()
     {
         return _curSlice->isAllReachable();

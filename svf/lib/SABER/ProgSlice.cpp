@@ -40,7 +40,7 @@ using namespace SVFUtil;
  * C = \bigvee Guard(path_i),  0 < i < m
  * Guard(path_i) = \bigwedge VFGGuard(x,y),  suppose (x,y) are two SVFGNode nodes on path_i
  */
-bool ProgSlice::AllPathReachableSolve()
+bool ProgSlice::AllPathReachableSolve(bool runAllPathCheck)
 {
     const SVFGNode* source = getSource();
     VFWorkList worklist;
@@ -64,16 +64,24 @@ bool ProgSlice::AllPathReachableSolve()
                 Condition vfCond;
                 const SVFBasicBlock* nodeBB = getSVFGNodeBB(node);
                 const SVFBasicBlock* succBB = getSVFGNodeBB(succ);
+                if (nodeBB == nullptr || succBB == nullptr)
+                    continue;
                 /// clean up the control flow conditions for next round guard computation
                 clearCFCond();
 
                 if(edge->isCallVFGEdge())
                 {
-                    vfCond = ComputeInterCallVFGGuard(nodeBB,succBB, getCallSite(edge)->getParent());
+                    const CallICFGNode* callSite = getCallSite(edge);
+                    if (callSite == nullptr || callSite->getParent() == nullptr)
+                        continue;
+                    vfCond = ComputeInterCallVFGGuard(nodeBB,succBB, callSite->getParent());
                 }
                 else if(edge->isRetVFGEdge())
                 {
-                    vfCond = ComputeInterRetVFGGuard(nodeBB,succBB, getRetSite(edge)->getParent());
+                    const CallICFGNode* retSite = getRetSite(edge);
+                    if (retSite == nullptr || retSite->getParent() == nullptr)
+                        continue;
+                    vfCond = ComputeInterRetVFGGuard(nodeBB,succBB, retSite->getParent());
                 }
                 else
                     vfCond = ComputeIntraVFGGuard(nodeBB,succBB);
@@ -88,7 +96,9 @@ bool ProgSlice::AllPathReachableSolve()
         }
     }
 
-    return isSatisfiableForAll();
+    if (runAllPathCheck)
+        return isSatisfiableForAll();
+    return true;
 }
 
 /*!
@@ -128,6 +138,8 @@ ProgSlice::Condition ProgSlice::computeInvalidCondFromRemovedSUVFEdge(const SVFG
                 // removed vfg node does not reside in the BBs of valid successors
                 const SVFBasicBlock *nodeBB = getSVFGNodeBB(cur);
                 const SVFBasicBlock *succBB = getSVFGNodeBB(succ);
+                if (nodeBB == nullptr || succBB == nullptr)
+                    continue;
                 clearCFCond();
                 invalidCond = condOr(invalidCond, ComputeIntraVFGGuard(nodeBB, succBB));
             }

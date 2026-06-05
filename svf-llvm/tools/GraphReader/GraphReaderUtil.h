@@ -10,6 +10,7 @@
 #include <llvm/ADT/StringRef.h>
 #include <llvm/IR/Function.h>
 #include <llvm/Support/JSON.h>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -85,6 +86,11 @@ namespace GraphReaderUtil {
      * \return A llvm::json::Object with function_name, filename, start_line, and end_line.
      */
     llvm::json::Object getFunctionInfoJson(const llvm::Function* llvmFun);
+
+    /*!
+     * \brief True when the LLVM function has a definition and usable DWARF source location.
+     */
+    bool functionHasUsableSourceBody(const llvm::Function* llvmFun, std::string* diagnostic = nullptr);
 
     /*!
      * \brief Formats an IntraCFGEdge's branch information into a JSON object.
@@ -200,6 +206,29 @@ namespace GraphReaderUtil {
     llvm::json::Object listFormalArgNodes(SVFG* svfg, SVFIR* pag, const std::string& functionName);
 
     /*!
+     * \brief Resolve a function by name: LLVMModuleSet first, then SVFIR call-graph index.
+     */
+    const FunObjVar* resolveFunObjVar(SVFIR* pag, const std::string& name);
+
+    /*!
+     * \brief Exact name match only (LLVM module + call-graph fallback).
+     * \return JSON with status: exact|not_found, resolved_name, formal_arg_count.
+     */
+    llvm::json::Object resolveFunctionNameExact(SVFIR* pag, const std::string& keyword);
+
+    /*!
+     * \brief Fuzzy callee match (destructor / Itanium / token cascade on call graph).
+     * \return JSON with status: exact|ambiguous|not_found, resolved_name, candidates, hint.
+     */
+    llvm::json::Object fuzzyMatchFunctionNames(SVFIR* pag, const std::string& keyword);
+
+    /*!
+     * \brief Match a fuzzy callee keyword (exact resolve, then fuzzy cascade).
+     * \return JSON with status: exact|ambiguous|not_found, resolved_name, candidates, hint.
+     */
+    llvm::json::Object matchFunctionName(SVFIR* pag, const std::string& keyword);
+
+    /*!
      * \brief Lists all actual-parameter SVFG nodes at a callsite.
      * \param svfg Pointer to the SVFG.
      * \param icfg Pointer to the ICFG.
@@ -281,6 +310,17 @@ namespace GraphReaderUtil {
      * \return A reference to the map of function names to distances.
      */
     const Map<std::string, int>& getFreeCallerDistances();
+
+    /*!
+     * \brief P0/P1: scan source for nested #if/#ifdef/#ifndef/#elif/#else/#endif and describe
+     *        which branch contains line \p ln. Optional \p macroDefs + \p includeBranchHints
+     *        enable P1 branch_active_hint (active/inactive/unknown).
+     */
+    llvm::json::Object macroContextAtLineJson(const std::string& fl,
+                                             int64_t ln,
+                                             int64_t scanThroughLine,
+                                             bool includeBranchHints,
+                                             const std::map<std::string, std::string>& macroDefs);
 
 } // namespace GraphReaderUtil
 } // namespace SVF

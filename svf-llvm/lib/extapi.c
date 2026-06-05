@@ -25,6 +25,54 @@ void *malloc(unsigned long size)
     return NULL;
 }
 
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg0")))
+void *__kmalloc(unsigned long size, int flags)
+{
+    return NULL;
+}
+
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg0")))
+void *kmalloc(unsigned long size, int flags)
+{
+    return NULL;
+}
+
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg0")))
+void *kzalloc(unsigned long size, int flags)
+{
+    return NULL;
+}
+
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg0*Arg1")))
+void *kcalloc(unsigned long nitems, unsigned long size, int flags)
+{
+    return NULL;
+}
+
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg0")))
+void *kmalloc_large(unsigned long size, int flags)
+{
+    return NULL;
+}
+
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg2")))
+void *kmalloc_trace(void *cache, int flags, unsigned long size)
+{
+    return NULL;
+}
+
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:Arg0*Arg1")))
+void *kmalloc_array(unsigned long nitems, unsigned long size, int flags)
+{
+    return NULL;
+}
+
+__attribute__((annotate("REALLOC_HEAP_RET"), annotate("AllocSize:Arg1")))
+void *krealloc(void *ptr, unsigned long size, int flags)
+{
+    return NULL;
+}
+
 __attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:UNKNOWN")))
 void *fopen(const char *voidname, const char *mode)
 {

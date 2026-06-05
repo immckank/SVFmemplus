@@ -31,15 +31,48 @@
 #include "Util/Options.h"
 #include "SVFIR/ObjTypeInfo.h"
 #include <sstream>
+#include <llvm/IR/GlobalAlias.h>
 #include <llvm/Support/raw_ostream.h>
 #include "SVF-LLVM/LLVMModule.h"
 
 
 using namespace SVF;
 
+namespace
+{
+
+bool isLinuxKernelModuleEntryName(llvm::StringRef name)
+{
+    return name == "init_module" || name.startswith("init_module_") ||
+           name == "cleanup_module" || name.startswith("cleanup_module_");
+}
+
+bool isLinuxKernelModuleEntryFunction(const Function* fun)
+{
+    if (fun == nullptr)
+        return false;
+
+    if (isLinuxKernelModuleEntryName(fun->getName()))
+        return true;
+
+    for (const User* user : fun->users())
+    {
+        if (const auto* alias = SVFUtil::dyn_cast<GlobalAlias>(user))
+        {
+            if (isLinuxKernelModuleEntryName(alias->getName()))
+                return true;
+        }
+    }
+
+    return false;
+}
+
+}
+
 bool LLVMUtil::isProgEntryFunction(const Function* fun)
 {
-    return fun && fun->getName() == Options::EntryFunction();
+    return fun && (fun->getName() == Options::EntryFunction() ||
+                   isLinuxKernelModuleEntryFunction(fun));
 }
 
 const Function* LLVMUtil::getProgFunction(const std::string& funName)
@@ -480,20 +513,14 @@ const std::string LLVMUtil::getSourceLoc(const Value* val )
         else if (MDNode *N = inst->getMetadata("dbg"))   // Here I is an LLVM instruction
         {
             llvm::DILocation* Loc = SVFUtil::cast<llvm::DILocation>(N);                   // DILocation is in DebugInfo.h
+            // Prefer the outermost callsite when debug info comes from an inlined
+            // wrapper such as kernel alloc/free helpers in slab.h.
+            while (llvm::DILocation* inlineLoc = Loc->getInlinedAt())
+                Loc = inlineLoc;
+
             unsigned Line = Loc->getLine();
             unsigned Column = Loc->getColumn();
             std::string File = Loc->getFilename().str();
-            //StringRef Dir = Loc.getDirectory();
-            if(File.empty() || Line == 0)
-            {
-                auto inlineLoc = Loc->getInlinedAt();
-                if(inlineLoc)
-                {
-                    Line = inlineLoc->getLine();
-                    Column = inlineLoc->getColumn();
-                    File = inlineLoc->getFilename().str();
-                }
-            }
             rawstr << "\"ln\": " << Line << ", \"cl\": " << Column << ", \"fl\": \"" << File << "\"";
         }
     }

@@ -74,6 +74,12 @@ public:
 
     bool isSatisfiableForFreeAndUsePairs(ProgSlice* slice, GenericBug::EventStack& eventStack);
 
+protected:
+    bool enableReachGlobalPrune() const override
+    {
+        return false;
+    }
+
 private:
     SVFGNodeSet freeNodes;
     SVFGNodeSet useNodes;

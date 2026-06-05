@@ -3,6 +3,8 @@
 #define UNINITCHECKER_H_
 
 #include "SABER/LeakChecker.h"
+#include <memory>
+#include <unordered_map>
 
 namespace SVF
 {
@@ -61,16 +63,45 @@ public:
         loadNodes.insert(node);
     }
 
-    bool isSatisfiableForLoads(ProgSlice* slice, GenericBug::EventStack& eventStack);
+    bool isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardSlice,
+                               const SVFGNodeSet& candidateLoads,
+                               const SVFGNodeSet& qualifierStateIgnorePtrStore,
+                               const SVFGNodeSet& qualifierStateAllStore,
+                               GenericBug::EventStack& eventStack);
+
+protected:
+    bool needDefaultAllPathSolve() const override
+    {
+        return false;
+    }
+
+    bool enableReachGlobalPrune() const override
+    {
+        return false;
+    }
 
 private:
+    void collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnorePtrStore,
+                               const SVFGNodeSet& qualifierStateAllStore,
+                               SVFGNodeSet& candidateLoads) const;
+    std::unique_ptr<ProgSlice> buildGuardSlice(ProgSlice* rawSlice,
+                                               const SVFGNodeSet& candidateLoads) const;
     SVFGNodeSet storeNodes;
     SVFGNodeSet loadNodes;
+    std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
+    std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToBoundaries;
+    bool shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const;
+    bool isSummaryBoundaryNode(const SVFGNode* node) const;
+    u64_t getSummaryKey(const SVFGNode* node, bool ignorePtrStore) const;
+    void getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore, SVFGNodeSet& reachableLoads, SVFGNodeSet& nextBoundaries);
     bool shouldIgnorePtrStoreForLoad(const SVFGNode* load) const;
     bool shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const;
     bool shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
-    void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, Map<const SVFGNode*, bool>& inState) const;
-    bool isDefinitelyInitInComputedState(const Map<const SVFGNode*, bool>& inState, const SVFGNode* load) const;
+    bool isLoadCoveredByStores(ProgSlice* guardSlice,
+                               const SVFGNode* load,
+                               const SVFGNodeSet& curStoreSet) const;
+    void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable);
+    bool isDefinitelyInitInComputedState(const SVFGNodeSet& mayUninitReachable, const SVFGNode* load) const;
 
 };
 

@@ -152,8 +152,12 @@ public:
 
     inline bool postDominate(const SVFBasicBlock* bbKey, const SVFBasicBlock* bbValue) const
     {
+        if (bbKey == nullptr || bbValue == nullptr)
+            return false;
         const FunObjVar*  keyFunc = bbKey->getParent();
         const FunObjVar*  valueFunc = bbValue->getParent();
+        if (keyFunc == nullptr || valueFunc == nullptr || keyFunc != valueFunc)
+            return false;
         bool funcEq = (keyFunc == valueFunc);
         (void)funcEq; // Suppress warning of unused variable under release build
         assert(funcEq && "two basicblocks should be in the same function!");
@@ -162,8 +166,12 @@ public:
 
     inline bool dominate(const SVFBasicBlock* bbKey, const SVFBasicBlock* bbValue) const
     {
+        if (bbKey == nullptr || bbValue == nullptr)
+            return false;
         const FunObjVar*  keyFunc = bbKey->getParent();
         const FunObjVar*  valueFunc = bbValue->getParent();
+        if (keyFunc == nullptr || valueFunc == nullptr || keyFunc != valueFunc)
+            return false;
         bool funcEq = (keyFunc == valueFunc);
         (void)funcEq; // Suppress warning of unused variable under release build
         assert(funcEq && "two basicblocks should be in the same function!");

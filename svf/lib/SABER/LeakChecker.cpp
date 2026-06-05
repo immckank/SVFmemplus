@@ -29,6 +29,7 @@
 
 #include "Util/Options.h"
 #include "SABER/LeakChecker.h"
+#include "Graphs/ICFGEdge.h"
 #include "Graphs/VFGNode.h"
 
 using namespace SVF;
@@ -49,7 +50,7 @@ void LeakChecker::initSrcs()
         /// if this callsite return reside in a dead function then we do not care about its leaks
         /// for example instruction `int* p = malloc(size)` is in a dead function, then program won't allocate this memory
         /// for example a customized malloc `int p = malloc()` returns an integer value, then program treat it as a system malloc
-        if(cs->getFun()->isUncalledFunction() || !cs->getType()->isPointerTy())
+        if((!Options::RunUncallFuncs() && cs->getFun()->isUncalledFunction()) || !cs->getType()->isPointerTy())
             continue;
 
         CallGraph::FunctionSet callees;
@@ -87,7 +88,7 @@ void LeakChecker::initSrcs()
                     else
                     {
                         // exclude sources in dead functions or sources in functions that have summary
-                        if (!cs->getFun()->isUncalledFunction() && !isExtCall(cs->getBB()->getParent()))
+                        if ((Options::RunUncallFuncs() || !cs->getFun()->isUncalledFunction()) &&                                !isExtCall(cs->getBB()->getParent()))
                         {
                             addToSources(node);
                             addSrcToCSID(node, cs);
@@ -158,6 +159,84 @@ static std::string getSinkNodeLoc(const SVFGNode* snk)
     return icfgNode ? icfgNode->getSourceLoc() : "(unknown)";
 }
 
+const ICFGNode* LeakChecker::getSinkICFGNode(const SVFGNode* snk) const
+{
+    if (SVFUtil::isa<ActualParmVFGNode>(snk))
+        return SVFUtil::cast<ActualParmVFGNode>(snk)->getCallSite();
+    if (SVFUtil::isa<StmtVFGNode>(snk))
+        return SVFUtil::cast<StmtVFGNode>(snk)->getPAGEdge()->getICFGNode();
+    return snk->getICFGNode();
+}
+
+bool LeakChecker::isOwnershipTransferBarrier(const ICFGNode* node) const
+{
+    const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(node);
+    if (call == nullptr || call->getCalledFunction() == nullptr)
+        return false;
+
+    const std::string& funName = call->getCalledFunction()->getName();
+    return funName == "kthread_create_on_node" ||
+           funName == "__kthread_create_on_node" ||
+           funName == "kthread_create_on_cpu" ||
+           funName == "wake_up_process";
+}
+
+bool LeakChecker::hasSinkBypassReturn(const ProgSlice* slice, const ICFGNode*& bypassRet) const
+{
+    const CallICFGNode* srcCS = getSrcCSID(slice->getSource());
+    const FunObjVar* fun = srcCS->getFun();
+    if (fun == nullptr)
+        return false;
+
+    Set<const ICFGNode*> sinkNodes;
+    for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
+    {
+        const ICFGNode* sinkNode = getSinkICFGNode(*it);
+        if (sinkNode != nullptr && sinkNode->getFun() == fun)
+            sinkNodes.insert(sinkNode);
+    }
+    if (sinkNodes.empty())
+        return false;
+
+    FIFOWorkList<const ICFGNode*> worklist;
+    Set<const ICFGNode*> visited;
+    worklist.push(srcCS->getRetICFGNode());
+
+    while (!worklist.empty())
+    {
+        const ICFGNode* node = worklist.pop();
+        if (node == nullptr || visited.find(node) != visited.end())
+            continue;
+        visited.insert(node);
+
+        if (node->getFun() != fun)
+            continue;
+        if (sinkNodes.find(node) != sinkNodes.end())
+            continue;
+        if (isOwnershipTransferBarrier(node))
+            continue;
+
+        if (const IntraICFGNode* intra = SVFUtil::dyn_cast<IntraICFGNode>(node))
+        {
+            if (intra->isRetInst())
+            {
+                bypassRet = node;
+                return true;
+            }
+        }
+
+        for (ICFGNode::const_iterator it = node->OutEdgeBegin(), eit = node->OutEdgeEnd(); it != eit; ++it)
+        {
+            const ICFGEdge* edge = *it;
+            if (!SVFUtil::isa<IntraCFGEdge>(edge))
+                continue;
+            worklist.push(edge->getDstNode());
+        }
+    }
+
+    return false;
+}
+
 void LeakChecker::reportBug(ProgSlice* slice)
 {
 
@@ -189,6 +268,25 @@ void LeakChecker::reportBug(ProgSlice* slice)
         {
             const SVFGNode* snk = *it;
             SVFUtil::errs() << "\t\t sink at : ( " << getSinkNodeLoc(snk) << " )\n";
+        }
+    }
+    else if (isAllPathReachable() == true && isSomePathReachable() == true)
+    {
+        const ICFGNode* bypassRet = nullptr;
+        if (hasSinkBypassReturn(slice, bypassRet))
+        {
+            GenericBug::EventStack eventStack =
+            {
+                SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource()))
+            };
+            report.addSaberBug(GenericBug::PARTIALLEAK, eventStack);
+            SVFUtil::errs() << "\t\t sink-bypass return at : ( "
+                            << bypassRet->getSourceLoc() << " )\n";
+            for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
+            {
+                const SVFGNode* snk = *it;
+                SVFUtil::errs() << "\t\t sink at : ( " << getSinkNodeLoc(snk) << " )\n";
+            }
         }
     }
 

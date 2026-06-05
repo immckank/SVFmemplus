@@ -40,6 +40,15 @@
 using namespace SVF;
 using namespace SVFUtil;
 
+static const SVFBasicBlock* getBranchSuccessorBB(const BranchStmt* branchStmt, u32_t index)
+{
+    if (branchStmt == nullptr || index >= branchStmt->getNumSuccessors())
+        return nullptr;
+
+    const ICFGNode* succNode = branchStmt->getSuccessor(index);
+    return succNode == nullptr ? nullptr : succNode->getBB();
+}
+
 u64_t DPItem::maximumBudget = ULONG_MAX - 1;
 u32_t ContextCond::maximumCxtLen = 0;
 u32_t ContextCond::maximumCxt = 0;
@@ -141,6 +150,21 @@ void SaberCondAllocator::allocateForBB(const SVFBasicBlock &bb)
  */
 SaberCondAllocator::Condition SaberCondAllocator::getBranchCond(const SVFBasicBlock* bb, const SVFBasicBlock* succ) const
 {
+    if (bb == nullptr || succ == nullptr)
+        return getFalseCond();
+
+    bool foundSucc = false;
+    for (const SVFBasicBlock* bbSucc : bb->getSuccessors())
+    {
+        if (bbSucc == succ)
+        {
+            foundSucc = true;
+            break;
+        }
+    }
+    if (!foundSucc)
+        return getFalseCond();
+
     u32_t pos = bb->getBBSuccessorPos(succ);
     if(bb->getNumSuccessors() == 1)
         return getTrueCond();
@@ -185,10 +209,16 @@ void SaberCondAllocator::setBranchCond(const SVFBasicBlock* bb, const SVFBasicBl
 SaberCondAllocator::Condition
 SaberCondAllocator::evaluateTestNullLikeExpr(const BranchStmt *branchStmt, const SVFBasicBlock* succ)
 {
+    if (branchStmt == nullptr || succ == nullptr || branchStmt->getNumSuccessors() < 2)
+        return Condition::nullExpr();
 
-    const SVFBasicBlock* succ1 = branchStmt->getSuccessor(0)->getBB();
+    const SVFBasicBlock* succ1 = getBranchSuccessorBB(branchStmt, 0);
+    if (succ1 == nullptr)
+        return Condition::nullExpr();
 
-    const ValVar* condVar = SVFUtil::cast<ValVar>(branchStmt->getCondition());
+    const ValVar* condVar = SVFUtil::dyn_cast<ValVar>(branchStmt->getCondition());
+    if (condVar == nullptr)
+        return Condition::nullExpr();
     if (condVar->isConstDataOrAggDataButNotNullPtr())
     {
         // branch condition is a constant value, return nullexpr because it cannot be test null
@@ -225,8 +255,13 @@ SaberCondAllocator::evaluateTestNullLikeExpr(const BranchStmt *branchStmt, const
  */
 SaberCondAllocator::Condition SaberCondAllocator::evaluateProgExit(const BranchStmt *branchStmt, const SVFBasicBlock* succ)
 {
-    const SVFBasicBlock* succ1 = branchStmt->getSuccessor(0)->getBB();
-    const SVFBasicBlock* succ2 = branchStmt->getSuccessor(1)->getBB();
+    if (branchStmt == nullptr || succ == nullptr || branchStmt->getNumSuccessors() < 2)
+        return Condition::nullExpr();
+
+    const SVFBasicBlock* succ1 = getBranchSuccessorBB(branchStmt, 0);
+    const SVFBasicBlock* succ2 = getBranchSuccessorBB(branchStmt, 1);
+    if (succ1 == nullptr || succ2 == nullptr)
+        return Condition::nullExpr();
 
     bool branch1 = isBBCallsProgExit(succ1);
     bool branch2 = isBBCallsProgExit(succ2);
@@ -269,7 +304,13 @@ SaberCondAllocator::Condition SaberCondAllocator::evaluateProgExit(const BranchS
  */
 SaberCondAllocator::Condition SaberCondAllocator::evaluateLoopExitBranch(const SVFBasicBlock* bb, const SVFBasicBlock* dst)
 {
+    if (bb == nullptr || dst == nullptr)
+        return Condition::nullExpr();
+
     const FunObjVar* svffun = bb->getParent();
+    if (svffun == nullptr || dst->getParent() == nullptr || svffun != dst->getParent())
+        return Condition::nullExpr();
+
     assert(svffun == dst->getParent() && "two basic blocks should be in the same function");
 
     if (svffun->isLoopHeader(bb))
@@ -305,12 +346,19 @@ SaberCondAllocator::Condition SaberCondAllocator::evaluateLoopExitBranch(const S
  */
 SaberCondAllocator::Condition SaberCondAllocator::evaluateBranchCond(const SVFBasicBlock* bb, const SVFBasicBlock* succ)
 {
+    if (bb == nullptr || succ == nullptr)
+    {
+        return getFalseCond();
+    }
+
     if(bb->getNumSuccessors() == 1)
     {
         return getTrueCond();
     }
 
-    assert(!bb->getICFGNodeList().empty() && "bb not empty");
+    if (bb->getICFGNodeList().empty())
+        return getBranchCond(bb, succ);
+
     if (const ICFGNode* icfgNode = bb->back())
     {
         for (const auto &svfStmt: icfgNode->getSVFStmts())
@@ -319,9 +367,13 @@ SaberCondAllocator::Condition SaberCondAllocator::evaluateBranchCond(const SVFBa
             {
                 if (branchStmt->getNumSuccessors() == 2)
                 {
-                    const SVFBasicBlock* succ1 = branchStmt->getSuccessor(0)->getBB();
-                    const SVFBasicBlock* succ2 = branchStmt->getSuccessor(1)->getBB();
+                    const SVFBasicBlock* succ1 = getBranchSuccessorBB(branchStmt, 0);
+                    const SVFBasicBlock* succ2 = getBranchSuccessorBB(branchStmt, 1);
+                    if (succ1 == nullptr || succ2 == nullptr)
+                        break;
                     bool is_succ = (succ1 == succ || succ2 == succ);
+                    if (!is_succ)
+                        break;
                     (void)is_succ; // Suppress warning of unused variable under release build
                     assert(is_succ && "not a successor??");
                     Condition evalLoopExit = evaluateLoopExitBranch(bb, succ);
@@ -451,6 +503,9 @@ void SaberCondAllocator::collectBBCallingProgExit(const SVFBasicBlock &bb)
  */
 bool SaberCondAllocator::isBBCallsProgExit(const SVFBasicBlock* bb)
 {
+    if (bb == nullptr || bb->getParent() == nullptr)
+        return false;
+
     const FunObjVar* svfun = bb->getParent();
     FunToExitBBsMap::const_iterator it = funToExitBBsMap.find(svfun);
     if (it != funToExitBBsMap.end())
@@ -494,7 +549,13 @@ SaberCondAllocator::Condition
 SaberCondAllocator::ComputeInterCallVFGGuard(const SVFBasicBlock* srcBB, const SVFBasicBlock* dstBB,
         const SVFBasicBlock* callBB)
 {
+    if (srcBB == nullptr || dstBB == nullptr || callBB == nullptr ||
+            dstBB->getParent() == nullptr)
+        return getFalseCond();
+
     const SVFBasicBlock* funEntryBB = dstBB->getParent()->getEntryBlock();
+    if (funEntryBB == nullptr)
+        return getFalseCond();
 
     Condition c1 = ComputeIntraVFGGuard(srcBB, callBB);
     setCFCond(funEntryBB, condOr(getCFCond(funEntryBB), getCFCond(callBB)));
@@ -510,8 +571,14 @@ SaberCondAllocator::ComputeInterCallVFGGuard(const SVFBasicBlock* srcBB, const S
 SaberCondAllocator::Condition
 SaberCondAllocator::ComputeInterRetVFGGuard(const SVFBasicBlock* srcBB, const SVFBasicBlock* dstBB, const SVFBasicBlock* retBB)
 {
+    if (srcBB == nullptr || dstBB == nullptr || retBB == nullptr ||
+            srcBB->getParent() == nullptr)
+        return getFalseCond();
+
     const FunObjVar* parent = srcBB->getParent();
     const SVFBasicBlock* funExitBB = parent->getExitBB();
+    if (funExitBB == nullptr)
+        return getFalseCond();
 
     Condition c1 = ComputeIntraVFGGuard(srcBB, funExitBB);
     setCFCond(retBB, condOr(getCFCond(retBB), getCFCond(funExitBB)));
@@ -524,6 +591,9 @@ SaberCondAllocator::ComputeInterRetVFGGuard(const SVFBasicBlock* srcBB, const SV
  */
 SaberCondAllocator::Condition SaberCondAllocator::ComputeIntraVFGGuard(const SVFBasicBlock* srcBB, const SVFBasicBlock* dstBB)
 {
+    if (srcBB == nullptr || dstBB == nullptr || srcBB->getParent() == nullptr ||
+            dstBB->getParent() == nullptr || srcBB->getParent() != dstBB->getParent())
+        return getFalseCond();
 
     assert(srcBB->getParent() == dstBB->getParent() && "two basic blocks are not in the same function??");
 
@@ -631,6 +701,7 @@ bool SaberCondAllocator::isEquivalentBranchCond(const Condition &lhs,
 /// whether condition is satisfiable
 bool SaberCondAllocator::isSatisfiable(const Condition &condition)
 {
+    Condition::getSolver().push();
     Condition::getSolver().add(condition.getExpr());
     z3::check_result result = Condition::getSolver().check();
     Condition::getSolver().pop();

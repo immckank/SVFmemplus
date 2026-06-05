@@ -276,6 +276,9 @@ public:
 
     // Whether to keep DerefDirSVFGEdges in SaberSVFGBuilder::buildSVFG, Default: false
     static Option<bool> SaberKeepDerefDirSVFGEdges;
+    
+    // Maximum number of backward traversal steps in UninitChecker, Default: 2000
+    static const Option<u32_t> SaberUninitMaxBackwardSteps;
 
     // GraphReader
     static const Option<std::string> FindCallSites;
