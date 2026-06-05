@@ -32,5 +32,5 @@
 using namespace SVF;
 using namespace std;
 
-RangeFlowNode::RangeFlowNode(const SVFVar* _base, const SVFVar* _parent, Range _accumulate_offset, bool _isHeap)
-    : base(_base), parent(_parent), accumulate_offset(_accumulate_offset), isHeap(_isHeap){}
+RangeFlowNode::RangeFlowNode(const SVFVar* _base, const SVFVar* _parent, Range _accumulate_offset, bool _isHeap, uint8_t _callDepth, const ICFGNode* _callContext)
+    : base(_base), parent(_parent), accumulate_offset(_accumulate_offset), isHeap(_isHeap), callDepth(_callDepth), callContext(_callContext){}

@@ -1,53 +1,92 @@
+//===- HeapAllocationHandler.cpp -- Handle heap allocation --------------------//
+//
+//                     SVF: Static Value-Flow Analysis
+//
+// Copyright (C) <2013->  <Yulei Sui>
+//
+
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+//
+//===----------------------------------------------------------------------===//
+
+/*
+ * HeapAllocationHandler.cpp
+ *
+ *  Created on: May 11, 2026
+ *      Author: Yaokun Yang
+ */
+
 #include "BOF/HeapAllocationHandler.h"
+#include "Graphs/ICFGNode.h"
 
 using namespace SVF;
 
-/**
- * Define the allocation API map with expected parameter counts.
- * This map is independent of SABER's internal implementation.
- */
-const std::map<std::string, u32_t> HeapAllocationHandler::allocApiMap = {
-    {"malloc", 1},          {"xmalloc", 1},         {"VOS_MemAlloc", 1},
-    {"calloc", 2},          {"SoftBusCalloc", 2},   {"SysCalloc", 2},
-    {"realloc", 2},         {"LOS_MemAlloc", 2},    {"LOS_MemRealloc", 3},
-    {"alloca", 1},          {"strdup", 1},          {"strndup", 2},
-    {"_TIFFmalloc", 1},     {"kmem_cache_alloc", 2}
-};
-
 HeapAllocationHandler::HeapAllocationHandler(RangeAnalysis* _ra) : ra(_ra) {}
 
-bool HeapAllocationHandler::isAllocAPI(const std::string& funcName, size_t actualParamCount) const {
-    auto it = allocApiMap.find(funcName);
-    if (it != allocApiMap.end()) {
-        // Validate if the number of parameters matches the pre-defined count
-        return it->second == actualParamCount;
-    }
-    return false;
+bool HeapAllocationHandler::isAllocAPI(const FunObjVar* fun) const {
+    return registry.isAllocAPI(fun);
 }
 
-Range HeapAllocationHandler::analyzeAllocSize(const FunObjVar* funObjVar) {
-    // Case 1: calloc-style APIs (Size = arg0 * arg1)
-    std::string funcName = funObjVar->getName();
-    if (funcName == "calloc" || funcName == "SoftBusCalloc" || funcName == "SysCalloc") {
-        const ArgValVar* arg0 = funObjVar->getArg(0);
-        Range r0 = ra->analyzeVarRange(arg0);
+Range HeapAllocationHandler::analyzeAllocSize(const CallICFGNode* call) {
+    const FunObjVar* fun = call->getCalledFunction();
+    AllocSpec spec;
+    if (!fun || !registry.resolveAlloc(fun, spec))
+        return Range(0);
 
-        const ArgValVar* arg1 = funObjVar->getArg(1);
-        Range r1 = ra->analyzeVarRange(arg1);
+    const u32_t argn = call->arg_size();
 
-        return Range::mul(r0, r1);
-    }
-    
-    // Case 2: standard malloc-style APIs (Size = arg0)
-    // Most allocation APIs put the size in the first argument
-    if (funObjVar->arg_size() >= 1) {
-        const ArgValVar* size = funObjVar->getArg(0);
-        Range sizeRange = ra->analyzeVarRange(size);
-        
-        // Example usage of Range.add() if needed (e.g., adding a dummy offset)
-        // Here we just return the analyzed range directly
-        return sizeRange;
+    // calloc-style: size = arg[count] * arg[size]
+    if (spec.kind == AllocSpec::ELEM_MUL_ARG) {
+        if (spec.countArgIdx < 0 || spec.sizeArgIdx < 0 ||
+            (u32_t)spec.countArgIdx >= argn || (u32_t)spec.sizeArgIdx >= argn)
+            return Range(0);
+        Range countRange = ra->analyzeVarRange(call->getArgument(spec.countArgIdx));
+        Range sizeRange  = ra->analyzeVarRange(call->getArgument(spec.sizeArgIdx));
+        return Range::mul(countRange, sizeRange);
     }
 
-    return Range(0);
+    // malloc / realloc style: size = arg[sizeArgIdx] (read from actual call args)
+    if (spec.sizeArgIdx < 0 || (u32_t)spec.sizeArgIdx >= argn)
+        return Range(0);
+    return ra->analyzeVarRange(call->getArgument(spec.sizeArgIdx));
+}
+
+bool HeapAllocationHandler::getAllocSizeOperand(const CallICFGNode* call,
+                                                AllocSizeSym& out) {
+    const FunObjVar* fun = call->getCalledFunction();
+    AllocSpec spec;
+    if (!fun || !registry.resolveAlloc(fun, spec))
+        return false;
+
+    const u32_t argn = call->arg_size();
+
+    if (spec.kind == AllocSpec::ELEM_MUL_ARG) {
+        if (spec.countArgIdx < 0 || spec.sizeArgIdx < 0 ||
+            (u32_t)spec.countArgIdx >= argn || (u32_t)spec.sizeArgIdx >= argn)
+            return false;
+        out.isElemMul = true;
+        out.sizeVar = call->getArgument(spec.countArgIdx);
+        // Element byte size, if a positive constant.
+        Range elem = ra->analyzeVarRange(call->getArgument(spec.sizeArgIdx));
+        out.factor = (elem.isConstant() && elem.getLower() > 0) ? elem.getLower() : 0;
+        return out.sizeVar != nullptr;
+    }
+
+    if (spec.sizeArgIdx < 0 || (u32_t)spec.sizeArgIdx >= argn)
+        return false;
+    out.isElemMul = false;
+    out.factor = 1;
+    out.sizeVar = call->getArgument(spec.sizeArgIdx);
+    return out.sizeVar != nullptr;
 }

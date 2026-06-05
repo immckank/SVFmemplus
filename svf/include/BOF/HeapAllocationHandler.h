@@ -31,62 +31,67 @@
 #define HEAP_ALLOCATION_HANDLER_H
 
 #include "RangeAnalysis.h"
+#include "AllocAPIRegistry.h"
 
 namespace SVF {
+
+class CallICFGNode;
+
+/// Symbolic description of an allocation's size, in terms of the *actual*
+/// SVFVar operand(s) at the call site (rather than a folded numeric range).
+/// Used to relate an allocation's size to a later copy length even when the
+/// concrete value is unknown (TOP). For a malloc-style call the size is
+/// `factor (==1) * <sizeVar>`; for a calloc-style call it is
+/// `elemFactor * <sizeVar(count)>` and @ref isElemMul is set.
+struct AllocSizeSym {
+    const SVFVar* sizeVar = nullptr;  ///< the symbolic size / element-count operand
+    long long factor = 1;             ///< constant byte multiplier (calloc element size)
+    bool isElemMul = false;           ///< true for calloc-style element*count
+};
 
 class HeapAllocationHandler {
 public:
     HeapAllocationHandler(RangeAnalysis* _ra);
 
     /**
-     * @brief Checks whether the function name corresponds to a known allocation API,
-     *        and validates the number of arguments passed to it.
+     * @brief Checks whether the called function of @p call is a recognized
+     *        heap allocation API.
      *
-     * @param funcName          The name of the function to check (e.g., "malloc", "new", "calloc").
-     * @param actualParamCount  The actual number of arguments passed to the function in the source code.
+     * Identification is delegated to AllocAPIRegistry, which reuses
+     * SaberCheckerAPI / ExtAPI and a BOF-local supplementary table.
      *
-     * @return true  If `funcName` is a known allocation API and `actualParamCount` matches
-     *               the expected parameter count for that API.
-     * @return false Otherwise (unknown API or mismatched parameter count).
+     * @param fun The callee FunObjVar to check.
+     * @return true if @p fun is a recognized allocation API.
      */
-    bool isAllocAPI(const std::string& funcName, size_t actualParamCount) const;
-
+    bool isAllocAPI(const FunObjVar* fun) const;
 
     /**
-     * @brief Parses a CallPE statement and computes the allocation size.
+     * @brief Computes the allocation size (in bytes / elements as encoded by
+     *        the source) for an allocation call, reading the *actual* arguments
+     *        at the call site according to the data-driven AllocSpec.
      *
-     * This function analyzes the given call expression, checks if it corresponds
-     * to a known allocation API (e.g., malloc, calloc, new, etc.), and attempts
-     * to evaluate the total number of bytes being allocated.
+     * @param call The allocation call-site ICFG node.
      *
-     * @param funObjVar A pointer to the FunObjVar representing the function object
-     *                  of the call to analyze.
-     *
-     * @return A Range object representing the computed allocation size.
-     *         - If the function is a recognized allocation API, returns the Range
-     *           of the total allocation size (in bytes).
-     *         - If the function is NOT a recognized allocation API, returns an
-     *           invalid Range or a Range representing zero (0).
-     *
-     * @note The returned Range may be symbolic (e.g., representing an unknown value)
-     *       if the allocation size cannot be determined at compile time.
+     * @return A Range representing the computed allocation size; Range(0) if the
+     *         callee is not a recognized allocation API or the size cannot be
+     *         determined.
      */
-    Range analyzeAllocSize(const FunObjVar* funObjVar);
+    Range analyzeAllocSize(const CallICFGNode* call);
+
+    /**
+     * @brief Resolves the *symbolic* size operand(s) of an allocation call,
+     *        for relating allocation size to copy length under unknown ranges.
+     *
+     * @param call The allocation call-site ICFG node.
+     * @param out  Filled with the size operand / factor on success.
+     * @return true if @p call is a recognized allocation API with a resolvable
+     *         size operand.
+     */
+    bool getAllocSizeOperand(const CallICFGNode* call, AllocSizeSym& out);
 
 private:
     RangeAnalysis* ra;
-
-    /**
-     * @brief Map of allocation API function names to their expected parameter counts.
-     * 
-     * This map defines the recognized heap allocation functions and the number of
-     * parameters each function expects. It is independent of SABER's internal
-     * implementation and serves as the configuration for identifying allocation
-     * APIs during analysis.
-     * 
-     * @note Storage structure: function name -> expected parameter count
-     */
-    static const std::map<std::string, u32_t> allocApiMap;
+    AllocAPIRegistry registry;
 };
 }
 

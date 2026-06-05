@@ -34,8 +34,10 @@
 
 
 using namespace llvm;
-using namespace std;
 using namespace SVF;
+
+static const Option<std::string> BofReportFile(
+    "bof-report", "Dump the buffer-overflow bug report to the given JSON file", "");
 
 int main(int argc, char** argv)
 {
@@ -67,6 +69,10 @@ int main(int argc, char** argv)
 
     BufferOverflowChecker bufferOverflowChecker;
     bufferOverflowChecker.runOnModule(pag);
+
+    // Optionally persist the structured bug report as JSON.
+    if (!BofReportFile().empty())
+        bufferOverflowChecker.dumpReport(BofReportFile());
 
     LLVMModuleSet::releaseLLVMModuleSet();
     return 0;
