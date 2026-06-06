@@ -44,6 +44,13 @@ void DoubleFreeChecker::reportBug(ProgSlice* slice)
         eventStack.push_back(
             SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource())));
         report.addSaberBug(GenericBug::DOUBLEFREE, eventStack);
+        if (slice->hasSatisfiableSinkPair())
+        {
+            SVFUtil::errs() << "\t\t sink at : ( "
+                            << getSinkNodeLoc(slice->getFirstSatisfiableSink()) << " )\n";
+            SVFUtil::errs() << "\t\t sink at : ( "
+                            << getSinkNodeLoc(slice->getSecondSatisfiableSink()) << " )\n";
+        }
     }
     if(Options::ValidateTests())
         testsValidation(slice);

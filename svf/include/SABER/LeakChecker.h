@@ -101,6 +101,7 @@ protected:
     //@}
 
     bool hasSinkBypassReturn(const ProgSlice* slice, const ICFGNode*& bypassRet) const;
+    std::string getSinkNodeLoc(const SVFGNode* snk) const;
     const ICFGNode* getSinkICFGNode(const SVFGNode* snk) const;
     bool isOwnershipTransferBarrier(const ICFGNode* node) const;
 
