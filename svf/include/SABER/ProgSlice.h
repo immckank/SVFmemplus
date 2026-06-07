@@ -68,7 +68,8 @@ public:
     /// Constructor
     ProgSlice(const SVFGNode* src, SaberCondAllocator* pa, const SVFG* graph):
         root(src), partialReachable(false), fullReachable(false), reachGlob(false),
-        pathAllocator(pa), _curSVFGNode(nullptr), finalCond(pa->getFalseCond()), svfg(graph)
+        pathAllocator(pa), _curSVFGNode(nullptr), finalCond(pa->getFalseCond()), svfg(graph),
+        uafNodeTracking(false)
     {
     }
 
@@ -213,6 +214,23 @@ public:
     void evalFinalCond2Event(GenericBug::EventStack &eventStack) const;
     //@}
 
+    inline void enableUAFNodeTracking()
+    {
+        uafNodeTracking = true;
+    }
+    inline bool isUAFNodeTrackingEnabled() const
+    {
+        return uafNodeTracking;
+    }
+    inline const SVFGNodeSet& getUAFFreeNodes() const
+    {
+        return uafFreeNodes;
+    }
+    inline const SVFGNodeSet& getUAFUseNodes() const
+    {
+        return uafUseNodes;
+    }
+
 protected:
     friend class UseAfterFreeChecker;
     friend class UninitChecker;
@@ -308,6 +326,17 @@ protected:
         finalCond = cond;
     }
 
+    inline void addToUAFFreeNodes(const SVFGNode* node)
+    {
+        if (uafNodeTracking)
+            uafFreeNodes.insert(node);
+    }
+    inline void addToUAFUseNodes(const SVFGNode* node)
+    {
+        if (uafNodeTracking)
+            uafUseNodes.insert(node);
+    }
+
     /// Compute invalid branch condition stemming from removed strong update value-flow edges
     Condition computeInvalidCondFromRemovedSUVFEdge(const SVFGNode * cur);
 
@@ -329,6 +358,9 @@ private:
     const SVFGNode* _curSVFGNode;			///<  current svfg node during guard computation
     Condition finalCond;					///<  final condition
     const SVFG* svfg;						///<  SVFG
+    bool uafNodeTracking;
+    SVFGNodeSet uafFreeNodes;
+    SVFGNodeSet uafUseNodes;
 };
 
 } // End namespace SVF

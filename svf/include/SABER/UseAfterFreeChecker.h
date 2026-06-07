@@ -75,9 +75,16 @@ public:
     bool isSatisfiableForFreeAndUsePairs(ProgSlice* slice, GenericBug::EventStack& eventStack);
 
 protected:
+    void setCurSlice(const SVFGNode* src) override;
+    void FWProcessCurNode(const DPIm& item) override;
+
     bool enableReachGlobalPrune() const override
     {
         return false;
+    }
+    virtual bool enableSliceLocalUAFPairing() const
+    {
+        return true;
     }
 
 private:
