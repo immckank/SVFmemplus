@@ -61,13 +61,17 @@ void SrcSnkDDA::initialize()
         initSrcs();
         saberTimeStat.collectSrcTime = (SVFStat::getClk(true) - start) / TIMEINTERVAL;
         saberTimeStat.numSrcs = sources.size();
+
+        start = SVFStat::getClk(true);
+        initSnks();
+        saberTimeStat.collectSinkTime = (SVFStat::getClk(true) - start) / TIMEINTERVAL;
+        saberTimeStat.numAllSinks = sinks.size();
     }
     else
     {
         initSrcs();
+        initSnks();
     }
-
-    initSnks();
 }
 
 void SrcSnkDDA::analyze()
@@ -360,11 +364,29 @@ void SrcSnkDDA::printSaberTimeStat() const
 
     outs() << "\n*********SABER Time Statistics***************\n";
     outs() << "CollectSrcTime(sec)       " << saberTimeStat.collectSrcTime << "\n";
+    outs() << "CollectSinkTime(sec)      " << saberTimeStat.collectSinkTime << "\n";
     outs() << "NumSrcs                   " << saberTimeStat.numSrcs << "\n";
+    outs() << "NumAllSinks               " << saberTimeStat.numAllSinks << "\n";
     outs() << "ForwardTraverseTime(sec)  " << saberTimeStat.forwardTraverseTime << "\n";
     outs() << "NumSinks                  " << saberTimeStat.numSinks << "\n";
     outs() << "BackwardTraverseTime(sec) " << saberTimeStat.backwardTraverseTime << "\n";
     outs() << "SolveTime(sec)            " << saberTimeStat.solveTime << "\n";
+    if (Options::UninitCheck())
+    {
+        outs() << "UninitReportTime(sec)     " << saberTimeStat.uninitReportTime << "\n";
+        outs() << "UninitQualifierTime(sec)  " << saberTimeStat.uninitQualifierTime << "\n";
+        outs() << "UninitCandidateTime(sec)  " << saberTimeStat.uninitCollectCandidateTime << "\n";
+        outs() << "UninitGuardBuildTime(sec) " << saberTimeStat.uninitGuardBuildTime << "\n";
+        outs() << "UninitGuardSolveTime(sec) " << saberTimeStat.uninitGuardSolveTime << "\n";
+        outs() << "UninitLoadCheckTime(sec)  " << saberTimeStat.uninitLoadCheckTime << "\n";
+        outs() << "UninitReportCalls         " << saberTimeStat.uninitReportCalls << "\n";
+        outs() << "UninitSourcesWithCands    " << saberTimeStat.uninitSourcesWithCandidates << "\n";
+        outs() << "UninitReportedSources     " << saberTimeStat.uninitReportedSources << "\n";
+        outs() << "UninitTotalCandidateLoads " << saberTimeStat.uninitTotalCandidateLoads << "\n";
+        outs() << "UninitMaxCandidateLoads   " << saberTimeStat.uninitMaxCandidateLoads << "\n";
+        outs() << "UninitMaxForwardSlice     " << saberTimeStat.uninitMaxForwardSlice << "\n";
+        outs() << "UninitMaxGuardBackward    " << saberTimeStat.uninitMaxGuardBackwardSlice << "\n";
+    }
     outs() << "TotalTime(sec)            " << saberTimeStat.totalTime << "\n";
     outs() << "*********************************************\n\n";
 }
