@@ -22,6 +22,7 @@ public:
 
     /// We start from here
     virtual bool runOnModule(SVFIR* pag) override;
+    virtual void analyze() override;
 
     /// Report file/close bugs
     void reportBug(ProgSlice* slice) override;
@@ -107,6 +108,7 @@ private:
     bool isLoadCoveredByStores(ProgSlice* guardSlice,
                                const SVFGNode* load,
                                const SVFGNodeSet& curStoreSet) const;
+    bool inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const;
     void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable);
     bool isDefinitelyInitInComputedState(const SVFGNodeSet& mayUninitReachable, const SVFGNode* load) const;
 

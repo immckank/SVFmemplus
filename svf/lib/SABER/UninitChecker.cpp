@@ -162,6 +162,43 @@ bool UninitChecker::runOnModule(SVFIR* pag) {
     return false;
 }
 
+void UninitChecker::analyze()
+{
+    const bool timeStat = Options::SaberTimeStat();
+    double totalStart = 0;
+    if (timeStat)
+        totalStart = SVFStat::getClk(true);
+
+    initialize();
+
+    ContextCond::setMaxCxtLen(Options::CxtLimit());
+
+    for (SVFGNodeSetIter iter = sourcesBegin(), eiter = sourcesEnd();
+            iter != eiter; ++iter)
+    {
+        setCurSlice(*iter);
+
+        ContextCond cxt;
+        DPIm item((*iter)->getId(), cxt);
+
+        double fwdStart = 0;
+        if (timeStat)
+            fwdStart = SVFStat::getClk(true);
+        forwardTraverse(item);
+        if (timeStat)
+        {
+            saberTimeStat.forwardTraverseTime += (SVFStat::getClk(true) - fwdStart) / TIMEINTERVAL;
+            saberTimeStat.numSinks += getCurSlice()->getSinks().size();
+        }
+
+        reportBug(getCurSlice());
+    }
+
+    if (timeStat)
+        saberTimeStat.totalTime = (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL;
+    finalize();
+}
+
 void UninitChecker::initSrcs()
 {
     SVFIR* pag = getPAG();
@@ -384,6 +421,11 @@ bool UninitChecker::shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice*
     return cur_alloc && formal_param;
 }
 
+bool UninitChecker::inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const
+{
+    return slice->inBackwardSlice(node) || slice->inForwardSlice(node);
+}
+
 void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable)
 {
     mayUninitReachable.clear();
@@ -395,7 +437,7 @@ void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignore
     while (!workList.empty())
     {
         const SVFGNode* node = workList.pop();
-        if (!slice->inBackwardSlice(node))
+        if (!inUninitCandidateSlice(slice, node))
             continue;
         if (!mayUninitReachable.insert(node).second)
             continue;
@@ -408,12 +450,12 @@ void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignore
 
             for (SVFGNodeSetIter lit = summaryLoads->begin(), elit = summaryLoads->end(); lit != elit; ++lit)
             {
-                if (slice->inBackwardSlice(*lit))
+                if (inUninitCandidateSlice(slice, *lit))
                     mayUninitReachable.insert(*lit);
             }
             for (SVFGNodeSetIter bit = summaryBoundaries->begin(), ebit = summaryBoundaries->end(); bit != ebit; ++bit)
             {
-                if (slice->inBackwardSlice(*bit))
+                if (inUninitCandidateSlice(slice, *bit))
                     workList.push(*bit);
             }
             continue;
@@ -422,7 +464,7 @@ void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignore
         for (auto edge : node->getOutEdges())
         {
             const SVFGNode* succ = edge->getDstNode();
-            if (!slice->inBackwardSlice(succ))
+            if (!inUninitCandidateSlice(slice, succ))
                 continue;
             if (shouldConsiderStoreForSummaryMode(succ, ignorePtrStore))
                 continue;
@@ -464,7 +506,7 @@ std::unique_ptr<ProgSlice> UninitChecker::buildGuardSlice(ProgSlice* rawSlice,
     for (SVFGNodeSetIter lit = candidateLoads.begin(), elit = candidateLoads.end(); lit != elit; ++lit)
     {
         const SVFGNode* load = *lit;
-        if (!rawSlice->inBackwardSlice(load))
+        if (!inUninitCandidateSlice(rawSlice, load))
             continue;
         guardSlice->addToSinks(load);
         backwardWorkList.push(load);
@@ -478,7 +520,7 @@ std::unique_ptr<ProgSlice> UninitChecker::buildGuardSlice(ProgSlice* rawSlice,
     while (!backwardWorkList.empty())
     {
         const SVFGNode* node = backwardWorkList.pop();
-        if (!rawSlice->inBackwardSlice(node))
+        if (!inUninitCandidateSlice(rawSlice, node))
             continue;
         if (!reducedBackward.insert(node).second)
             continue;
@@ -486,7 +528,7 @@ std::unique_ptr<ProgSlice> UninitChecker::buildGuardSlice(ProgSlice* rawSlice,
         for (auto edge : node->getInEdges())
         {
             const SVFGNode* pre = edge->getSrcNode();
-            if (rawSlice->inBackwardSlice(pre))
+            if (inUninitCandidateSlice(rawSlice, pre))
                 backwardWorkList.push(pre);
         }
     }
