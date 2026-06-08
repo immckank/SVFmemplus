@@ -46,78 +46,44 @@ void SrcSnkDDA::initialize()
 
     double start = 0;
     if (timeStat)
-    {
-        outs() << "[SABER][init-begin]\n";
-        outs() << "[SABER][ander-begin]\n";
-        outs().flush();
         start = SVFStat::getClk(true);
-    }
     AndersenWaveDiff* ander = AndersenWaveDiff::createAndersenWaveDiff(pag);
     if (timeStat)
-    {
         saberTimeStat.anderTime = (SVFStat::getClk(true) - start) / TIMEINTERVAL;
-        outs() << "[SABER][ander-done] time=" << saberTimeStat.anderTime << "\n";
-        outs().flush();
-    }
 
     memSSA.setSaberCondAllocator(getSaberCondAllocator());
     if (timeStat)
-    {
-        outs() << "[SABER][svfg-build-begin] full=" << Options::SABERFULLSVFG() << "\n";
-        outs().flush();
         start = SVFStat::getClk(true);
-    }
     if(Options::SABERFULLSVFG())
         svfg =  memSSA.buildFullSVFG(ander);
     else
         svfg =  memSSA.buildPTROnlySVFG(ander);
     if (timeStat)
-    {
         saberTimeStat.svfgBuildTime = (SVFStat::getClk(true) - start) / TIMEINTERVAL;
-        outs() << "[SABER][svfg-build-done] time=" << saberTimeStat.svfgBuildTime << "\n";
-        outs().flush();
-    }
 
     setGraph(memSSA.getSVFG());
     callgraph = ander->getCallGraph();
     //AndersenWaveDiff::releaseAndersenWaveDiff();
     /// allocate control-flow graph branch conditions
     if (timeStat)
-    {
-        outs() << "[SABER][cond-alloc-begin]\n";
-        outs().flush();
         start = SVFStat::getClk(true);
-    }
     getSaberCondAllocator()->allocate();
     if (timeStat)
     {
         saberTimeStat.condAllocTime = (SVFStat::getClk(true) - start) / TIMEINTERVAL;
-        outs() << "[SABER][cond-alloc-done] time=" << saberTimeStat.condAllocTime << "\n";
-        outs().flush();
     }
 
     if (timeStat)
     {
-        outs() << "[SABER][collect-src-begin]\n";
-        outs().flush();
         start = SVFStat::getClk(true);
         initSrcs();
         saberTimeStat.collectSrcTime = (SVFStat::getClk(true) - start) / TIMEINTERVAL;
         saberTimeStat.numSrcs = sources.size();
-        outs() << "[SABER][collect-src-done] time=" << saberTimeStat.collectSrcTime
-               << " numSrcs=" << saberTimeStat.numSrcs << "\n";
-        outs().flush();
 
-        outs() << "[SABER][collect-sink-begin]\n";
-        outs().flush();
         start = SVFStat::getClk(true);
         initSnks();
         saberTimeStat.collectSinkTime = (SVFStat::getClk(true) - start) / TIMEINTERVAL;
         saberTimeStat.numAllSinks = sinks.size();
-        outs() << "[SABER][collect-sink-done] time=" << saberTimeStat.collectSinkTime
-               << " numAllSinks=" << saberTimeStat.numAllSinks << "\n";
-        outs() << "[SABER][init-done]\n";
-        outs().flush();
     }
     else
     {

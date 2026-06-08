@@ -36,7 +36,6 @@
 #include <cmath>
 #include "SVFIR/SVFStatements.h"
 #include "Graphs/CallGraph.h"
-#include "Util/SVFStat.h"
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -71,19 +70,8 @@ void SaberCondAllocator::allocate()
     DBOUT(DGENERAL, outs() << pasMsg("path condition allocation starts\n"));
 
     const CallGraph* svfirCallGraph = PAG::getPAG()->getCallGraph();
-    const bool timeStat = Options::SaberTimeStat();
-    u32_t funCount = 0;
-    u32_t bbCount = 0;
-    double start = 0;
-    if (timeStat)
-    {
-        start = SVFStat::getClk(true);
-        outs() << "[SABER][cond-alloc-progress] begin\n";
-        outs().flush();
-    }
     for (const auto& item: *svfirCallGraph)
     {
-        ++funCount;
         const FunObjVar *func = (item.second)->getFunction();
         if (!SVFUtil::isExtCall(func))
         {
@@ -91,26 +79,11 @@ void SaberCondAllocator::allocate()
             for (FunObjVar::const_bb_iterator bit = func->begin(), ebit = func->end();
                     bit != ebit; ++bit)
             {
-                ++bbCount;
                 const SVFBasicBlock* bb = bit->second;
                 collectBBCallingProgExit(*bb);
                 allocateForBB(*bb);
             }
         }
-        if (timeStat && funCount % 1000 == 0)
-        {
-            outs() << "[SABER][cond-alloc-progress] processedFuncs=" << funCount
-                   << " processedBBs=" << bbCount
-                   << " elapsed=" << (SVFStat::getClk(true) - start) / TIMEINTERVAL << "\n";
-            outs().flush();
-        }
-    }
-    if (timeStat)
-    {
-        outs() << "[SABER][cond-alloc-progress] processedFuncs=" << funCount
-               << " processedBBs=" << bbCount
-               << " elapsed=" << (SVFStat::getClk(true) - start) / TIMEINTERVAL << "\n";
-        outs().flush();
     }
 
     if (Options::PrintPathCond())

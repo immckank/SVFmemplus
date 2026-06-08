@@ -18,6 +18,9 @@ using namespace SVFUtil;
 typedef VisitedFIFOWorkList<const SVFGNode*> BackwardWorkList;
 typedef FIFOWorkList<const SVFGNode*> ForwardWorkList;
 
+static constexpr double kSlowSourceReportSec = 1.0;
+static constexpr double kSlowPathCheckSec = 3.0;
+
 static const ICFGNode* getBugEventICFGNode(const SVFGNode* node)
 {
     return node == nullptr ? nullptr : node->getICFGNode();
@@ -166,12 +169,22 @@ void UninitChecker::analyze()
 {
     const bool timeStat = Options::SaberTimeStat();
     double totalStart = 0;
+    double nextProgressTime = 0;
     if (timeStat)
+    {
         totalStart = SVFStat::getClk(true);
+        nextProgressTime = totalStart + 5 * TIMEINTERVAL;
+    }
 
     initialize();
 
     ContextCond::setMaxCxtLen(Options::CxtLimit());
+
+    if (timeStat)
+    {
+        outs() << "[UNINIT][analyze-begin] sources=" << saberTimeStat.numSrcs << "\n";
+        outs().flush();
+    }
 
     u32_t sourceIndex = 0;
     for (SVFGNodeSetIter iter = sourcesBegin(), eiter = sourcesEnd();
@@ -197,35 +210,38 @@ void UninitChecker::analyze()
         }
 
         reportBug(getCurSlice());
-        if (timeStat && sourceIndex % 1000 == 0)
+        if (timeStat)
         {
-            outs() << "[UNINIT][source-progress] index=" << sourceIndex
-                   << "/" << saberTimeStat.numSrcs
-                   << " elapsed=" << (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL
-                   << " reported=" << saberTimeStat.uninitReportedSources
-                   << "\n";
-            outs().flush();
+            const double now = SVFStat::getClk(true);
+            if (now >= nextProgressTime || sourceIndex == saberTimeStat.numSrcs)
+            {
+                outs() << "[UNINIT][source-progress] index=" << sourceIndex
+                       << "/" << saberTimeStat.numSrcs
+                       << " elapsed=" << (now - totalStart) / TIMEINTERVAL
+                       << " withCandidates=" << saberTimeStat.uninitSourcesWithCandidates
+                       << " reported=" << saberTimeStat.uninitReportedSources
+                       << "\n";
+                outs().flush();
+                nextProgressTime = now + 5 * TIMEINTERVAL;
+            }
         }
     }
 
     if (timeStat)
+    {
         saberTimeStat.totalTime = (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL;
+        outs() << "[UNINIT][analyze-done] sources=" << saberTimeStat.numSrcs
+               << " withCandidates=" << saberTimeStat.uninitSourcesWithCandidates
+               << " reported=" << saberTimeStat.uninitReportedSources
+               << " elapsed=" << saberTimeStat.totalTime << "\n";
+        outs().flush();
+    }
     finalize();
 }
 
 void UninitChecker::initSrcs()
 {
     SVFIR* pag = getPAG();
-    const bool timeStat = Options::SaberTimeStat();
-    double start = 0;
-    u32_t varCount = 0;
-    u32_t addrStmtCount = 0;
-    if (timeStat)
-    {
-        start = SVFStat::getClk(true);
-        outs() << "[UNINIT][init-srcs-begin] pagVars=" << pag->getTotalNodeNum() << "\n";
-        outs().flush();
-    }
 
     summaryBoundaryToLoads.clear();
     summaryBoundaryToBoundaries.clear();
@@ -233,14 +249,12 @@ void UninitChecker::initSrcs()
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
-        ++varCount;
         SVFVar* var = it->second;
         if (!var->hasOutgoingEdges(SVFStmt::Addr))
             continue;
 
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Addr))
         {
-            ++addrStmtCount;
             if(getSVFG()->hasStmtVFGNode(ld)){
                 const SVFVar* obj = ld->getSrcNode();
                 if (SVFUtil::isa<StackObjVar>(obj)){
@@ -248,14 +262,6 @@ void UninitChecker::initSrcs()
                 }
             }
         }
-    }
-    if (timeStat)
-    {
-        outs() << "[UNINIT][init-srcs-done] vars=" << varCount
-               << " addrStmts=" << addrStmtCount
-               << " sources=" << getSources().size()
-               << " elapsed=" << (SVFStat::getClk(true) - start) / TIMEINTERVAL << "\n";
-        outs().flush();
     }
 }
 
@@ -265,17 +271,6 @@ void UninitChecker::initSrcs()
 void UninitChecker::initSnks()
 {
     SVFIR* pag = getPAG();
-    const bool timeStat = Options::SaberTimeStat();
-    double start = 0;
-    u32_t varCount = 0;
-    u32_t storeStmtCount = 0;
-    u32_t loadStmtCount = 0;
-    if (timeStat)
-    {
-        start = SVFStat::getClk(true);
-        outs() << "[UNINIT][init-sinks-begin] pagVars=" << pag->getTotalNodeNum() << "\n";
-        outs().flush();
-    }
 
     storeNodes.clear();
     loadNodes.clear();
@@ -285,14 +280,12 @@ void UninitChecker::initSnks()
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
-        ++varCount;
         SVFVar* var = it->second;
 
         if (var->hasOutgoingEdges(SVFStmt::Store))
         {
             for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Store))
             {
-                ++storeStmtCount;
                 if(getSVFG()->hasStmtVFGNode(ld)){
                     const SVFGNode* storeNode = getSVFG()->getStmtVFGNode(ld);
                     addToStoreNodes(storeNode);
@@ -305,7 +298,6 @@ void UninitChecker::initSnks()
         {
             for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Load))
             {   
-                ++loadStmtCount;
                 if(getSVFG()->hasStmtVFGNode(ld)){
                     const SVFGNode* loadNode = getSVFG()->getStmtVFGNode(ld);
                     addToSinks(loadNode);
@@ -315,18 +307,6 @@ void UninitChecker::initSnks()
                 }
             }
         }
-    }
-    if (timeStat)
-    {
-        outs() << "[UNINIT][init-sinks-done] vars=" << varCount
-               << " stores=" << storeStmtCount
-               << " loads=" << loadStmtCount
-               << " storeNodes=" << storeNodes.size()
-               << " loadNodes=" << loadNodes.size()
-               << " ptrStores=" << ptrStoreNodes.size()
-               << " ptrLoads=" << ptrLoadNodes.size()
-               << " elapsed=" << (SVFStat::getClk(true) - start) / TIMEINTERVAL << "\n";
-        outs().flush();
     }
 }
 
@@ -602,9 +582,11 @@ bool UninitChecker::hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardS
     worklist.push(rawSlice->getSource());
     guardSlice->setVFCond(rawSlice->getSource(), guardSlice->getTrueCond());
 
+    u32_t visitedNodes = 0;
     while(!worklist.empty())
     {
         const SVFGNode* node = worklist.pop();
+        ++visitedNodes;
 
         if (node == load)
         {
@@ -620,6 +602,16 @@ bool UninitChecker::hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardS
                 {
                     double t = (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL;
                     saberTimeStat.uninitLoadCheckTime += t;
+                    if (t >= kSlowPathCheckSec)
+                    {
+                        outs() << "[UNINIT][path-check-slow] source=" << rawSlice->getSource()->getId()
+                               << " load=" << load->getId()
+                               << " visited=" << visitedNodes
+                               << " time=" << t
+                               << " guardBackward=" << guardSlice->getBackwardSliceSize()
+                               << " hit=1\n";
+                        outs().flush();
+                    }
                 }
                 return true;
             }
@@ -672,6 +664,16 @@ bool UninitChecker::hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardS
     {
         double t = (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL;
         saberTimeStat.uninitLoadCheckTime += t;
+        if (t >= kSlowPathCheckSec)
+        {
+            outs() << "[UNINIT][path-check-slow] source=" << rawSlice->getSource()->getId()
+                   << " load=" << load->getId()
+                   << " visited=" << visitedNodes
+                   << " time=" << t
+                   << " guardBackward=" << guardSlice->getBackwardSliceSize()
+                   << " hit=0\n";
+            outs().flush();
+        }
     }
     return false;
 }
@@ -686,11 +688,6 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         reportStart = SVFStat::getClk(true);
         ++saberTimeStat.uninitReportCalls;
     }
-
-    auto finishReport = [&]() {
-        if (timeStat)
-            saberTimeStat.uninitReportTime += (SVFStat::getClk(true) - reportStart) / TIMEINTERVAL;
-    };
 
     SVFGNodeSet qualifierStateIgnorePtrStore;
     SVFGNodeSet qualifierStateAllStore;
@@ -720,9 +717,25 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         if (candidateLoads.size() > saberTimeStat.uninitMaxCandidateLoads)
             saberTimeStat.uninitMaxCandidateLoads = candidateLoads.size();
     }
+    auto finishReport = [&](u32_t candidateCount) {
+        if (!timeStat)
+            return;
+        const double reportTime = (SVFStat::getClk(true) - reportStart) / TIMEINTERVAL;
+        saberTimeStat.uninitReportTime += reportTime;
+        if (reportTime >= kSlowSourceReportSec)
+        {
+            outs() << "[UNINIT][source-slow] source=" << rawSlice->getSource()->getId()
+                   << " reportTime=" << reportTime
+                   << " forwardSlice=" << rawSlice->getForwardSliceSize()
+                   << " candidates=" << candidateCount
+                   << "\n";
+            outs().flush();
+        }
+    };
+
     if (candidateLoads.empty())
     {
-        finishReport();
+        finishReport(0);
         return;
     }
     if (timeStat)
@@ -783,7 +796,7 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         const ICFGNode* sourceICFG = selectBestSourceICFGNode(rawSlice->getSource(), eventStack, getPAG());
         if (sourceICFG == nullptr)
         {
-            finishReport();
+            finishReport(candidateLoads.size());
             return;
         }
         eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, sourceICFG));
@@ -791,5 +804,5 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         if (timeStat)
             ++saberTimeStat.uninitReportedSources;
     }
-    finishReport();
+    finishReport(candidateLoads.size());
 }
