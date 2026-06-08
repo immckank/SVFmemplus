@@ -103,9 +103,6 @@ private:
     bool shouldIgnorePtrStoreForLoad(const SVFGNode* load) const;
     bool shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const;
     bool shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
-    bool isLoadCoveredByStores(ProgSlice* guardSlice,
-                               const SVFGNode* load,
-                               const SVFGNodeSet& curStoreSet) const;
     bool inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const;
     void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable);
     bool isDefinitelyInitInComputedState(const SVFGNodeSet& mayUninitReachable, const SVFGNode* load) const;

@@ -183,14 +183,6 @@ void UninitChecker::analyze()
         ContextCond cxt;
         DPIm item((*iter)->getId(), cxt);
 
-        if (timeStat)
-        {
-            outs() << "[UNINIT][source-begin] index=" << sourceIndex
-                   << "/" << saberTimeStat.numSrcs
-                   << " id=" << (*iter)->getId() << "\n";
-            outs().flush();
-        }
-
         double fwdStart = 0;
         if (timeStat)
             fwdStart = SVFStat::getClk(true);
@@ -202,23 +194,15 @@ void UninitChecker::analyze()
             if (getCurSlice()->getForwardSliceSize() > saberTimeStat.uninitMaxForwardSlice)
                 saberTimeStat.uninitMaxForwardSlice = getCurSlice()->getForwardSliceSize();
 
-            outs() << "[UNINIT][forward-done] index=" << sourceIndex
-                   << " id=" << (*iter)->getId()
-                   << " time=" << (SVFStat::getClk(true) - fwdStart) / TIMEINTERVAL
-                   << " forwardSlice=" << getCurSlice()->getForwardSliceSize()
-                   << " reachedLoads=" << getCurSlice()->getSinks().size() << "\n";
-            outs().flush();
         }
 
-        double reportStart = 0;
-        if (timeStat)
-            reportStart = SVFStat::getClk(true);
         reportBug(getCurSlice());
-        if (timeStat)
+        if (timeStat && sourceIndex % 1000 == 0)
         {
-            outs() << "[UNINIT][source-done] index=" << sourceIndex
-                   << " id=" << (*iter)->getId()
-                   << " reportTime=" << (SVFStat::getClk(true) - reportStart) / TIMEINTERVAL
+            outs() << "[UNINIT][source-progress] index=" << sourceIndex
+                   << "/" << saberTimeStat.numSrcs
+                   << " elapsed=" << (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL
+                   << " reported=" << saberTimeStat.uninitReportedSources
                    << "\n";
             outs().flush();
         }
@@ -264,15 +248,6 @@ void UninitChecker::initSrcs()
                 }
             }
         }
-        if (timeStat && varCount % 10000 == 0)
-        {
-            outs() << "[UNINIT][init-srcs-progress] vars=" << varCount
-                   << " addrStmts=" << addrStmtCount
-                   << " sources=" << getSources().size()
-                   << " elapsed=" << (SVFStat::getClk(true) - start) / TIMEINTERVAL << "\n";
-            outs().flush();
-        }
-            
     }
     if (timeStat)
     {
@@ -340,17 +315,6 @@ void UninitChecker::initSnks()
                 }
             }
         }
-        if (timeStat && varCount % 10000 == 0)
-        {
-            outs() << "[UNINIT][init-sinks-progress] vars=" << varCount
-                   << " stores=" << storeStmtCount
-                   << " loads=" << loadStmtCount
-                   << " storeNodes=" << storeNodes.size()
-                   << " loadNodes=" << loadNodes.size()
-                   << " elapsed=" << (SVFStat::getClk(true) - start) / TIMEINTERVAL << "\n";
-            outs().flush();
-        }
-            
     }
     if (timeStat)
     {
@@ -379,22 +343,6 @@ bool UninitChecker::isPtrLoadNode(const SVFGNode* node) const
 bool UninitChecker::shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const
 {
     return shouldConsiderStoreForMode(store, slice, shouldIgnorePtrStoreForLoad(load));
-}
-
-bool UninitChecker::isLoadCoveredByStores(ProgSlice* guardSlice,
-                                          const SVFGNode* load,
-                                          const SVFGNodeSet& curStoreSet) const
-{
-    auto& solver = ProgSlice::Condition::getSolver();
-    solver.push();
-    solver.add(guardSlice->getVFCond(load).getExpr());
-
-    for (SVFGNodeSetIter sit = curStoreSet.begin(), esit = curStoreSet.end(); sit != esit; ++sit)
-        solver.add(!guardSlice->getVFCond(*sit).getExpr());
-
-    z3::check_result res = solver.check();
-    solver.pop();
-    return res == z3::unsat;
 }
 
 bool UninitChecker::shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const
@@ -645,21 +593,15 @@ bool UninitChecker::hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardS
     if (timeStat)
     {
         checkStart = SVFStat::getClk(true);
-        outs() << "[UNINIT][path-check-begin] source=" << rawSlice->getSource()->getId()
-               << " load=" << load->getId()
-               << " guardBackward=" << guardSlice->getBackwardSliceSize() << "\n";
-        outs().flush();
     }
 
     ProgSlice::VFWorkList worklist;
     worklist.push(rawSlice->getSource());
     guardSlice->setVFCond(rawSlice->getSource(), guardSlice->getTrueCond());
 
-    u32_t visitedNodes = 0;
     while(!worklist.empty())
     {
         const SVFGNode* node = worklist.pop();
-        ++visitedNodes;
 
         if (node == load)
         {
@@ -675,24 +617,9 @@ bool UninitChecker::hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardS
                 {
                     double t = (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL;
                     saberTimeStat.uninitLoadCheckTime += t;
-                    outs() << "[UNINIT][path-check-hit] source=" << rawSlice->getSource()->getId()
-                           << " load=" << load->getId()
-                           << " visited=" << visitedNodes
-                           << " time=" << t << "\n";
-                    outs().flush();
                 }
                 return true;
             }
-        }
-
-        if (timeStat && visitedNodes % 10000 == 0)
-        {
-            outs() << "[UNINIT][path-check-progress] source=" << rawSlice->getSource()->getId()
-                   << " load=" << load->getId()
-                   << " visited=" << visitedNodes
-                   << " elapsed=" << (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL
-                   << "\n";
-            outs().flush();
         }
 
         guardSlice->setCurSVFGNode(node);
@@ -742,11 +669,6 @@ bool UninitChecker::hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardS
     {
         double t = (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL;
         saberTimeStat.uninitLoadCheckTime += t;
-        outs() << "[UNINIT][path-check-done] source=" << rawSlice->getSource()->getId()
-               << " load=" << load->getId()
-               << " visited=" << visitedNodes
-               << " time=" << t << "\n";
-        outs().flush();
     }
     return false;
 }
@@ -760,10 +682,6 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
     {
         reportStart = SVFStat::getClk(true);
         ++saberTimeStat.uninitReportCalls;
-        outs() << "[UNINIT][report-begin] source=" << rawSlice->getSource()->getId()
-               << " forwardSlice=" << rawSlice->getForwardSliceSize()
-               << " reachedLoads=" << rawSlice->getSinks().size() << "\n";
-        outs().flush();
     }
 
     auto finishReport = [&]() {
@@ -778,8 +696,6 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
     if (timeStat)
     {
         phaseStart = SVFStat::getClk(true);
-        outs() << "[UNINIT][qualifier-begin] source=" << rawSlice->getSource()->getId() << "\n";
-        outs().flush();
     }
     computeQualifierInferenceState(rawSlice, true, qualifierStateIgnorePtrStore);
     computeQualifierInferenceState(rawSlice, false, qualifierStateAllStore);
@@ -787,11 +703,6 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
     {
         double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
         saberTimeStat.uninitQualifierTime += t;
-        outs() << "[UNINIT][qualifier-done] source=" << rawSlice->getSource()->getId()
-               << " ignorePtrReachable=" << qualifierStateIgnorePtrStore.size()
-               << " allStoreReachable=" << qualifierStateAllStore.size()
-               << " time=" << t << "\n";
-        outs().flush();
     }
 
     SVFGNodeSet candidateLoads;
@@ -805,10 +716,6 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         saberTimeStat.uninitTotalCandidateLoads += candidateLoads.size();
         if (candidateLoads.size() > saberTimeStat.uninitMaxCandidateLoads)
             saberTimeStat.uninitMaxCandidateLoads = candidateLoads.size();
-        outs() << "[UNINIT][candidate-done] source=" << rawSlice->getSource()->getId()
-               << " candidates=" << candidateLoads.size()
-               << " time=" << t << "\n";
-        outs().flush();
     }
     if (candidateLoads.empty())
     {
@@ -828,11 +735,6 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         if (timeStat)
         {
             phaseStart = SVFStat::getClk(true);
-            outs() << "[UNINIT][guard-build-begin] source=" << rawSlice->getSource()->getId()
-                   << " candidateIndex=" << candidateIndex
-                   << "/" << candidateLoads.size()
-                   << " load=" << (*lit)->getId() << "\n";
-            outs().flush();
         }
         std::unique_ptr<ProgSlice> guardSlice = buildStoreBypassGuardSlice(rawSlice, *lit);
         if (!guardSlice)
@@ -841,10 +743,6 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
             {
                 double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
                 saberTimeStat.uninitGuardBuildTime += t;
-                outs() << "[UNINIT][guard-build-empty] source=" << rawSlice->getSource()->getId()
-                       << " candidateIndex=" << candidateIndex
-                       << " time=" << t << "\n";
-                outs().flush();
             }
             continue;
         }
@@ -854,22 +752,12 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
             saberTimeStat.uninitGuardBuildTime += t;
             if (guardSlice->getBackwardSliceSize() > saberTimeStat.uninitMaxGuardBackwardSlice)
                 saberTimeStat.uninitMaxGuardBackwardSlice = guardSlice->getBackwardSliceSize();
-            outs() << "[UNINIT][guard-build-done] source=" << rawSlice->getSource()->getId()
-                   << " candidateIndex=" << candidateIndex
-                   << " guardSinks=" << guardSlice->getSinks().size()
-                   << " guardBackward=" << guardSlice->getBackwardSliceSize()
-                   << " time=" << t << "\n";
-            outs().flush();
         }
 
         double solveStart = 0;
         if (timeStat)
         {
             solveStart = SVFStat::getClk(true);
-            outs() << "[UNINIT][path-solve-begin] source=" << rawSlice->getSource()->getId()
-                   << " candidateIndex=" << candidateIndex
-                   << " guardBackward=" << guardSlice->getBackwardSliceSize() << "\n";
-            outs().flush();
         }
         eventStack.clear();
         bool hasUninitPath = hasFeasibleUninitPath(rawSlice, guardSlice.get(), *lit, eventStack);
@@ -878,11 +766,6 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
             double t = (SVFStat::getClk(true) - solveStart) / TIMEINTERVAL;
             addSolveTime(t);
             saberTimeStat.uninitGuardSolveTime += t;
-            outs() << "[UNINIT][path-solve-done] source=" << rawSlice->getSource()->getId()
-                   << " candidateIndex=" << candidateIndex
-                   << " found=" << (hasUninitPath ? 1 : 0)
-                   << " time=" << t << "\n";
-            outs().flush();
         }
 
         if(hasUninitPath)
