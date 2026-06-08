@@ -84,6 +84,9 @@ protected:
     {
         double collectSrcTime = 0;
         double collectSinkTime = 0;
+        double anderTime = 0;
+        double svfgBuildTime = 0;
+        double condAllocTime = 0;
         double forwardTraverseTime = 0;
         double backwardTraverseTime = 0;
         double solveTime = 0;

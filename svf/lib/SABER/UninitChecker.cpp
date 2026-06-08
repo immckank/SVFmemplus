@@ -232,6 +232,16 @@ void UninitChecker::analyze()
 void UninitChecker::initSrcs()
 {
     SVFIR* pag = getPAG();
+    const bool timeStat = Options::SaberTimeStat();
+    double start = 0;
+    u32_t varCount = 0;
+    u32_t addrStmtCount = 0;
+    if (timeStat)
+    {
+        start = SVFStat::getClk(true);
+        outs() << "[UNINIT][init-srcs-begin] pagVars=" << pag->getTotalNodeNum() << "\n";
+        outs().flush();
+    }
 
     summaryBoundaryToLoads.clear();
     summaryBoundaryToBoundaries.clear();
@@ -239,10 +249,12 @@ void UninitChecker::initSrcs()
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
+        ++varCount;
         SVFVar* var = it->second;
 
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Addr))
         {
+            ++addrStmtCount;
             if(getSVFG()->hasStmtVFGNode(ld)){
                 SVFGNode* addrVFGNode = getSVFG()->getStmtVFGNode(ld);
                 
@@ -251,7 +263,23 @@ void UninitChecker::initSrcs()
                 }
             }
         }
+        if (timeStat && varCount % 10000 == 0)
+        {
+            outs() << "[UNINIT][init-srcs-progress] vars=" << varCount
+                   << " addrStmts=" << addrStmtCount
+                   << " sources=" << getSources().size()
+                   << " elapsed=" << (SVFStat::getClk(true) - start) / TIMEINTERVAL << "\n";
+            outs().flush();
+        }
             
+    }
+    if (timeStat)
+    {
+        outs() << "[UNINIT][init-srcs-done] vars=" << varCount
+               << " addrStmts=" << addrStmtCount
+               << " sources=" << getSources().size()
+               << " elapsed=" << (SVFStat::getClk(true) - start) / TIMEINTERVAL << "\n";
+        outs().flush();
     }
 }
 
@@ -261,6 +289,17 @@ void UninitChecker::initSrcs()
 void UninitChecker::initSnks()
 {
     SVFIR* pag = getPAG();
+    const bool timeStat = Options::SaberTimeStat();
+    double start = 0;
+    u32_t varCount = 0;
+    u32_t storeStmtCount = 0;
+    u32_t loadStmtCount = 0;
+    if (timeStat)
+    {
+        start = SVFStat::getClk(true);
+        outs() << "[UNINIT][init-sinks-begin] pagVars=" << pag->getTotalNodeNum() << "\n";
+        outs().flush();
+    }
 
     storeNodes.clear();
     loadNodes.clear();
@@ -270,10 +309,12 @@ void UninitChecker::initSnks()
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
+        ++varCount;
         SVFVar* var = it->second;
 
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Store))
         {
+            ++storeStmtCount;
             if(getSVFG()->hasStmtVFGNode(ld)){
                 const SVFGNode* storeNode = getSVFG()->getStmtVFGNode(ld);
                 addToStoreNodes(storeNode);
@@ -283,6 +324,7 @@ void UninitChecker::initSnks()
         }
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Load))
         {   
+            ++loadStmtCount;
             if(getSVFG()->hasStmtVFGNode(ld)){
                 const SVFGNode* loadNode = getSVFG()->getStmtVFGNode(ld);
                 addToSinks(loadNode);
@@ -291,7 +333,29 @@ void UninitChecker::initSnks()
                     ptrLoadNodes.insert(loadNode);
             }
         }
+        if (timeStat && varCount % 10000 == 0)
+        {
+            outs() << "[UNINIT][init-sinks-progress] vars=" << varCount
+                   << " stores=" << storeStmtCount
+                   << " loads=" << loadStmtCount
+                   << " storeNodes=" << storeNodes.size()
+                   << " loadNodes=" << loadNodes.size()
+                   << " elapsed=" << (SVFStat::getClk(true) - start) / TIMEINTERVAL << "\n";
+            outs().flush();
+        }
             
+    }
+    if (timeStat)
+    {
+        outs() << "[UNINIT][init-sinks-done] vars=" << varCount
+               << " stores=" << storeStmtCount
+               << " loads=" << loadStmtCount
+               << " storeNodes=" << storeNodes.size()
+               << " loadNodes=" << loadNodes.size()
+               << " ptrStores=" << ptrStoreNodes.size()
+               << " ptrLoads=" << ptrLoadNodes.size()
+               << " elapsed=" << (SVFStat::getClk(true) - start) / TIMEINTERVAL << "\n";
+        outs().flush();
     }
 }
 
