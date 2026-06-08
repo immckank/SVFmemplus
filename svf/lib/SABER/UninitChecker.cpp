@@ -451,6 +451,9 @@ bool UninitChecker::shouldIgnorePtrStoreForLoad(const SVFGNode* load) const
 
 bool UninitChecker::shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const
 {
+    if (storeNodes.find(store) == storeNodes.end())
+        return false;
+
     if (!ignorePtrStore)
         return true;
 
