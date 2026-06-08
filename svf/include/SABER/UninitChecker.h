@@ -64,10 +64,8 @@ public:
         loadNodes.insert(node);
     }
 
-    bool isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardSlice,
-                               const SVFGNodeSet& candidateLoads,
-                               const SVFGNodeSet& qualifierStateIgnorePtrStore,
-                               const SVFGNodeSet& qualifierStateAllStore,
+    bool hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardSlice,
+                               const SVFGNode* load,
                                GenericBug::EventStack& eventStack);
 
 protected:
@@ -85,8 +83,8 @@ private:
     void collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnorePtrStore,
                                const SVFGNodeSet& qualifierStateAllStore,
                                SVFGNodeSet& candidateLoads) const;
-    std::unique_ptr<ProgSlice> buildGuardSlice(ProgSlice* rawSlice,
-                                               const SVFGNodeSet& candidateLoads) const;
+    std::unique_ptr<ProgSlice> buildStoreBypassGuardSlice(ProgSlice* rawSlice,
+                                                          const SVFGNode* load) const;
     SVFGNodeSet storeNodes;
     SVFGNodeSet loadNodes;
     SVFGNodeSet ptrStoreNodes;

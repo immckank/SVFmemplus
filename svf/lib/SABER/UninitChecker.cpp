@@ -597,24 +597,18 @@ void UninitChecker::collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnor
     }
 }
 
-std::unique_ptr<ProgSlice> UninitChecker::buildGuardSlice(ProgSlice* rawSlice,
-                                                           const SVFGNodeSet& candidateLoads) const
+std::unique_ptr<ProgSlice> UninitChecker::buildStoreBypassGuardSlice(ProgSlice* rawSlice,
+                                                                     const SVFGNode* load) const
 {
     auto guardSlice = std::make_unique<ProgSlice>(rawSlice->getSource(), getSaberCondAllocator(), getSVFG());
     BackwardWorkList backwardWorkList;
     SVFGNodeSet reducedBackward;
 
-    for (SVFGNodeSetIter lit = candidateLoads.begin(), elit = candidateLoads.end(); lit != elit; ++lit)
-    {
-        const SVFGNode* load = *lit;
-        if (!inUninitCandidateSlice(rawSlice, load))
-            continue;
-        guardSlice->addToSinks(load);
-        backwardWorkList.push(load);
-    }
-
-    if (guardSlice->getSinks().empty())
+    if (load == nullptr || !inUninitCandidateSlice(rawSlice, load))
         return nullptr;
+
+    guardSlice->addToSinks(load);
+    backwardWorkList.push(load);
 
     guardSlice->setPartialReachable();
 
@@ -623,13 +617,15 @@ std::unique_ptr<ProgSlice> UninitChecker::buildGuardSlice(ProgSlice* rawSlice,
         const SVFGNode* node = backwardWorkList.pop();
         if (!inUninitCandidateSlice(rawSlice, node))
             continue;
+        if (node != load && shouldConsiderStoreForLoad(load, node, rawSlice))
+            continue;
         if (!reducedBackward.insert(node).second)
             continue;
 
         for (auto edge : node->getInEdges())
         {
             const SVFGNode* pre = edge->getSrcNode();
-            if (inUninitCandidateSlice(rawSlice, pre))
+            if (inUninitCandidateSlice(rawSlice, pre) && !shouldConsiderStoreForLoad(load, pre, rawSlice))
                 backwardWorkList.push(pre);
         }
     }
@@ -640,94 +636,119 @@ std::unique_ptr<ProgSlice> UninitChecker::buildGuardSlice(ProgSlice* rawSlice,
     return guardSlice;
 }
 
-bool UninitChecker::isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardSlice,
-                                          const SVFGNodeSet& candidateLoads,
-                                          const SVFGNodeSet& qualifierStateIgnorePtrStore,
-                                          const SVFGNodeSet& qualifierStateAllStore,
-                                          GenericBug::EventStack& eventStack){
+bool UninitChecker::hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardSlice,
+                                          const SVFGNode* load,
+                                          GenericBug::EventStack& eventStack)
+{
     const bool timeStat = Options::SaberTimeStat();
     double checkStart = 0;
     if (timeStat)
     {
         checkStart = SVFStat::getClk(true);
-        outs() << "[UNINIT][load-check-begin] source=" << rawSlice->getSource()->getId()
-               << " candidates=" << candidateLoads.size()
+        outs() << "[UNINIT][path-check-begin] source=" << rawSlice->getSource()->getId()
+               << " load=" << load->getId()
                << " guardBackward=" << guardSlice->getBackwardSliceSize() << "\n";
         outs().flush();
     }
 
-    u32_t checkedLoads = 0;
-    for(SVFGNodeSetIter lit = candidateLoads.begin(), elit = candidateLoads.end(); lit!=elit; ++lit){
-        const SVFGNode* load = *lit;
-        bool ignorePtrStore = shouldIgnorePtrStoreForLoad(load);
-        const SVFGNodeSet& qualifierState = ignorePtrStore ? qualifierStateIgnorePtrStore : qualifierStateAllStore;
-        if(isDefinitelyInitInComputedState(qualifierState, load))
-            continue;
-        if(!guardSlice->inBackwardSlice(load))
-            continue;
-        ++checkedLoads;
-        if (timeStat && checkedLoads % 100 == 0)
+    ProgSlice::VFWorkList worklist;
+    worklist.push(rawSlice->getSource());
+    guardSlice->setVFCond(rawSlice->getSource(), guardSlice->getTrueCond());
+
+    u32_t visitedNodes = 0;
+    while(!worklist.empty())
+    {
+        const SVFGNode* node = worklist.pop();
+        ++visitedNodes;
+
+        if (node == load)
         {
-            outs() << "[UNINIT][load-check-progress] source=" << rawSlice->getSource()->getId()
-                   << " checked=" << checkedLoads
+            ProgSlice::Condition loadCond = guardSlice->getVFCond(load);
+            if (!guardSlice->isEquivalentBranchCond(loadCond, guardSlice->getFalseCond()) &&
+                    getSaberCondAllocator()->isSatisfiable(loadCond))
+            {
+                guardSlice->setFinalCond(loadCond);
+                guardSlice->evalFinalCond2Event(eventStack);
+                if (const ICFGNode* loadICFG = getBugEventICFGNode(load))
+                    eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, loadICFG));
+                if (timeStat)
+                {
+                    double t = (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL;
+                    saberTimeStat.uninitLoadCheckTime += t;
+                    outs() << "[UNINIT][path-check-hit] source=" << rawSlice->getSource()->getId()
+                           << " load=" << load->getId()
+                           << " visited=" << visitedNodes
+                           << " time=" << t << "\n";
+                    outs().flush();
+                }
+                return true;
+            }
+        }
+
+        if (timeStat && visitedNodes % 10000 == 0)
+        {
+            outs() << "[UNINIT][path-check-progress] source=" << rawSlice->getSource()->getId()
+                   << " load=" << load->getId()
+                   << " visited=" << visitedNodes
                    << " elapsed=" << (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL
                    << "\n";
             outs().flush();
         }
 
-        SVFGNodeSet curStoreSet;
-
-        BackwardWorkList backwardWorkList;
-        backwardWorkList.push(load);
-        const u32_t maxBackwardSteps = Options::SaberUninitMaxBackwardSteps();
-        u32_t backwardSteps = 0;
-
-        while (!backwardWorkList.empty())
+        guardSlice->setCurSVFGNode(node);
+        ProgSlice::Condition invalidCond = guardSlice->computeInvalidCondFromRemovedSUVFEdge(node);
+        ProgSlice::Condition cond = guardSlice->getVFCond(node);
+        for(SVFGNode::const_iterator it = node->OutEdgeBegin(), eit = node->OutEdgeEnd(); it!=eit; ++it)
         {
-            if (backwardSteps >= maxBackwardSteps)
-                break;
+            const SVFGEdge* edge = (*it);
+            const SVFGNode* succ = edge->getDstNode();
+            if(!guardSlice->inBackwardSlice(succ))
+                continue;
+            if (shouldConsiderStoreForLoad(load, succ, rawSlice))
+                continue;
 
-            const SVFGNode* node = backwardWorkList.pop();
-            ++backwardSteps;
-            // if(!slice->inBackwardSlice(node)) continue;
+            ProgSlice::Condition vfCond;
+            const SVFBasicBlock* nodeBB = guardSlice->getSVFGNodeBB(node);
+            const SVFBasicBlock* succBB = guardSlice->getSVFGNodeBB(succ);
+            if (nodeBB == nullptr || succBB == nullptr)
+                continue;
+            guardSlice->clearCFCond();
 
-            for(auto edge : node->getInEdges()){
-                SVFGNode* pre = edge->getSrcNode();
-                if(guardSlice->inBackwardSlice(pre)) backwardWorkList.push(pre);
-            }
-
-            if(storeNodes.find(node) != storeNodes.end() && shouldConsiderStoreForLoad(load, node, rawSlice))
-                curStoreSet.insert(node);
-        }
-
-
-        if(!isLoadCoveredByStores(guardSlice, load, curStoreSet)){
-            if (const ICFGNode* loadICFG = getBugEventICFGNode(load))
-                eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, loadICFG));
-            if (timeStat)
+            if(edge->isCallVFGEdge())
             {
-                double t = (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL;
-                saberTimeStat.uninitLoadCheckTime += t;
-                outs() << "[UNINIT][load-check-hit] source=" << rawSlice->getSource()->getId()
-                       << " load=" << load->getId()
-                       << " checked=" << checkedLoads
-                       << " stores=" << curStoreSet.size()
-                       << " time=" << t << "\n";
-                outs().flush();
+                const CallICFGNode* callSite = guardSlice->getCallSite(edge);
+                if (callSite == nullptr || callSite->getParent() == nullptr)
+                    continue;
+                vfCond = guardSlice->ComputeInterCallVFGGuard(nodeBB, succBB, callSite->getParent());
             }
-            return false;
+            else if(edge->isRetVFGEdge())
+            {
+                const CallICFGNode* retSite = guardSlice->getRetSite(edge);
+                if (retSite == nullptr || retSite->getParent() == nullptr)
+                    continue;
+                vfCond = guardSlice->ComputeInterRetVFGGuard(nodeBB, succBB, retSite->getParent());
+            }
+            else
+                vfCond = guardSlice->ComputeIntraVFGGuard(nodeBB, succBB);
+
+            vfCond = guardSlice->condAnd(vfCond, guardSlice->condNeg(invalidCond));
+            ProgSlice::Condition succPathCond = guardSlice->condAnd(cond, vfCond);
+            if(guardSlice->setVFCond(succ, guardSlice->condOr(guardSlice->getVFCond(succ), succPathCond)))
+                worklist.push(succ);
         }
     }
+
     if (timeStat)
     {
         double t = (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL;
         saberTimeStat.uninitLoadCheckTime += t;
-        outs() << "[UNINIT][load-check-done] source=" << rawSlice->getSource()->getId()
-               << " checked=" << checkedLoads
+        outs() << "[UNINIT][path-check-done] source=" << rawSlice->getSource()->getId()
+               << " load=" << load->getId()
+               << " visited=" << visitedNodes
                << " time=" << t << "\n";
         outs().flush();
     }
-    return true;
+    return false;
 }
 
 
@@ -803,8 +824,6 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
     for (SVFGNodeSetIter lit = candidateLoads.begin(), elit = candidateLoads.end(); lit != elit; ++lit)
     {
         ++candidateIndex;
-        SVFGNodeSet singleCandidate;
-        singleCandidate.insert(*lit);
 
         if (timeStat)
         {
@@ -815,7 +834,7 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
                    << " load=" << (*lit)->getId() << "\n";
             outs().flush();
         }
-        std::unique_ptr<ProgSlice> guardSlice = buildGuardSlice(rawSlice, singleCandidate);
+        std::unique_ptr<ProgSlice> guardSlice = buildStoreBypassGuardSlice(rawSlice, *lit);
         if (!guardSlice)
         {
             if (timeStat)
@@ -847,26 +866,26 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         if (timeStat)
         {
             solveStart = SVFStat::getClk(true);
-            outs() << "[UNINIT][guard-solve-begin] source=" << rawSlice->getSource()->getId()
+            outs() << "[UNINIT][path-solve-begin] source=" << rawSlice->getSource()->getId()
                    << " candidateIndex=" << candidateIndex
                    << " guardBackward=" << guardSlice->getBackwardSliceSize() << "\n";
             outs().flush();
         }
-        guardSlice->AllPathReachableSolve(false);
+        eventStack.clear();
+        bool hasUninitPath = hasFeasibleUninitPath(rawSlice, guardSlice.get(), *lit, eventStack);
         if (timeStat)
         {
             double t = (SVFStat::getClk(true) - solveStart) / TIMEINTERVAL;
             addSolveTime(t);
             saberTimeStat.uninitGuardSolveTime += t;
-            outs() << "[UNINIT][guard-solve-done] source=" << rawSlice->getSource()->getId()
+            outs() << "[UNINIT][path-solve-done] source=" << rawSlice->getSource()->getId()
                    << " candidateIndex=" << candidateIndex
+                   << " found=" << (hasUninitPath ? 1 : 0)
                    << " time=" << t << "\n";
             outs().flush();
         }
 
-        eventStack.clear();
-        if(!isSatisfiableForLoads(rawSlice, guardSlice.get(), singleCandidate,
-                                  qualifierStateIgnorePtrStore, qualifierStateAllStore, eventStack))
+        if(hasUninitPath)
         {
             foundBug = true;
             break;
