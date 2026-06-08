@@ -33,6 +33,7 @@
 #include "Graphs/SVFGStat.h"
 #include "Util/Options.h"
 #include "WPA/Andersen.h"
+#include "SVFIR/SVFType.h"
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -54,12 +55,27 @@ void SrcSnkDDA::initialize()
     /// allocate control-flow graph branch conditions
     getSaberCondAllocator()->allocate();
 
-    initSrcs();
+    if (Options::SaberTimeStat())
+    {
+        double start = SVFStat::getClk(true);
+        initSrcs();
+        saberTimeStat.collectSrcTime = (SVFStat::getClk(true) - start) / TIMEINTERVAL;
+        saberTimeStat.numSrcs = sources.size();
+    }
+    else
+    {
+        initSrcs();
+    }
+
     initSnks();
 }
 
 void SrcSnkDDA::analyze()
 {
+    const bool timeStat = Options::SaberTimeStat();
+    double totalStart = 0;
+    if (timeStat)
+        totalStart = SVFStat::getClk(true);
 
     initialize();
 
@@ -73,7 +89,16 @@ void SrcSnkDDA::analyze()
         DBOUT(DGENERAL, outs() << "Analysing slice:" << (*iter)->getId() << ")\n");
         ContextCond cxt;
         DPIm item((*iter)->getId(),cxt);
+
+        double fwdStart = 0;
+        if (timeStat)
+            fwdStart = SVFStat::getClk(true);
         forwardTraverse(item);
+        if (timeStat)
+        {
+            saberTimeStat.forwardTraverseTime += (SVFStat::getClk(true) - fwdStart) / TIMEINTERVAL;
+            saberTimeStat.numSinks += getCurSlice()->getSinks().size();
+        }
 
         /// do not consider there is bug when reaching a global SVFGNode
         /// if we touch a global, then we assume the client uses this memory until the program exits.
@@ -85,6 +110,9 @@ void SrcSnkDDA::analyze()
         {
             DBOUT(DSaber, outs() << "Forward process for slice:" << (*iter)->getId() << " (size = " << getCurSlice()->getForwardSliceSize() << ")\n");
 
+            double bwStart = 0;
+            if (timeStat)
+                bwStart = SVFStat::getClk(true);
             for (SVFGNodeSetIter sit = getCurSlice()->sinksBegin(), esit =
                         getCurSlice()->sinksEnd(); sit != esit; ++sit)
             {
@@ -92,6 +120,8 @@ void SrcSnkDDA::analyze()
                 DPIm item((*sit)->getId(),cxt);
                 backwardTraverse(item);
             }
+            if (timeStat)
+                saberTimeStat.backwardTraverseTime += (SVFStat::getClk(true) - bwStart) / TIMEINTERVAL;
 
             DBOUT(DSaber, outs() << "Backward process for slice:" << (*iter)->getId() << " (size = " << getCurSlice()->getBackwardSliceSize() << ")\n");
 
@@ -100,8 +130,13 @@ void SrcSnkDDA::analyze()
 
             if (needDefaultAllPathSolve())
             {
+                double solveStart = 0;
+                if (timeStat)
+                    solveStart = SVFStat::getClk(true);
                 if(_curSlice->AllPathReachableSolve())
                     _curSlice->setAllReachable();
+                if (timeStat)
+                    saberTimeStat.solveTime += (SVFStat::getClk(true) - solveStart) / TIMEINTERVAL;
             }
 
             DBOUT(DSaber, outs() << "Guard computation for slice:" << (*iter)->getId() << ")\n");
@@ -109,6 +144,9 @@ void SrcSnkDDA::analyze()
 
         reportBug(getCurSlice());
     }
+
+    if (timeStat)
+        saberTimeStat.totalTime = (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL;
     finalize();
 
 }
@@ -307,4 +345,26 @@ void SrcSnkDDA::printZ3Stat()
 
     outs() << "Z3 Mem usage: " << getSaberCondAllocator()->getMemUsage() << "\n";
     outs() << "Z3 Number: " << getSaberCondAllocator()->getCondNum() << "\n";
+}
+
+void SrcSnkDDA::addSolveTime(double t)
+{
+    if (Options::SaberTimeStat())
+        saberTimeStat.solveTime += t;
+}
+
+void SrcSnkDDA::printSaberTimeStat() const
+{
+    if (!Options::SaberTimeStat())
+        return;
+
+    outs() << "\n*********SABER Time Statistics***************\n";
+    outs() << "CollectSrcTime(sec)       " << saberTimeStat.collectSrcTime << "\n";
+    outs() << "NumSrcs                   " << saberTimeStat.numSrcs << "\n";
+    outs() << "ForwardTraverseTime(sec)  " << saberTimeStat.forwardTraverseTime << "\n";
+    outs() << "NumSinks                  " << saberTimeStat.numSinks << "\n";
+    outs() << "BackwardTraverseTime(sec) " << saberTimeStat.backwardTraverseTime << "\n";
+    outs() << "SolveTime(sec)            " << saberTimeStat.solveTime << "\n";
+    outs() << "TotalTime(sec)            " << saberTimeStat.totalTime << "\n";
+    outs() << "*********************************************\n\n";
 }

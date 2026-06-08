@@ -2,6 +2,8 @@
 #include "SABER/UninitChecker.h"
 #include "SABER/SaberCheckerAPI.h"
 #include "SVFIR/SVFIR.h"
+#include "SVFIR/SVFType.h"
+#include "Util/SVFStat.h"
 #include "Util/SVFUtil.h"
 #include "SABER/ProgSlice.h"
 #include "Util/WorkList.h"
@@ -524,7 +526,12 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
     if (!guardSlice)
         return;
 
+    double solveStart = 0;
+    if (Options::SaberTimeStat())
+        solveStart = SVFStat::getClk(true);
     guardSlice->AllPathReachableSolve(false);
+    if (Options::SaberTimeStat())
+        addSolveTime((SVFStat::getClk(true) - solveStart) / TIMEINTERVAL);
 
     GenericBug::EventStack eventStack;
     if(!isSatisfiableForLoads(rawSlice, guardSlice.get(), candidateLoads,
