@@ -797,62 +797,83 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
     if (timeStat)
         ++saberTimeStat.uninitSourcesWithCandidates;
 
-    if (timeStat)
+    GenericBug::EventStack eventStack;
+    u32_t candidateIndex = 0;
+    bool foundBug = false;
+    for (SVFGNodeSetIter lit = candidateLoads.begin(), elit = candidateLoads.end(); lit != elit; ++lit)
     {
-        phaseStart = SVFStat::getClk(true);
-        outs() << "[UNINIT][guard-build-begin] source=" << rawSlice->getSource()->getId()
-               << " candidates=" << candidateLoads.size() << "\n";
-        outs().flush();
-    }
-    std::unique_ptr<ProgSlice> guardSlice = buildGuardSlice(rawSlice, candidateLoads);
-    if (!guardSlice)
-    {
+        ++candidateIndex;
+        SVFGNodeSet singleCandidate;
+        singleCandidate.insert(*lit);
+
+        if (timeStat)
+        {
+            phaseStart = SVFStat::getClk(true);
+            outs() << "[UNINIT][guard-build-begin] source=" << rawSlice->getSource()->getId()
+                   << " candidateIndex=" << candidateIndex
+                   << "/" << candidateLoads.size()
+                   << " load=" << (*lit)->getId() << "\n";
+            outs().flush();
+        }
+        std::unique_ptr<ProgSlice> guardSlice = buildGuardSlice(rawSlice, singleCandidate);
+        if (!guardSlice)
+        {
+            if (timeStat)
+            {
+                double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
+                saberTimeStat.uninitGuardBuildTime += t;
+                outs() << "[UNINIT][guard-build-empty] source=" << rawSlice->getSource()->getId()
+                       << " candidateIndex=" << candidateIndex
+                       << " time=" << t << "\n";
+                outs().flush();
+            }
+            continue;
+        }
         if (timeStat)
         {
             double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
             saberTimeStat.uninitGuardBuildTime += t;
-            outs() << "[UNINIT][guard-build-empty] source=" << rawSlice->getSource()->getId()
+            if (guardSlice->getBackwardSliceSize() > saberTimeStat.uninitMaxGuardBackwardSlice)
+                saberTimeStat.uninitMaxGuardBackwardSlice = guardSlice->getBackwardSliceSize();
+            outs() << "[UNINIT][guard-build-done] source=" << rawSlice->getSource()->getId()
+                   << " candidateIndex=" << candidateIndex
+                   << " guardSinks=" << guardSlice->getSinks().size()
+                   << " guardBackward=" << guardSlice->getBackwardSliceSize()
                    << " time=" << t << "\n";
             outs().flush();
         }
-        finishReport();
-        return;
-    }
-    if (timeStat)
-    {
-        double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
-        saberTimeStat.uninitGuardBuildTime += t;
-        if (guardSlice->getBackwardSliceSize() > saberTimeStat.uninitMaxGuardBackwardSlice)
-            saberTimeStat.uninitMaxGuardBackwardSlice = guardSlice->getBackwardSliceSize();
-        outs() << "[UNINIT][guard-build-done] source=" << rawSlice->getSource()->getId()
-               << " guardSinks=" << guardSlice->getSinks().size()
-               << " guardBackward=" << guardSlice->getBackwardSliceSize()
-               << " time=" << t << "\n";
-        outs().flush();
+
+        double solveStart = 0;
+        if (timeStat)
+        {
+            solveStart = SVFStat::getClk(true);
+            outs() << "[UNINIT][guard-solve-begin] source=" << rawSlice->getSource()->getId()
+                   << " candidateIndex=" << candidateIndex
+                   << " guardBackward=" << guardSlice->getBackwardSliceSize() << "\n";
+            outs().flush();
+        }
+        guardSlice->AllPathReachableSolve(false);
+        if (timeStat)
+        {
+            double t = (SVFStat::getClk(true) - solveStart) / TIMEINTERVAL;
+            addSolveTime(t);
+            saberTimeStat.uninitGuardSolveTime += t;
+            outs() << "[UNINIT][guard-solve-done] source=" << rawSlice->getSource()->getId()
+                   << " candidateIndex=" << candidateIndex
+                   << " time=" << t << "\n";
+            outs().flush();
+        }
+
+        eventStack.clear();
+        if(!isSatisfiableForLoads(rawSlice, guardSlice.get(), singleCandidate,
+                                  qualifierStateIgnorePtrStore, qualifierStateAllStore, eventStack))
+        {
+            foundBug = true;
+            break;
+        }
     }
 
-    double solveStart = 0;
-    if (Options::SaberTimeStat())
-    {
-        solveStart = SVFStat::getClk(true);
-        outs() << "[UNINIT][guard-solve-begin] source=" << rawSlice->getSource()->getId()
-               << " guardBackward=" << guardSlice->getBackwardSliceSize() << "\n";
-        outs().flush();
-    }
-    guardSlice->AllPathReachableSolve(false);
-    if (Options::SaberTimeStat())
-    {
-        double t = (SVFStat::getClk(true) - solveStart) / TIMEINTERVAL;
-        addSolveTime(t);
-        saberTimeStat.uninitGuardSolveTime += t;
-        outs() << "[UNINIT][guard-solve-done] source=" << rawSlice->getSource()->getId()
-               << " time=" << t << "\n";
-        outs().flush();
-    }
-
-    GenericBug::EventStack eventStack;
-    if(!isSatisfiableForLoads(rawSlice, guardSlice.get(), candidateLoads,
-                              qualifierStateIgnorePtrStore, qualifierStateAllStore, eventStack))
+    if (foundBug)
     {
         const ICFGNode* sourceICFG = selectBestSourceICFGNode(rawSlice->getSource(), eventStack, getPAG());
         if (sourceICFG == nullptr)
