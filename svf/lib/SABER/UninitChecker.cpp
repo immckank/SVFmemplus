@@ -251,14 +251,15 @@ void UninitChecker::initSrcs()
     {
         ++varCount;
         SVFVar* var = it->second;
+        if (!var->hasOutgoingEdges(SVFStmt::Addr))
+            continue;
 
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Addr))
         {
             ++addrStmtCount;
             if(getSVFG()->hasStmtVFGNode(ld)){
-                SVFGNode* addrVFGNode = getSVFG()->getStmtVFGNode(ld);
-                
-                if(addrVFGNode->toString().find("alloca") != std::string::npos){
+                const SVFVar* obj = ld->getSrcNode();
+                if (SVFUtil::isa<StackObjVar>(obj)){
                     addToSources(getSVFG()->getStmtVFGNode(ld));
                 }
             }
@@ -312,25 +313,31 @@ void UninitChecker::initSnks()
         ++varCount;
         SVFVar* var = it->second;
 
-        for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Store))
+        if (var->hasOutgoingEdges(SVFStmt::Store))
         {
-            ++storeStmtCount;
-            if(getSVFG()->hasStmtVFGNode(ld)){
-                const SVFGNode* storeNode = getSVFG()->getStmtVFGNode(ld);
-                addToStoreNodes(storeNode);
-                if (storeNode->toString().find("store ptr") != std::string::npos)
-                    ptrStoreNodes.insert(storeNode);
+            for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Store))
+            {
+                ++storeStmtCount;
+                if(getSVFG()->hasStmtVFGNode(ld)){
+                    const SVFGNode* storeNode = getSVFG()->getStmtVFGNode(ld);
+                    addToStoreNodes(storeNode);
+                    if (ld->getSrcNode()->isPointer())
+                        ptrStoreNodes.insert(storeNode);
+                }
             }
         }
-        for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Load))
-        {   
-            ++loadStmtCount;
-            if(getSVFG()->hasStmtVFGNode(ld)){
-                const SVFGNode* loadNode = getSVFG()->getStmtVFGNode(ld);
-                addToSinks(loadNode);
-                addToLoadNodes(loadNode);
-                if (loadNode->toString().find("load ptr") != std::string::npos)
-                    ptrLoadNodes.insert(loadNode);
+        if (var->hasOutgoingEdges(SVFStmt::Load))
+        {
+            for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Load))
+            {   
+                ++loadStmtCount;
+                if(getSVFG()->hasStmtVFGNode(ld)){
+                    const SVFGNode* loadNode = getSVFG()->getStmtVFGNode(ld);
+                    addToSinks(loadNode);
+                    addToLoadNodes(loadNode);
+                    if (ld->getDstNode()->isPointer())
+                        ptrLoadNodes.insert(loadNode);
+                }
             }
         }
         if (timeStat && varCount % 10000 == 0)
