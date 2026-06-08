@@ -88,12 +88,19 @@ private:
                                                const SVFGNodeSet& candidateLoads) const;
     SVFGNodeSet storeNodes;
     SVFGNodeSet loadNodes;
+    SVFGNodeSet ptrStoreNodes;
+    SVFGNodeSet ptrLoadNodes;
+    mutable std::unordered_map<const SVFGNode*, bool> ignorePtrStoreForLoadCache;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToBoundaries;
+    bool isPtrStoreNode(const SVFGNode* node) const;
+    bool isPtrLoadNode(const SVFGNode* node) const;
     bool shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const;
     bool isSummaryBoundaryNode(const SVFGNode* node) const;
     u64_t getSummaryKey(const SVFGNode* node, bool ignorePtrStore) const;
-    void getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore, SVFGNodeSet& reachableLoads, SVFGNodeSet& nextBoundaries);
+    void getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore,
+                                      const SVFGNodeSet*& reachableLoads,
+                                      const SVFGNodeSet*& nextBoundaries);
     bool shouldIgnorePtrStoreForLoad(const SVFGNode* load) const;
     bool shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const;
     bool shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;

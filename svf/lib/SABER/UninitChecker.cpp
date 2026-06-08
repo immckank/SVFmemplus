@@ -166,6 +166,9 @@ void UninitChecker::initSrcs()
 {
     SVFIR* pag = getPAG();
 
+    summaryBoundaryToLoads.clear();
+    summaryBoundaryToBoundaries.clear();
+    ignorePtrStoreForLoadCache.clear();
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
@@ -192,6 +195,11 @@ void UninitChecker::initSnks()
 {
     SVFIR* pag = getPAG();
 
+    storeNodes.clear();
+    loadNodes.clear();
+    ptrStoreNodes.clear();
+    ptrLoadNodes.clear();
+    ignorePtrStoreForLoadCache.clear();
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
@@ -200,18 +208,34 @@ void UninitChecker::initSnks()
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Store))
         {
             if(getSVFG()->hasStmtVFGNode(ld)){
-                addToStoreNodes(getSVFG()->getStmtVFGNode(ld));
+                const SVFGNode* storeNode = getSVFG()->getStmtVFGNode(ld);
+                addToStoreNodes(storeNode);
+                if (storeNode->toString().find("store ptr") != std::string::npos)
+                    ptrStoreNodes.insert(storeNode);
             }
         }
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Load))
         {   
             if(getSVFG()->hasStmtVFGNode(ld)){
-                addToSinks(getSVFG()->getStmtVFGNode(ld));
-                addToLoadNodes(getSVFG()->getStmtVFGNode(ld));
+                const SVFGNode* loadNode = getSVFG()->getStmtVFGNode(ld);
+                addToSinks(loadNode);
+                addToLoadNodes(loadNode);
+                if (loadNode->toString().find("load ptr") != std::string::npos)
+                    ptrLoadNodes.insert(loadNode);
             }
         }
             
     }
+}
+
+bool UninitChecker::isPtrStoreNode(const SVFGNode* node) const
+{
+    return ptrStoreNodes.find(node) != ptrStoreNodes.end();
+}
+
+bool UninitChecker::isPtrLoadNode(const SVFGNode* node) const
+{
+    return ptrLoadNodes.find(node) != ptrLoadNodes.end();
 }
 
 bool UninitChecker::shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const
@@ -241,7 +265,7 @@ bool UninitChecker::shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool
         return false;
     if (!ignorePtrStore)
         return true;
-    return node->toString().find("store ptr") == std::string::npos;
+    return !isPtrStoreNode(node);
 }
 
 bool UninitChecker::isSummaryBoundaryNode(const SVFGNode* node) const
@@ -260,15 +284,17 @@ u64_t UninitChecker::getSummaryKey(const SVFGNode* node, bool ignorePtrStore) co
     return key;
 }
 
-void UninitChecker::getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore, SVFGNodeSet& reachableLoads, SVFGNodeSet& nextBoundaries)
+void UninitChecker::getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore,
+                                                 const SVFGNodeSet*& reachableLoads,
+                                                 const SVFGNodeSet*& nextBoundaries)
 {
     u64_t key = getSummaryKey(boundary, ignorePtrStore);
     auto itLoad = summaryBoundaryToLoads.find(key);
     auto itBoundary = summaryBoundaryToBoundaries.find(key);
     if (itLoad != summaryBoundaryToLoads.end() && itBoundary != summaryBoundaryToBoundaries.end())
     {
-        reachableLoads = itLoad->second;
-        nextBoundaries = itBoundary->second;
+        reachableLoads = &itLoad->second;
+        nextBoundaries = &itBoundary->second;
         return;
     }
 
@@ -306,22 +332,35 @@ void UninitChecker::getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool 
 
     summaryBoundaryToLoads[key] = localLoads;
     summaryBoundaryToBoundaries[key] = localBoundaries;
-    reachableLoads = summaryBoundaryToLoads[key];
-    nextBoundaries = summaryBoundaryToBoundaries[key];
+    reachableLoads = &summaryBoundaryToLoads[key];
+    nextBoundaries = &summaryBoundaryToBoundaries[key];
 }
 
 bool UninitChecker::shouldIgnorePtrStoreForLoad(const SVFGNode* load) const
 {
-    if (load->toString().find("load ptr") == std::string::npos)
+    auto cached = ignorePtrStoreForLoadCache.find(load);
+    if (cached != ignorePtrStoreForLoadCache.end())
+        return cached->second;
+
+    bool ignorePtrStore = true;
+    if (!isPtrLoadNode(load))
+    {
+        ignorePtrStoreForLoadCache[load] = ignorePtrStore;
         return true;
+    }
 
     for (auto edge : load->getOutEdges())
     {
         SVFGNode* next = edge->getDstNode();
         if (ActualParmVFGNode::classof(next) && next->getOutEdges().empty())
+        {
+            ignorePtrStoreForLoadCache[load] = ignorePtrStore;
             return true;
+        }
     }
-    return false;
+    ignorePtrStore = false;
+    ignorePtrStoreForLoadCache[load] = ignorePtrStore;
+    return ignorePtrStore;
 }
 
 bool UninitChecker::shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const
@@ -329,7 +368,7 @@ bool UninitChecker::shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice*
     if (!ignorePtrStore)
         return true;
 
-    if (store->toString().find("store ptr") == std::string::npos)
+    if (!isPtrStoreNode(store))
         return true;
 
     bool formal_param = false;
@@ -363,16 +402,16 @@ void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignore
 
         if (isSummaryBoundaryNode(node))
         {
-            SVFGNodeSet summaryLoads;
-            SVFGNodeSet summaryBoundaries;
+            const SVFGNodeSet* summaryLoads = nullptr;
+            const SVFGNodeSet* summaryBoundaries = nullptr;
             getOrBuildSummaryForBoundary(node, ignorePtrStore, summaryLoads, summaryBoundaries);
 
-            for (SVFGNodeSetIter lit = summaryLoads.begin(), elit = summaryLoads.end(); lit != elit; ++lit)
+            for (SVFGNodeSetIter lit = summaryLoads->begin(), elit = summaryLoads->end(); lit != elit; ++lit)
             {
                 if (slice->inBackwardSlice(*lit))
                     mayUninitReachable.insert(*lit);
             }
-            for (SVFGNodeSetIter bit = summaryBoundaries.begin(), ebit = summaryBoundaries.end(); bit != ebit; ++bit)
+            for (SVFGNodeSetIter bit = summaryBoundaries->begin(), ebit = summaryBoundaries->end(); bit != ebit; ++bit)
             {
                 if (slice->inBackwardSlice(*bit))
                     workList.push(*bit);
@@ -463,8 +502,6 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardS
                                           const SVFGNodeSet& qualifierStateIgnorePtrStore,
                                           const SVFGNodeSet& qualifierStateAllStore,
                                           GenericBug::EventStack& eventStack){
-    bool flag = true;
-
     for(SVFGNodeSetIter lit = candidateLoads.begin(), elit = candidateLoads.end(); lit!=elit; ++lit){
         const SVFGNode* load = *lit;
         bool ignorePtrStore = shouldIgnorePtrStoreForLoad(load);
@@ -501,12 +538,12 @@ bool UninitChecker::isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardS
 
 
         if(!isLoadCoveredByStores(guardSlice, load, curStoreSet)){
-            flag = false;
             if (const ICFGNode* loadICFG = getBugEventICFGNode(load))
                 eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, loadICFG));
+            return false;
         }
     }
-    return flag;
+    return true;
 }
 
 
