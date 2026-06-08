@@ -80,11 +80,11 @@ void UseAfterFreeChecker::initSnks()
                 addToUseNodes(getSVFG()->getStmtVFGNode(ld));
             }
         }
-        for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Store))
+        for(const SVFStmt* st : var->getIncomingEdges(SVFStmt::Store))
         {
-            if(getSVFG()->hasStmtVFGNode(ld)){
-                addToSinks(getSVFG()->getStmtVFGNode(ld));
-                addToUseNodes(getSVFG()->getStmtVFGNode(ld));
+            if(getSVFG()->hasStmtVFGNode(st)){
+                addToSinks(getSVFG()->getStmtVFGNode(st));
+                addToUseNodes(getSVFG()->getStmtVFGNode(st));
             }
         }
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Call))
