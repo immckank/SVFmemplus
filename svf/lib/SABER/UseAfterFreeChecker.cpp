@@ -6,6 +6,8 @@
 #include "Util/SVFStat.h"
 #include "Util/Options.h"
 #include "SABER/ProgSlice.h"
+#include <unordered_map>
+#include <vector>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -92,13 +94,6 @@ void UseAfterFreeChecker::initSnks()
                 addToUseNodes(getSVFG()->getStmtVFGNode(st));
             }
         }
-        for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Call))
-        {
-            if(getSVFG()->hasStmtVFGNode(ld)){
-                addToSinks(getSVFG()->getStmtVFGNode(ld));
-                addToUseNodes(getSVFG()->getStmtVFGNode(ld));
-            }
-        }
     }
 }
 
@@ -123,6 +118,47 @@ bool icfgReachable(const ICFGNode* start, const ICFGNode* target) {
         }
     }
     return false;
+}
+
+static void collectReachableUsesFromFree(
+    const ICFGNode* start,
+    const std::unordered_map<const ICFGNode*, std::vector<const SVFGNode*>>& usesByICFGNode,
+    const size_t totalIndexedUses,
+    const size_t maxVisitedNodes,
+    std::vector<const SVFGNode*>& outUses)
+{
+    if (start == nullptr || usesByICFGNode.empty() || totalIndexedUses == 0)
+        return;
+
+    std::unordered_set<const ICFGNode*> visited;
+    std::deque<const ICFGNode*> worklist;
+    worklist.push_back(start);
+
+    size_t visitedNodes = 0;
+    while (!worklist.empty())
+    {
+        const ICFGNode* node = worklist.front();
+        worklist.pop_front();
+
+        if (!visited.insert(node).second)
+            continue;
+        ++visitedNodes;
+        if (visitedNodes >= maxVisitedNodes)
+            return;
+
+        auto it = usesByICFGNode.find(node);
+        if (it != usesByICFGNode.end())
+        {
+            outUses.insert(outUses.end(), it->second.begin(), it->second.end());
+            if (outUses.size() >= totalIndexedUses)
+                return;
+        }
+
+        for (const ICFGEdge* edge : node->getOutEdges())
+        {
+            worklist.push_back(edge->getDstNode());
+        }
+    }
 }
 
 bool isBackEdge(const ICFGEdge* edge) {
@@ -319,28 +355,50 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, Gene
 
     u32_t pairChecks = 0;
     u32_t feasiblePairs = 0;
+
+    std::unordered_map<const ICFGNode*, std::vector<const SVFGNode*>> usesByICFGNode;
+    size_t totalIndexedUses = 0;
+    usesByICFGNode.reserve(useSet->size());
+    for (SVFGNodeSetIter uit = useSet->begin(), euit = useSet->end(); uit != euit; ++uit)
+    {
+        const ICFGNode* uicfg = (*uit)->getICFGNode();
+        if (uicfg == nullptr)
+            continue;
+        usesByICFGNode[uicfg].push_back(*uit);
+        ++totalIndexedUses;
+    }
+
     for(SVFGNodeSetIter fit = freeSet->begin(), efit = freeSet->end(); fit!=efit; ++fit)
     {
-        for(SVFGNodeSetIter uit = useSet->begin(), euit = useSet->end(); uit!=euit; ++uit)
+        const ICFGNode* ficfg = (*fit)->getICFGNode();
+        if (ficfg == nullptr)
+            continue;
+
+        std::vector<const SVFGNode*> reachableUses;
+        const size_t maxVisitedNodes = Options::SaberUAFReachMaxNodes();
+        collectReachableUsesFromFree(ficfg, usesByICFGNode, totalIndexedUses, maxVisitedNodes, reachableUses);
+
+        for (const SVFGNode* useNode : reachableUses)
         {
             ++pairChecks;
-            ProgSlice::Condition guard = slice->condAnd(slice->getVFCond(*fit),slice->getVFCond(*uit));
+            ProgSlice::Condition guard = slice->condAnd(slice->getVFCond(*fit), slice->getVFCond(useNode));
             if(!slice->isEquivalentBranchCond(guard, slice->getFalseCond()))
             {
-                const ICFGNode* ficfg = (*fit)->getICFGNode();
-                const ICFGNode* uicfg = (*uit)->getICFGNode();
-                if(!icfgReachable(ficfg, uicfg)) continue;
+                const ICFGNode* uicfg = useNode->getICFGNode();
+                if (uicfg == nullptr)
+                    continue;
 
                 eventStack.push_back(SVFBugEvent(SVFBugEvent::Free, (*fit)->getICFGNode()));
                 slice->setFinalCond(slice->getVFCond(*fit));
                 slice->evalFinalCond2Event(eventStack);
-                eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, (*uit)->getICFGNode()));
-                slice->setFinalCond(slice->getVFCond(*uit));
+                eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, uicfg));
+                slice->setFinalCond(slice->getVFCond(useNode));
                 slice->evalFinalCond2Event(eventStack);
                 flag = false;
                 ++feasiblePairs;
 
-                if(hasLoopBackEdge(ficfg, uicfg)) eventStack.push_back(SVFBugEvent(SVFBugEvent::PotentialLoop, ficfg));
+                if (Options::UAFLoopHint() && hasLoopBackEdge(ficfg, uicfg))
+                    eventStack.push_back(SVFBugEvent(SVFBugEvent::PotentialLoop, ficfg));
             }
         }
     }
