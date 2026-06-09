@@ -824,6 +824,11 @@ const Option<bool> Options::DFreeCheck(
     "dfree", "Double Free Detection",false);
 const Option<bool> Options::UAFCheck(
     "uaf", "Use Afrer Free Detection",false);
+const Option<bool> Options::UAFLoopHint(
+    "uaf-loop-hint",
+    "UAF: add PotentialLoop hint event (extra loop/back-edge checks for report only)",
+    false
+);
 const Option<bool> Options::UninitCheck(
     "uninit", "Use Afrer Free Detection",false);
 const Option<bool> Options::RaceCheck(

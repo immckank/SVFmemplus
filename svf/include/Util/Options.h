@@ -261,6 +261,8 @@ public:
     static const Option<bool> DFreeCheck;
     /// use after free checker, Default: false
     static const Option<bool> UAFCheck;
+    /// Add potential-loop hint event to UAF reports (extra ICFG/loop checks), Default: false
+    static const Option<bool> UAFLoopHint;
     /// use of uninit checker, Default: false
     static const Option<bool> UninitCheck;
     /// data race checker, Default: false

@@ -314,7 +314,8 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, Gene
                 flag = false;
                 ++feasiblePairs;
 
-                if(hasLoopBackEdge(ficfg, uicfg)) eventStack.push_back(SVFBugEvent(SVFBugEvent::PotentialLoop, ficfg));
+                if (Options::UAFLoopHint() && hasLoopBackEdge(ficfg, uicfg))
+                    eventStack.push_back(SVFBugEvent(SVFBugEvent::PotentialLoop, ficfg));
             }
         }
     }
