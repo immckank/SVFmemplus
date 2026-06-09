@@ -69,7 +69,8 @@ public:
     ProgSlice(const SVFGNode* src, SaberCondAllocator* pa, const SVFG* graph):
         root(src), partialReachable(false), fullReachable(false), reachGlob(false),
         pathAllocator(pa), _curSVFGNode(nullptr), finalCond(pa->getFalseCond()),
-        pairedSinkA(nullptr), pairedSinkB(nullptr), svfg(graph)
+        pairedSinkA(nullptr), pairedSinkB(nullptr), svfg(graph),
+        uafNodeTracking(false)
     {
     }
 
@@ -229,6 +230,23 @@ public:
     void evalFinalCond2Event(GenericBug::EventStack &eventStack) const;
     //@}
 
+    inline void enableUAFNodeTracking()
+    {
+        uafNodeTracking = true;
+    }
+    inline bool isUAFNodeTrackingEnabled() const
+    {
+        return uafNodeTracking;
+    }
+    inline const SVFGNodeSet& getUAFFreeNodes() const
+    {
+        return uafFreeNodes;
+    }
+    inline const SVFGNodeSet& getUAFUseNodes() const
+    {
+        return uafUseNodes;
+    }
+
 protected:
     friend class UseAfterFreeChecker;
     friend class UninitChecker;
@@ -336,6 +354,17 @@ protected:
         pairedSinkB = second;
     }
 
+    inline void addToUAFFreeNodes(const SVFGNode* node)
+    {
+        if (uafNodeTracking)
+            uafFreeNodes.insert(node);
+    }
+    inline void addToUAFUseNodes(const SVFGNode* node)
+    {
+        if (uafNodeTracking)
+            uafUseNodes.insert(node);
+    }
+
     /// Compute invalid branch condition stemming from removed strong update value-flow edges
     Condition computeInvalidCondFromRemovedSUVFEdge(const SVFGNode * cur);
 
@@ -356,9 +385,10 @@ private:
     SaberCondAllocator* pathAllocator;		///<  path condition allocator
     const SVFGNode* _curSVFGNode;			///<  current svfg node during guard computation
     Condition finalCond;					///<  final condition
-    const SVFGNode* pairedSinkA;			///<  first sink in a satisfiable sink pair
-    const SVFGNode* pairedSinkB;			///<  second sink in a satisfiable sink pair
     const SVFG* svfg;						///<  SVFG
+    bool uafNodeTracking;
+    SVFGNodeSet uafFreeNodes;
+    SVFGNodeSet uafUseNodes;
 };
 
 } // End namespace SVF

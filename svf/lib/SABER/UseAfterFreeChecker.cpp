@@ -8,6 +8,34 @@
 using namespace SVF;
 using namespace SVFUtil;
 
+void UseAfterFreeChecker::setCurSlice(const SVFGNode* src)
+{
+    SrcSnkDDA::setCurSlice(src);
+    if (enableSliceLocalUAFPairing())
+        getCurSlice()->enableUAFNodeTracking();
+}
+
+void UseAfterFreeChecker::FWProcessCurNode(const DPIm& item)
+{
+    const SVFGNode* node = getNode(item.getCurNodeID());
+    if (isSink(node))
+    {
+        addSinkToCurSlice(node);
+        getCurSlice()->setPartialReachable();
+        if (enableSliceLocalUAFPairing() && getCurSlice()->isUAFNodeTrackingEnabled())
+        {
+            if (freeNodes.find(node) != freeNodes.end())
+                getCurSlice()->addToUAFFreeNodes(node);
+            if (useNodes.find(node) != useNodes.end())
+                getCurSlice()->addToUAFUseNodes(node);
+        }
+    }
+    else
+    {
+        addToCurForwardSlice(node);
+    }
+}
+
 /*!
  * Initialize sinks
  */
@@ -52,11 +80,11 @@ void UseAfterFreeChecker::initSnks()
                 addToUseNodes(getSVFG()->getStmtVFGNode(ld));
             }
         }
-        for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Store))
+        for(const SVFStmt* st : var->getIncomingEdges(SVFStmt::Store))
         {
-            if(getSVFG()->hasStmtVFGNode(ld)){
-                addToSinks(getSVFG()->getStmtVFGNode(ld));
-                addToUseNodes(getSVFG()->getStmtVFGNode(ld));
+            if(getSVFG()->hasStmtVFGNode(st)){
+                addToSinks(getSVFG()->getStmtVFGNode(st));
+                addToUseNodes(getSVFG()->getStmtVFGNode(st));
             }
         }
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Call))
@@ -66,14 +94,6 @@ void UseAfterFreeChecker::initSnks()
                 addToUseNodes(getSVFG()->getStmtVFGNode(ld));
             }
         }
-        for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Gep))
-        {
-            if(getSVFG()->hasStmtVFGNode(ld)){
-                addToSinks(getSVFG()->getStmtVFGNode(ld));
-                addToUseNodes(getSVFG()->getStmtVFGNode(ld));
-            }
-        }
-            
     }
 }
 
@@ -149,9 +169,16 @@ bool hasLoopBackEdge(const ICFGNode* src, const ICFGNode* dst) {
 
 bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, GenericBug::EventStack& eventStack){
     bool flag = true;
-    for(SVFGNodeSetIter fit = freeNodesBegin(), efit = freeNodesEnd(); fit!=efit; ++fit)
+    const SVFGNodeSet* freeSet = &freeNodes;
+    const SVFGNodeSet* useSet = &useNodes;
+    if (enableSliceLocalUAFPairing() && slice->isUAFNodeTrackingEnabled())
     {
-        for(SVFGNodeSetIter uit = useNodesBegin(), euit = useNodesEnd(); uit!=euit; ++uit)
+        freeSet = &slice->getUAFFreeNodes();
+        useSet = &slice->getUAFUseNodes();
+    }
+    for(SVFGNodeSetIter fit = freeSet->begin(), efit = freeSet->end(); fit!=efit; ++fit)
+    {
+        for(SVFGNodeSetIter uit = useSet->begin(), euit = useSet->end(); uit!=euit; ++uit)
         {
             ProgSlice::Condition guard = slice->condAnd(slice->getVFCond(*fit),slice->getVFCond(*uit));
             if(!slice->isEquivalentBranchCond(guard, slice->getFalseCond()))

@@ -18,6 +18,16 @@ using namespace SVFUtil;
 typedef VisitedFIFOWorkList<const SVFGNode*> BackwardWorkList;
 typedef FIFOWorkList<const SVFGNode*> ForwardWorkList;
 
+/*
+ * Bug reports want a stable "source" location. However, a raw SVFG source node
+ * (e.g., an allocation-related node) may not carry user-facing debug info.
+ *
+ * The helpers below implement a conservative selection strategy:
+ * - Prefer a real source location closest to the SVFG source.
+ * - Prefer statement-level ICFG nodes over call/ret and function entry/exit.
+ * - Fall back to an event location in the current path if needed.
+ * - As a last resort, anchor at the containing function entry.
+ */
 static constexpr double kSlowSourceReportSec = 1.0;
 static constexpr double kSlowPathCheckSec = 3.0;
 
@@ -35,6 +45,8 @@ static int icfgNodeKindPenalty(const ICFGNode* node)
 {
     if (node == nullptr)
         return 100;
+
+    // Smaller penalty means "better" for a user-facing anchor location.
     if (SVFUtil::isa<IntraICFGNode>(node))
         return 0;
     if (SVFUtil::isa<CallICFGNode>(node) || SVFUtil::isa<RetICFGNode>(node))
@@ -49,12 +61,15 @@ static const ICFGNode* findNearbySourceICFGNode(const SVFGNode* source, u32_t ma
     if (source == nullptr)
         return nullptr;
 
+    // Breadth-first exploration from the source in the SVFG, limited by depth and visited budget.
+    // We return as soon as we finish the first depth level that yields at least one usable source location.
     std::deque<std::pair<const SVFGNode*, u32_t>> worklist;
     std::unordered_set<const SVFGNode*> visited;
     worklist.push_back(std::make_pair(source, 0));
     visited.insert(source);
 
     const ICFGNode* bestAtCurrentDepth = nullptr;
+    int bestPenaltyAtCurrentDepth = 0;
     u32_t currentDepth = 0;
     u32_t visitedCount = 0;
 
@@ -78,16 +93,19 @@ static const ICFGNode* findNearbySourceICFGNode(const SVFGNode* source, u32_t ma
         const ICFGNode* icfgNode = getBugEventICFGNode(node);
         if (hasUsableSourceLoc(icfgNode))
         {
-            if (bestAtCurrentDepth == nullptr ||
-                    icfgNodeKindPenalty(icfgNode) < icfgNodeKindPenalty(bestAtCurrentDepth))
+            const int penalty = icfgNodeKindPenalty(icfgNode);
+            if (bestAtCurrentDepth == nullptr || penalty < bestPenaltyAtCurrentDepth)
             {
                 bestAtCurrentDepth = icfgNode;
+                bestPenaltyAtCurrentDepth = penalty;
             }
         }
 
         if (depth == maxDepth)
             continue;
 
+        // Traverse both in-edges and out-edges to find a nearby node with usable debug info.
+        // This intentionally treats the SVFG neighborhood as "undirected" for anchoring.
         for (const auto* edge : node->getInEdges())
         {
             const SVFGNode* pred = edge->getSrcNode();
@@ -108,12 +126,14 @@ static const ICFGNode* findNearbySourceICFGNode(const SVFGNode* source, u32_t ma
 
 static const ICFGNode* findFallbackICFGFromEvents(const GenericBug::EventStack& eventStack)
 {
+    // Prefer a concrete "Use" site if present (more actionable than generic control-flow anchors).
     for (auto it = eventStack.rbegin(); it != eventStack.rend(); ++it)
     {
         if (it->getEventType() == SVFBugEvent::Use && hasUsableSourceLoc(it->getEventInst()))
             return it->getEventInst();
     }
 
+    // Otherwise return the latest event in the path that still has debug info.
     for (auto it = eventStack.rbegin(); it != eventStack.rend(); ++it)
     {
         if (hasUsableSourceLoc(it->getEventInst()))
@@ -137,20 +157,20 @@ static const ICFGNode* findFunctionLevelFallbackICFG(const SVFGNode* source, SVF
 
 static const ICFGNode* selectBestSourceICFGNode(const SVFGNode* source, const GenericBug::EventStack& eventStack, SVFIR* pag)
 {
-    // P0: original source if it already has usable source location.
+    // P0: Source node already carries a usable source location.
     const ICFGNode* sourceICFG = getBugEventICFGNode(source);
     if (hasUsableSourceLoc(sourceICFG))
         return sourceICFG;
 
-    // P1: nearest reachable SVFG node with non-empty source location.
+    // P1: Find the closest reachable SVFG node (within a small bounded BFS) that has debug info.
     if (const ICFGNode* nearby = findNearbySourceICFGNode(source, 8, 200))
         return nearby;
 
-    // P2: use nearest event location in current bug path (prefer Use events).
+    // P2: Fall back to the current event path (prefer a Use site).
     if (const ICFGNode* fromEvents = findFallbackICFGFromEvents(eventStack))
         return fromEvents;
 
-    // P3: function-level fallback to keep a stable, non-empty anchor.
+    // P3: Function-level fallback for a stable anchor when all else is missing.
     return findFunctionLevelFallbackICFG(source, pag);
 }
 
