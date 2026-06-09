@@ -304,10 +304,6 @@ bool UninitChecker::isParameterSpillStackObject(StackObjVar* stackObj, SVFIR* pa
     if (fun == nullptr)
         return false;
 
-    // By-value aggregate parameters may carry uninitialized bytes from the caller.
-    if (stackObj->isVarStruct() || stackObj->isVarArray() || stackObj->isArray())
-        return false;
-
     if (!stackObj->hasOutgoingEdges(SVFStmt::Addr))
         return false;
 
