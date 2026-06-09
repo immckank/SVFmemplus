@@ -5,6 +5,8 @@
 #include "SABER/LeakChecker.h"
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace SVF
 {
@@ -80,15 +82,53 @@ protected:
     }
 
 private:
+    struct RegionKey
+    {
+        enum Precision
+        {
+            WholeObject,
+            Field,
+            Unknown
+        };
+
+        NodeID base = 0;
+        APOffset field = 0;
+        Precision precision = WholeObject;
+
+        RegionKey() = default;
+        RegionKey(NodeID b, APOffset f, Precision p) : base(b), field(f), precision(p) {}
+
+        bool operator==(const RegionKey& rhs) const
+        {
+            return base == rhs.base && field == rhs.field && precision == rhs.precision;
+        }
+    };
+
+    struct RegionKeyHash
+    {
+        std::size_t operator()(const RegionKey& region) const
+        {
+            return std::hash<NodeID>()(region.base) ^
+                   (std::hash<APOffset>()(region.field) << 1) ^
+                   (std::hash<unsigned>()(static_cast<unsigned>(region.precision)) << 2);
+        }
+    };
+
+    typedef std::unordered_set<RegionKey, RegionKeyHash> RegionSet;
+
     void collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnorePtrStore,
                                const SVFGNodeSet& qualifierStateAllStore,
                                SVFGNodeSet& candidateLoads) const;
+    void collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& candidateLoads) const;
     std::unique_ptr<ProgSlice> buildStoreBypassGuardSlice(ProgSlice* rawSlice,
                                                           const SVFGNode* load) const;
     SVFGNodeSet storeNodes;
     SVFGNodeSet loadNodes;
     SVFGNodeSet ptrStoreNodes;
     SVFGNodeSet ptrLoadNodes;
+    std::unordered_map<const SVFGNode*, RegionSet> sourceInitialRegions;
+    mutable std::unordered_map<const SVFGNode*, RegionSet> loadReadRegionCache;
+    mutable std::unordered_map<const SVFGNode*, RegionSet> storeWriteRegionCache;
     mutable std::unordered_map<const SVFGNode*, bool> ignorePtrStoreForLoadCache;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToBoundaries;
@@ -104,12 +144,29 @@ private:
     bool shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const;
     bool shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
     bool inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const;
+    RegionKey makeWholeRegion(NodeID obj) const;
+    RegionKey makeFieldRegion(NodeID obj, APOffset field) const;
+    RegionKey makeUnknownRegion(NodeID obj) const;
+    bool regionsMayIntersect(const RegionKey& lhs, const RegionKey& rhs) const;
+    bool regionSetsMayIntersect(const RegionSet& lhs, const RegionSet& rhs) const;
+    bool addPointeeRegions(NodeID ptr, RegionSet& regions) const;
+    bool addObjectRegion(NodeID obj, RegionSet& regions) const;
+    bool getInitialRegionsForSource(const SVFGNode* source, RegionSet& regions) const;
+    const RegionSet& getLoadReadRegions(const SVFGNode* load) const;
+    const RegionSet& getStoreWriteRegions(const SVFGNode* store) const;
+    bool storeMayKillLoadRegion(const SVFGNode* store, const SVFGNode* load) const;
+    bool isStoreStrongRegionKill(const SVFGNode* store) const;
+    bool storeRHSMayCarryUninit(const SVFGNode* store, ProgSlice* slice) const;
+    bool isZeroingAllocatorName(const std::string& name) const;
+    bool isZeroingHeapObject(const HeapObjVar* heapObj) const;
     void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable);
     bool isDefinitelyInitInComputedState(const SVFGNodeSet& mayUninitReachable, const SVFGNode* load) const;
     bool isFormalParameterPointerLoad(const SVFGNode* load) const;
     bool isPtrLoadAddressComputationOnly(const SVFGNode* load) const;
     bool isDirectParameterSpillLoad(const SVFGNode* load) const;
     bool isParameterSpillStackObject(StackObjVar* stackObj, SVFIR* pag) const;
+    bool isTrivialScalarStackObject(const StackObjVar* stackObj) const;
+    bool isReturnAnchoredICFGNode(const ICFGNode* node) const;
 
 };
 

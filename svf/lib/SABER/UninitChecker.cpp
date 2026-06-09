@@ -11,6 +11,7 @@
 #include "Graphs/ICFG.h"
 #include <deque>
 #include <unordered_set>
+#include <string>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -36,9 +37,21 @@ static const ICFGNode* getBugEventICFGNode(const SVFGNode* node)
     return node == nullptr ? nullptr : node->getICFGNode();
 }
 
+static bool isReturnAnchoredICFGNode(const ICFGNode* node)
+{
+    if (node == nullptr)
+        return true;
+    if (SVFUtil::isa<FunExitICFGNode>(node) || SVFUtil::isa<RetICFGNode>(node))
+        return true;
+    if (const IntraICFGNode* intra = SVFUtil::dyn_cast<IntraICFGNode>(node))
+        return intra->isRetInst();
+    return false;
+}
+
 static bool hasUsableSourceLoc(const ICFGNode* node)
 {
-    return node != nullptr && node->getSourceLoc().empty() == false;
+    return node != nullptr && node->getSourceLoc().empty() == false &&
+           !isReturnAnchoredICFGNode(node);
 }
 
 static int icfgNodeKindPenalty(const ICFGNode* node)
@@ -49,10 +62,17 @@ static int icfgNodeKindPenalty(const ICFGNode* node)
     // Smaller penalty means "better" for a user-facing anchor location.
     if (SVFUtil::isa<IntraICFGNode>(node))
         return 0;
-    if (SVFUtil::isa<CallICFGNode>(node) || SVFUtil::isa<RetICFGNode>(node))
+    if (SVFUtil::isa<CallICFGNode>(node))
         return 2;
-    if (SVFUtil::isa<FunEntryICFGNode>(node) || SVFUtil::isa<FunExitICFGNode>(node))
+    if (SVFUtil::isa<RetICFGNode>(node) || SVFUtil::isa<FunExitICFGNode>(node))
+        return 100;
+    if (SVFUtil::isa<FunEntryICFGNode>(node))
         return 5;
+    if (const IntraICFGNode* intra = SVFUtil::dyn_cast<IntraICFGNode>(node))
+    {
+        if (intra->isRetInst())
+            return 100;
+    }
     return 10;
 }
 
@@ -161,6 +181,22 @@ static const ICFGNode* selectBestSourceICFGNode(const SVFGNode* source, const Ge
     const ICFGNode* sourceICFG = getBugEventICFGNode(source);
     if (hasUsableSourceLoc(sourceICFG))
         return sourceICFG;
+
+    // Stack alloca sites are the preferred anchor when nearby search would land on returns.
+    if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(source))
+    {
+        if (const SVFVar* obj = SVFUtil::dyn_cast<SVFVar>(addr->getPAGSrcNode()))
+        {
+            if (const StackObjVar* stackObj = SVFUtil::dyn_cast<StackObjVar>(obj))
+            {
+                if (const ICFGNode* allocICFG = stackObj->getICFGNode())
+                {
+                    if (!isReturnAnchoredICFGNode(allocICFG) && allocICFG->getSourceLoc().empty() == false)
+                        return allocICFG;
+                }
+            }
+        }
+    }
 
     // P1: Find the closest reachable SVFG node (within a small bounded BFS) that has debug info.
     if (const ICFGNode* nearby = findNearbySourceICFGNode(source, 8, 200))
@@ -296,6 +332,271 @@ bool UninitChecker::isParameterSpillStackObject(StackObjVar* stackObj, SVFIR* pa
     return hasSpillSlot;
 }
 
+bool UninitChecker::isReturnAnchoredICFGNode(const ICFGNode* node) const
+{
+    return ::isReturnAnchoredICFGNode(node);
+}
+
+bool UninitChecker::isTrivialScalarStackObject(const StackObjVar* stackObj) const
+{
+    if (stackObj == nullptr)
+        return true;
+
+    // Keep aggregate and array locals; they are the usual uninit-memory targets.
+    if (stackObj->isVarStruct() || stackObj->isVarArray() || stackObj->isArray())
+        return false;
+
+    if (!stackObj->isConstantByteSize())
+        return false;
+
+    const u32_t byteSize = stackObj->getByteSizeOfObj();
+    if (byteSize == 0 || byteSize > 8)
+        return false;
+
+    // Multi-element stack slots (e.g. alloca i32, 2) may still expose partial uninit reads.
+    if (stackObj->getNumOfElements() > 1)
+        return false;
+
+    return true;
+}
+
+UninitChecker::RegionKey UninitChecker::makeWholeRegion(NodeID obj) const
+{
+    const BaseObjVar* baseObj = getPAG()->getBaseObject(obj);
+    return RegionKey(baseObj ? baseObj->getId() : obj, 0, RegionKey::WholeObject);
+}
+
+UninitChecker::RegionKey UninitChecker::makeFieldRegion(NodeID obj, APOffset field) const
+{
+    const BaseObjVar* baseObj = getPAG()->getBaseObject(obj);
+    return RegionKey(baseObj ? baseObj->getId() : obj, field, RegionKey::Field);
+}
+
+UninitChecker::RegionKey UninitChecker::makeUnknownRegion(NodeID obj) const
+{
+    const BaseObjVar* baseObj = getPAG()->getBaseObject(obj);
+    return RegionKey(baseObj ? baseObj->getId() : obj, 0, RegionKey::Unknown);
+}
+
+bool UninitChecker::regionsMayIntersect(const RegionKey& lhs, const RegionKey& rhs) const
+{
+    if (lhs.base != rhs.base)
+        return false;
+
+    if (lhs.precision == RegionKey::Unknown || rhs.precision == RegionKey::Unknown)
+        return true;
+    if (lhs.precision == RegionKey::WholeObject || rhs.precision == RegionKey::WholeObject)
+        return true;
+
+    return lhs.field == rhs.field;
+}
+
+bool UninitChecker::regionSetsMayIntersect(const RegionSet& lhs, const RegionSet& rhs) const
+{
+    for (const RegionKey& left : lhs)
+    {
+        for (const RegionKey& right : rhs)
+        {
+            if (regionsMayIntersect(left, right))
+                return true;
+        }
+    }
+    return false;
+}
+
+bool UninitChecker::addObjectRegion(NodeID obj, RegionSet& regions) const
+{
+    SVFIR* pag = getPAG();
+    const SVFVar* var = pag->getGNode(obj);
+    const BaseObjVar* baseObj = pag->getBaseObject(obj);
+    if (baseObj == nullptr)
+        return false;
+
+    if (baseObj->isFieldInsensitive() || baseObj->isArray() || baseObj->isVarArray())
+    {
+        regions.insert(makeUnknownRegion(baseObj->getId()));
+        return true;
+    }
+
+    if (const GepObjVar* gepObj = SVFUtil::dyn_cast<GepObjVar>(var))
+    {
+        regions.insert(makeFieldRegion(gepObj->getBaseNode(), gepObj->getConstantFieldIdx()));
+        return true;
+    }
+
+    bool addedField = false;
+    const NodeBS& fields = pag->getAllFieldsObjVars(baseObj->getId());
+    for (NodeBS::iterator fit = fields.begin(), feit = fields.end(); fit != feit; ++fit)
+    {
+        if (*fit == baseObj->getId())
+            continue;
+        if (const GepObjVar* fieldObj = SVFUtil::dyn_cast<GepObjVar>(pag->getGNode(*fit)))
+        {
+            regions.insert(makeFieldRegion(fieldObj->getBaseNode(), fieldObj->getConstantFieldIdx()));
+            addedField = true;
+        }
+    }
+
+    if (!addedField)
+        regions.insert(makeWholeRegion(baseObj->getId()));
+    return true;
+}
+
+bool UninitChecker::addPointeeRegions(NodeID ptr, RegionSet& regions) const
+{
+    PointerAnalysis* pta = getSVFG()->getPTA();
+    if (pta == nullptr)
+        return false;
+
+    bool added = false;
+    const PointsTo& pts = pta->getPts(ptr);
+    for (PointsTo::iterator it = pts.begin(), eit = pts.end(); it != eit; ++it)
+        added |= addObjectRegion(*it, regions);
+    return added;
+}
+
+bool UninitChecker::getInitialRegionsForSource(const SVFGNode* source, RegionSet& regions) const
+{
+    regions.clear();
+    auto it = sourceInitialRegions.find(source);
+    if (it != sourceInitialRegions.end())
+    {
+        regions = it->second;
+        return !regions.empty();
+    }
+
+    if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(source))
+        return addObjectRegion(addr->getPAGSrcNodeID(), regions);
+
+    if (const StmtSVFGNode* stmt = SVFUtil::dyn_cast<StmtSVFGNode>(source))
+        return addPointeeRegions(stmt->getPAGDstNodeID(), regions);
+
+    return false;
+}
+
+const UninitChecker::RegionSet& UninitChecker::getLoadReadRegions(const SVFGNode* load) const
+{
+    auto cached = loadReadRegionCache.find(load);
+    if (cached != loadReadRegionCache.end())
+        return cached->second;
+
+    RegionSet regions;
+    if (const LoadSVFGNode* loadNode = SVFUtil::dyn_cast<LoadSVFGNode>(load))
+        addPointeeRegions(loadNode->getPAGSrcNodeID(), regions);
+
+    loadReadRegionCache[load] = regions;
+    return loadReadRegionCache[load];
+}
+
+const UninitChecker::RegionSet& UninitChecker::getStoreWriteRegions(const SVFGNode* store) const
+{
+    auto cached = storeWriteRegionCache.find(store);
+    if (cached != storeWriteRegionCache.end())
+        return cached->second;
+
+    RegionSet regions;
+    if (const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(store))
+        addPointeeRegions(storeNode->getPAGDstNodeID(), regions);
+
+    storeWriteRegionCache[store] = regions;
+    return storeWriteRegionCache[store];
+}
+
+bool UninitChecker::isStoreStrongRegionKill(const SVFGNode* store) const
+{
+    const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(store);
+    if (storeNode == nullptr)
+        return false;
+
+    PointerAnalysis* pta = getSVFG()->getPTA();
+    if (pta == nullptr)
+        return false;
+
+    const PointsTo& pts = pta->getPts(storeNode->getPAGDstNodeID());
+    if (pts.count() != 1)
+        return false;
+
+    const RegionSet& writeRegions = getStoreWriteRegions(store);
+    if (writeRegions.size() != 1)
+        return false;
+
+    const RegionKey& writeRegion = *writeRegions.begin();
+    if (writeRegion.precision == RegionKey::Unknown)
+        return false;
+
+    const BaseObjVar* baseObj = getPAG()->getBaseObject(writeRegion.base);
+    return baseObj != nullptr && !baseObj->isFieldInsensitive() && !baseObj->isVarArray();
+}
+
+bool UninitChecker::storeMayKillLoadRegion(const SVFGNode* store, const SVFGNode* load) const
+{
+    if (storeNodes.find(store) == storeNodes.end())
+        return false;
+    if (!isStoreStrongRegionKill(store))
+        return false;
+
+    const RegionSet& writeRegions = getStoreWriteRegions(store);
+    const RegionSet& readRegions = getLoadReadRegions(load);
+    if (writeRegions.empty() || readRegions.empty())
+        return false;
+
+    return regionSetsMayIntersect(writeRegions, readRegions);
+}
+
+bool UninitChecker::storeRHSMayCarryUninit(const SVFGNode* store, ProgSlice* slice) const
+{
+    const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(store);
+    if (storeNode == nullptr || slice == nullptr)
+        return false;
+
+    const SVFVar* rhs = storeNode->getPAGSrcNode();
+    if (rhs == nullptr || rhs->isConstDataOrAggDataButNotNullPtr())
+        return false;
+
+    const SVFGNode* rhsDef = getSVFG()->getDefSVFGNode(storeNode->getPAGSrcNode());
+    if (rhsDef == nullptr || !slice->inForwardSlice(rhsDef))
+        return false;
+
+    return SVFUtil::isa<LoadSVFGNode>(rhsDef) ||
+           SVFUtil::isa<CopySVFGNode>(rhsDef) ||
+           SVFUtil::isa<PHISVFGNode>(rhsDef) ||
+           SVFUtil::isa<ActualRetVFGNode>(rhsDef) ||
+           SVFUtil::isa<FormalParmVFGNode>(rhsDef);
+}
+
+bool UninitChecker::isZeroingAllocatorName(const std::string& name) const
+{
+    return name.find("calloc") != std::string::npos ||
+           name.find("zalloc") != std::string::npos ||
+           name.find("alloc_clear") != std::string::npos ||
+           name.find("alloc_zero") != std::string::npos ||
+           name == "vzalloc" ||
+           name == "kvzalloc" ||
+           name == "kzalloc";
+}
+
+bool UninitChecker::isZeroingHeapObject(const HeapObjVar* heapObj) const
+{
+    if (heapObj == nullptr)
+        return false;
+
+    const ICFGNode* icfgNode = heapObj->getICFGNode();
+    const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(icfgNode);
+    if (call == nullptr)
+        return false;
+
+    CallGraph::FunctionSet callees;
+    getCallgraph()->getCallees(call, callees);
+    for (CallGraph::FunctionSet::const_iterator it = callees.begin(), eit = callees.end(); it != eit; ++it)
+    {
+        const FunObjVar* fun = *it;
+        if (fun != nullptr && SaberCheckerAPI::getCheckerAPI()->isMemAlloc(fun) &&
+                isZeroingAllocatorName(fun->getName()))
+            return true;
+    }
+    return false;
+}
+
 void UninitChecker::initSrcs()
 {
     SVFIR* pag = getPAG();
@@ -303,6 +604,9 @@ void UninitChecker::initSrcs()
     summaryBoundaryToLoads.clear();
     summaryBoundaryToBoundaries.clear();
     ignorePtrStoreForLoadCache.clear();
+    sourceInitialRegions.clear();
+    loadReadRegionCache.clear();
+    storeWriteRegionCache.clear();
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
@@ -318,7 +622,78 @@ void UninitChecker::initSrcs()
                 {
                     if (isParameterSpillStackObject(stackObj, pag))
                         continue;
-                    addToSources(getSVFG()->getStmtVFGNode(ld));
+                    if (isTrivialScalarStackObject(stackObj))
+                        continue;
+                    if (isReturnAnchoredICFGNode(stackObj->getICFGNode()))
+                        continue;
+                    const SVFGNode* source = getSVFG()->getStmtVFGNode(ld);
+                    RegionSet initialRegions;
+                    if (!addObjectRegion(stackObj->getId(), initialRegions))
+                        continue;
+                    sourceInitialRegions[source] = initialRegions;
+                    addToSources(source);
+                }
+                else if (HeapObjVar* heapObj = SVFUtil::dyn_cast<HeapObjVar>(obj))
+                {
+                    if (isZeroingHeapObject(heapObj))
+                        continue;
+                    const SVFGNode* source = getSVFG()->getStmtVFGNode(ld);
+                    RegionSet initialRegions;
+                    if (!addObjectRegion(heapObj->getId(), initialRegions))
+                        continue;
+                    sourceInitialRegions[source] = initialRegions;
+                    addToSources(source);
+                }
+            }
+        }
+    }
+
+    for(SVFIR::CSToRetMap::iterator it = pag->getCallSiteRets().begin(),
+            eit = pag->getCallSiteRets().end(); it != eit; ++it)
+    {
+        const RetICFGNode* ret = it->first;
+        if((!Options::RunUncallFuncs() && ret->getFun()->isUncalledFunction()) || !ret->getType()->isPointerTy())
+            continue;
+
+        CallGraph::FunctionSet callees;
+        getCallgraph()->getCallees(ret->getCallICFGNode(), callees);
+        for(CallGraph::FunctionSet::const_iterator cit = callees.begin(), ecit = callees.end(); cit != ecit; ++cit)
+        {
+            const FunObjVar* fun = *cit;
+            if (!SaberCheckerAPI::getCheckerAPI()->isMemAlloc(fun) || isZeroingAllocatorName(fun->getName()))
+                continue;
+
+            CSWorkList worklist;
+            SVFGNodeBS visited;
+            worklist.push(ret->getCallICFGNode());
+            while (!worklist.empty())
+            {
+                const CallICFGNode* cs = worklist.pop();
+                const RetICFGNode* retBlockNode = cs->getRetICFGNode();
+                const PAGNode* pagNode = pag->getCallSiteRet(retBlockNode);
+                if (pagNode == nullptr)
+                    continue;
+
+                const SVFGNode* source = getSVFG()->getDefSVFGNode(pagNode);
+                if (visited.test(source->getId()) == 0)
+                    visited.set(source->getId());
+                else
+                    continue;
+
+                CallSiteSet csSet;
+                if (isInAWrapper(source, csSet))
+                {
+                    for (CallSiteSet::iterator csIt = csSet.begin(), csEit = csSet.end(); csIt != csEit; ++csIt)
+                        worklist.push(*csIt);
+                }
+                else if ((Options::RunUncallFuncs() || !cs->getFun()->isUncalledFunction()) &&
+                         !isExtCall(cs->getBB()->getParent()))
+                {
+                    RegionSet initialRegions;
+                    if (!addPointeeRegions(pagNode->getId(), initialRegions))
+                        continue;
+                    sourceInitialRegions[source] = initialRegions;
+                    addToSources(source);
                 }
             }
         }
@@ -382,7 +757,10 @@ bool UninitChecker::isPtrLoadNode(const SVFGNode* node) const
 
 bool UninitChecker::shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const
 {
-    return shouldConsiderStoreForMode(store, slice, shouldIgnorePtrStoreForLoad(load));
+    if (!storeMayKillLoadRegion(store, load))
+        return false;
+
+    return !storeRHSMayCarryUninit(store, slice);
 }
 
 bool UninitChecker::shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const
@@ -713,12 +1091,75 @@ void UninitChecker::collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnor
     }
 }
 
+void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& candidateLoads) const
+{
+    candidateLoads.clear();
+
+    RegionSet sourceRegions;
+    if (!getInitialRegionsForSource(slice->getSource(), sourceRegions))
+        return;
+
+    for (SVFGNodeSetIter lit = slice->sinksBegin(), elit = slice->sinksEnd(); lit != elit; ++lit)
+    {
+        const SVFGNode* load = *lit;
+        if (loadNodes.find(load) == loadNodes.end())
+            continue;
+        if (!inUninitCandidateSlice(slice, load))
+            continue;
+
+        if (isDirectParameterSpillLoad(load) || isFormalParameterPointerLoad(load) ||
+                isPtrLoadAddressComputationOnly(load))
+            continue;
+
+        const RegionSet& readRegions = getLoadReadRegions(load);
+        if (readRegions.empty() || !regionSetsMayIntersect(sourceRegions, readRegions))
+            continue;
+
+        BackwardWorkList worklist;
+        SVFGNodeSet visited;
+        worklist.push(load);
+        bool reachesSource = false;
+        u32_t backwardSteps = 0;
+        const u32_t maxBackwardSteps = Options::SaberUninitMaxBackwardSteps();
+
+        while (!worklist.empty() && backwardSteps++ < maxBackwardSteps)
+        {
+            const SVFGNode* node = worklist.pop();
+            if (!inUninitCandidateSlice(slice, node))
+                continue;
+            if (!visited.insert(node).second)
+                continue;
+
+            if (node == slice->getSource())
+            {
+                reachesSource = true;
+                break;
+            }
+
+            if (node != load && shouldConsiderStoreForLoad(load, node, slice))
+                continue;
+
+            for (auto edge : node->getInEdges())
+            {
+                const SVFGNode* pred = edge->getSrcNode();
+                if (inUninitCandidateSlice(slice, pred) && !shouldConsiderStoreForLoad(load, pred, slice))
+                    worklist.push(pred);
+            }
+        }
+
+        if (reachesSource)
+            candidateLoads.insert(load);
+    }
+}
+
 std::unique_ptr<ProgSlice> UninitChecker::buildStoreBypassGuardSlice(ProgSlice* rawSlice,
                                                                      const SVFGNode* load) const
 {
     auto guardSlice = std::make_unique<ProgSlice>(rawSlice->getSource(), getSaberCondAllocator(), getSVFG());
     BackwardWorkList backwardWorkList;
     SVFGNodeSet reducedBackward;
+    u32_t backwardSteps = 0;
+    const u32_t maxBackwardSteps = Options::SaberUninitMaxBackwardSteps();
 
     if (load == nullptr || !inUninitCandidateSlice(rawSlice, load))
         return nullptr;
@@ -728,7 +1169,7 @@ std::unique_ptr<ProgSlice> UninitChecker::buildStoreBypassGuardSlice(ProgSlice* 
 
     guardSlice->setPartialReachable();
 
-    while (!backwardWorkList.empty())
+    while (!backwardWorkList.empty() && backwardSteps++ < maxBackwardSteps)
     {
         const SVFGNode* node = backwardWorkList.pop();
         if (!inUninitCandidateSlice(rawSlice, node))
@@ -874,26 +1315,11 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         ++saberTimeStat.uninitReportCalls;
     }
 
-    SVFGNodeSet qualifierStateIgnorePtrStore;
-    SVFGNodeSet qualifierStateAllStore;
-
     double phaseStart = 0;
-    if (timeStat)
-    {
-        phaseStart = SVFStat::getClk(true);
-    }
-    computeQualifierInferenceState(rawSlice, true, qualifierStateIgnorePtrStore);
-    computeQualifierInferenceState(rawSlice, false, qualifierStateAllStore);
-    if (timeStat)
-    {
-        double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
-        saberTimeStat.uninitQualifierTime += t;
-    }
-
     SVFGNodeSet candidateLoads;
     if (timeStat)
         phaseStart = SVFStat::getClk(true);
-    collectCandidateLoads(qualifierStateIgnorePtrStore, qualifierStateAllStore, candidateLoads);
+    collectRegionCandidateLoads(rawSlice, candidateLoads);
     if (timeStat)
     {
         double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
