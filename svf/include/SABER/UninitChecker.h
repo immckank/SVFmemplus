@@ -126,14 +126,18 @@ private:
     SVFGNodeSet loadNodes;
     SVFGNodeSet ptrStoreNodes;
     SVFGNodeSet ptrLoadNodes;
+    SVFGNodeSet criticalSinkNodes;
     std::unordered_map<const SVFGNode*, RegionSet> sourceInitialRegions;
     mutable std::unordered_map<const SVFGNode*, RegionSet> loadReadRegionCache;
     mutable std::unordered_map<const SVFGNode*, RegionSet> storeWriteRegionCache;
     mutable std::unordered_map<const SVFGNode*, bool> ignorePtrStoreForLoadCache;
+    u32_t smallInitSkippedSources = 0;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToBoundaries;
     bool isPtrStoreNode(const SVFGNode* node) const;
     bool isPtrLoadNode(const SVFGNode* node) const;
+    bool isCriticalUninitSink(const SVFGNode* load) const;
+    bool flowsToCriticalUseWithinBudget(const SVFGNode* load, u32_t maxSteps) const;
     bool shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const;
     bool isSummaryBoundaryNode(const SVFGNode* node) const;
     u64_t getSummaryKey(const SVFGNode* node, bool ignorePtrStore) const;
@@ -165,7 +169,9 @@ private:
     bool isPtrLoadAddressComputationOnly(const SVFGNode* load) const;
     bool isDirectParameterSpillLoad(const SVFGNode* load) const;
     bool isParameterSpillStackObject(StackObjVar* stackObj, SVFIR* pag) const;
-    bool isTrivialScalarStackObject(const StackObjVar* stackObj) const;
+    bool isSmallDirectlyInitializedStackObject(StackObjVar* stackObj, SVFIR* pag) const;
+    bool isCompositeMemoryObject(const BaseObjVar* obj) const;
+    bool pointeeIncludesCompositeObject(NodeID ptr) const;
     bool isReturnAnchoredICFGNode(const ICFGNode* node) const;
 
 };

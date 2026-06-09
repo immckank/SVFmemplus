@@ -240,7 +240,10 @@ void UninitChecker::analyze()
     const u32_t numSrcs = getSources().size();
     if (progress)
     {
-        outs() << "[UNINIT][analyze-begin] sources=" << numSrcs << "\n";
+        outs() << "[UNINIT][analyze-begin] sources=" << numSrcs
+               << " criticalSinks=" << criticalSinkNodes.size()
+               << " allLoads=" << loadNodes.size()
+               << " smallInitSkipped=" << smallInitSkippedSources << "\n";
         outs().flush();
     }
 
@@ -298,6 +301,7 @@ void UninitChecker::analyze()
             outs() << "[UNINIT][analyze-done] sources=" << numSrcs
                    << " withCandidates=" << saberTimeStat.uninitSourcesWithCandidates
                    << " reported=" << saberTimeStat.uninitReportedSources
+                   << " smallInitSkipped=" << smallInitSkippedSources
                    << " elapsed=" << elapsed << "\n";
             outs().flush();
         }
@@ -335,32 +339,82 @@ bool UninitChecker::isParameterSpillStackObject(StackObjVar* stackObj, SVFIR* pa
     return hasSpillSlot;
 }
 
+bool UninitChecker::isSmallDirectlyInitializedStackObject(StackObjVar* stackObj, SVFIR* pag) const
+{
+    if (stackObj == nullptr || pag == nullptr)
+        return false;
+    if (!stackObj->isConstantByteSize())
+        return false;
+    const u32_t byteSize = stackObj->getByteSizeOfObj();
+    if (byteSize == 0 || byteSize > 16)
+        return false;
+    if (!stackObj->hasOutgoingEdges(SVFStmt::Addr))
+        return false;
+
+    bool hasDirectInitStore = false;
+    for (const SVFStmt* addrStmt : stackObj->getOutgoingEdges(SVFStmt::Addr))
+    {
+        const SVFVar* slotPtr = addrStmt->getDstNode();
+        if (slotPtr == nullptr || !slotPtr->hasIncomingEdges(SVFStmt::Store))
+            continue;
+
+        for (SVFStmt::SVFStmtSetTy::const_iterator sit = slotPtr->getIncomingEdgesBegin(SVFStmt::Store),
+                seit = slotPtr->getIncomingEdgesEnd(SVFStmt::Store); sit != seit; ++sit)
+        {
+            const StoreStmt* store = SVFUtil::dyn_cast<StoreStmt>(*sit);
+            if (store == nullptr)
+                continue;
+
+            const SVFVar* rhs = store->getRHSVar();
+            if (rhs == nullptr)
+                continue;
+            if (rhs->isPointer())
+            {
+                RegionSet rhsRegions;
+                if (addPointeeRegions(rhs->getId(), rhsRegions))
+                {
+                    RegionSet objRegions;
+                    if (addObjectRegion(stackObj->getId(), objRegions) &&
+                            regionSetsMayIntersect(rhsRegions, objRegions))
+                        continue;
+                }
+            }
+            hasDirectInitStore = true;
+        }
+    }
+
+    return hasDirectInitStore;
+}
+
 bool UninitChecker::isReturnAnchoredICFGNode(const ICFGNode* node) const
 {
     return ::isReturnAnchoredICFGNode(node);
 }
 
-bool UninitChecker::isTrivialScalarStackObject(const StackObjVar* stackObj) const
+bool UninitChecker::isCompositeMemoryObject(const BaseObjVar* obj) const
 {
-    if (stackObj == nullptr)
-        return true;
-
-    // Keep aggregate and array locals; they are the usual uninit-memory targets.
-    if (stackObj->isVarStruct() || stackObj->isVarArray() || stackObj->isArray())
+    if (obj == nullptr)
         return false;
 
-    if (!stackObj->isConstantByteSize())
+    // ObjTypeInfo flags are set in SymbolTableBuilder::analyzeObjType from LLVM
+    // StructType / ArrayType. Scalars and vector SingleValueTypes are excluded.
+    return obj->isStruct() || obj->isVarStruct() || obj->isArray() || obj->isVarArray();
+}
+
+bool UninitChecker::pointeeIncludesCompositeObject(NodeID ptr) const
+{
+    PointerAnalysis* pta = getSVFG()->getPTA();
+    if (pta == nullptr)
         return false;
 
-    const u32_t byteSize = stackObj->getByteSizeOfObj();
-    if (byteSize == 0 || byteSize > 8)
-        return false;
-
-    // Multi-element stack slots (e.g. alloca i32, 2) may still expose partial uninit reads.
-    if (stackObj->getNumOfElements() > 1)
-        return false;
-
-    return true;
+    const PointsTo& pts = pta->getPts(ptr);
+    for (PointsTo::iterator it = pts.begin(), eit = pts.end(); it != eit; ++it)
+    {
+        const BaseObjVar* baseObj = getPAG()->getBaseObject(*it);
+        if (isCompositeMemoryObject(baseObj))
+            return true;
+    }
+    return false;
 }
 
 UninitChecker::RegionKey UninitChecker::makeWholeRegion(NodeID obj) const
@@ -610,6 +664,7 @@ void UninitChecker::initSrcs()
     sourceInitialRegions.clear();
     loadReadRegionCache.clear();
     storeWriteRegionCache.clear();
+    smallInitSkippedSources = 0;
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
@@ -623,10 +678,15 @@ void UninitChecker::initSrcs()
                 SVFVar* obj = const_cast<SVFVar*>(ld->getSrcNode());
                 if (StackObjVar* stackObj = SVFUtil::dyn_cast<StackObjVar>(obj))
                 {
+                    if (!isCompositeMemoryObject(stackObj))
+                        continue;
                     if (isParameterSpillStackObject(stackObj, pag))
                         continue;
-                    if (isTrivialScalarStackObject(stackObj))
+                    if (isSmallDirectlyInitializedStackObject(stackObj, pag))
+                    {
+                        ++smallInitSkippedSources;
                         continue;
+                    }
                     if (isReturnAnchoredICFGNode(stackObj->getICFGNode()))
                         continue;
                     const SVFGNode* source = getSVFG()->getStmtVFGNode(ld);
@@ -639,6 +699,8 @@ void UninitChecker::initSrcs()
                 else if (HeapObjVar* heapObj = SVFUtil::dyn_cast<HeapObjVar>(obj))
                 {
                     if (isZeroingHeapObject(heapObj))
+                        continue;
+                    if (!isCompositeMemoryObject(heapObj))
                         continue;
                     const SVFGNode* source = getSVFG()->getStmtVFGNode(ld);
                     RegionSet initialRegions;
@@ -692,6 +754,8 @@ void UninitChecker::initSrcs()
                 else if ((Options::RunUncallFuncs() || !cs->getFun()->isUncalledFunction()) &&
                          !isExtCall(cs->getBB()->getParent()))
                 {
+                    if (!pointeeIncludesCompositeObject(pagNode->getId()))
+                        continue;
                     RegionSet initialRegions;
                     if (!addPointeeRegions(pagNode->getId(), initialRegions))
                         continue;
@@ -714,6 +778,7 @@ void UninitChecker::initSnks()
     loadNodes.clear();
     ptrStoreNodes.clear();
     ptrLoadNodes.clear();
+    criticalSinkNodes.clear();
     ignorePtrStoreForLoadCache.clear();
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
@@ -738,12 +803,21 @@ void UninitChecker::initSnks()
             {   
                 if(getSVFG()->hasStmtVFGNode(ld)){
                     const SVFGNode* loadNode = getSVFG()->getStmtVFGNode(ld);
-                    addToSinks(loadNode);
                     addToLoadNodes(loadNode);
                     if (ld->getDstNode()->isPointer())
                         ptrLoadNodes.insert(loadNode);
                 }
             }
+        }
+    }
+
+    for (SVFGNodeSetIter lit = loadNodes.begin(), elit = loadNodes.end(); lit != elit; ++lit)
+    {
+        const SVFGNode* loadNode = *lit;
+        if (isCriticalUninitSink(loadNode))
+        {
+            criticalSinkNodes.insert(loadNode);
+            addToSinks(loadNode);
         }
     }
 }
@@ -756,6 +830,58 @@ bool UninitChecker::isPtrStoreNode(const SVFGNode* node) const
 bool UninitChecker::isPtrLoadNode(const SVFGNode* node) const
 {
     return ptrLoadNodes.find(node) != ptrLoadNodes.end();
+}
+
+bool UninitChecker::isCriticalUninitSink(const SVFGNode* load) const
+{
+    if (loadNodes.find(load) == loadNodes.end())
+        return false;
+
+    constexpr u32_t kMaxCriticalSinkSteps = 32;
+    return flowsToCriticalUseWithinBudget(load, kMaxCriticalSinkSteps);
+}
+
+bool UninitChecker::flowsToCriticalUseWithinBudget(const SVFGNode* load, u32_t maxSteps) const
+{
+    if (load == nullptr)
+        return false;
+
+    const bool ptrLoad = isPtrLoadNode(load);
+    ForwardWorkList worklist;
+    SVFGNodeSet visited;
+    u32_t steps = 0;
+
+    worklist.push(load);
+    while (!worklist.empty() && steps++ < maxSteps)
+    {
+        const SVFGNode* node = worklist.pop();
+        if (!visited.insert(node).second)
+            continue;
+
+        if (SVFUtil::isa<BranchVFGNode>(node))
+            return true;
+
+        if (node != load && ptrLoad &&
+                (SVFUtil::isa<LoadSVFGNode>(node) || SVFUtil::isa<StoreSVFGNode>(node)))
+            return true;
+
+        for (auto edge : node->getOutEdges())
+        {
+            const SVFGNode* succ = edge->getDstNode();
+            if (SVFUtil::isa<CopySVFGNode>(succ) ||
+                    SVFUtil::isa<GepSVFGNode>(succ) ||
+                    SVFUtil::isa<PHISVFGNode>(succ) ||
+                    SVFUtil::isa<CmpVFGNode>(succ) ||
+                    SVFUtil::isa<BinaryOPVFGNode>(succ) ||
+                    SVFUtil::isa<UnaryOPVFGNode>(succ) ||
+                    SVFUtil::isa<BranchVFGNode>(succ) ||
+                    (ptrLoad && (SVFUtil::isa<LoadSVFGNode>(succ) ||
+                                 SVFUtil::isa<StoreSVFGNode>(succ))))
+                worklist.push(succ);
+        }
+    }
+
+    return false;
 }
 
 bool UninitChecker::shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const
@@ -1106,6 +1232,8 @@ void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& c
     {
         const SVFGNode* load = *lit;
         if (loadNodes.find(load) == loadNodes.end())
+            continue;
+        if (criticalSinkNodes.find(load) == criticalSinkNodes.end())
             continue;
         if (!inUninitCandidateSlice(slice, load))
             continue;

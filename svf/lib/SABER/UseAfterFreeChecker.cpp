@@ -186,12 +186,21 @@ void UseAfterFreeChecker::analyze()
 
     initialize();
 
+    if (timeStat)
+    {
+        saberTimeStat.uafNumFreeNodes = freeNodes.size();
+        saberTimeStat.uafNumUseNodes = useNodes.size();
+    }
+
     ContextCond::setMaxCxtLen(Options::CxtLimit());
 
     const u32_t numSrcs = getSources().size();
-    if (progress)
+    if (progress || timeStat)
     {
-        outs() << "[UAF][analyze-begin] sources=" << numSrcs << "\n";
+        outs() << "[UAF][analyze-begin] sources=" << numSrcs
+               << " freeNodes=" << freeNodes.size()
+               << " useNodes=" << useNodes.size()
+               << " allSinks=" << getSinks().size() << "\n";
         outs().flush();
     }
 
@@ -244,8 +253,18 @@ void UseAfterFreeChecker::analyze()
             }
         }
 
-        if (!getCurSlice()->getSinks().empty())
+        if (getCurSlice()->getSinks().empty())
+        {
+            ++saberTimeStat.uafSourcesNoSinks;
+        }
+        else
+        {
             ++saberTimeStat.uafSourcesWithSinks;
+            if (getCurSlice()->getUAFFreeNodes().empty())
+                ++saberTimeStat.uafSourcesNoFreeInSlice;
+            if (getCurSlice()->getUAFUseNodes().empty())
+                ++saberTimeStat.uafSourcesNoUseInSlice;
+        }
 
         reportBug(getCurSlice());
 

@@ -404,6 +404,11 @@ void SrcSnkDDA::printSaberTimeStat() const
         outs() << "UafMaxForwardSlice        " << saberTimeStat.uafMaxForwardSlice << "\n";
         outs() << "UafMaxSliceFreeNodes      " << saberTimeStat.uafMaxSliceFreeNodes << "\n";
         outs() << "UafMaxSliceUseNodes       " << saberTimeStat.uafMaxSliceUseNodes << "\n";
+        outs() << "UafNumFreeNodes           " << saberTimeStat.uafNumFreeNodes << "\n";
+        outs() << "UafNumUseNodes            " << saberTimeStat.uafNumUseNodes << "\n";
+        outs() << "UafSourcesNoSinks         " << saberTimeStat.uafSourcesNoSinks << "\n";
+        outs() << "UafSourcesNoFreeInSlice   " << saberTimeStat.uafSourcesNoFreeInSlice << "\n";
+        outs() << "UafSourcesNoUseInSlice    " << saberTimeStat.uafSourcesNoUseInSlice << "\n";
     }
     if (Options::UninitCheck())
     {

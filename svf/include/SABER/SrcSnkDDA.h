@@ -117,6 +117,11 @@ protected:
         u32_t uafMaxForwardSlice = 0;
         u32_t uafMaxSliceFreeNodes = 0;
         u32_t uafMaxSliceUseNodes = 0;
+        u32_t uafNumFreeNodes = 0;
+        u32_t uafNumUseNodes = 0;
+        u32_t uafSourcesNoSinks = 0;
+        u32_t uafSourcesNoFreeInSlice = 0;
+        u32_t uafSourcesNoUseInSlice = 0;
     };
     SaberTimeStat saberTimeStat;
 
