@@ -107,6 +107,16 @@ protected:
         u32_t uninitMaxCandidateLoads = 0;
         u32_t uninitMaxForwardSlice = 0;
         u32_t uninitMaxGuardBackwardSlice = 0;
+        double uafReportTime = 0;
+        double uafPairCheckTime = 0;
+        u32_t uafReportCalls = 0;
+        u32_t uafSourcesWithSinks = 0;
+        u32_t uafReportedSources = 0;
+        u64_t uafTotalPairChecks = 0;
+        u32_t uafMaxPairChecks = 0;
+        u32_t uafMaxForwardSlice = 0;
+        u32_t uafMaxSliceFreeNodes = 0;
+        u32_t uafMaxSliceUseNodes = 0;
     };
     SaberTimeStat saberTimeStat;
 

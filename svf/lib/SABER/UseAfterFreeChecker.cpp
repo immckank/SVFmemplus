@@ -3,10 +3,15 @@
 #include "SABER/SaberCheckerAPI.h"
 #include "SVFIR/SVFIR.h"
 #include "Util/SVFUtil.h"
+#include "Util/SVFStat.h"
+#include "Util/Options.h"
 #include "SABER/ProgSlice.h"
 
 using namespace SVF;
 using namespace SVFUtil;
+
+static constexpr double kSlowSourceReportSec = 1.0;
+static constexpr double kSlowPairCheckSec = 3.0;
 
 void UseAfterFreeChecker::setCurSlice(const SVFGNode* src)
 {
@@ -167,7 +172,123 @@ bool hasLoopBackEdge(const ICFGNode* src, const ICFGNode* dst) {
 }
 
 
+void UseAfterFreeChecker::analyze()
+{
+    const bool progress = Options::UAFCheck();
+    const bool timeStat = Options::SaberTimeStat();
+    double totalStart = 0;
+    double nextProgressTime = 0;
+    if (progress || timeStat)
+    {
+        totalStart = SVFStat::getClk(true);
+        nextProgressTime = totalStart + 5 * TIMEINTERVAL;
+    }
+
+    initialize();
+
+    ContextCond::setMaxCxtLen(Options::CxtLimit());
+
+    const u32_t numSrcs = getSources().size();
+    if (progress)
+    {
+        outs() << "[UAF][analyze-begin] sources=" << numSrcs << "\n";
+        outs().flush();
+    }
+
+    u32_t sourceIndex = 0;
+    for (SVFGNodeSetIter iter = sourcesBegin(), eiter = sourcesEnd();
+            iter != eiter; ++iter)
+    {
+        ++sourceIndex;
+        setCurSlice(*iter);
+
+        ContextCond cxt;
+        DPIm item((*iter)->getId(), cxt);
+
+        double fwdStart = 0;
+        if (timeStat)
+            fwdStart = SVFStat::getClk(true);
+        forwardTraverse(item);
+        if (timeStat)
+        {
+            saberTimeStat.forwardTraverseTime += (SVFStat::getClk(true) - fwdStart) / TIMEINTERVAL;
+            saberTimeStat.numSinks += getCurSlice()->getSinks().size();
+            if (getCurSlice()->getForwardSliceSize() > saberTimeStat.uafMaxForwardSlice)
+                saberTimeStat.uafMaxForwardSlice = getCurSlice()->getForwardSliceSize();
+        }
+
+        if (!(enableReachGlobalPrune() && getCurSlice()->isReachGlobal()))
+        {
+            double bwStart = 0;
+            if (timeStat)
+                bwStart = SVFStat::getClk(true);
+            for (SVFGNodeSetIter sit = getCurSlice()->sinksBegin(), esit =
+                        getCurSlice()->sinksEnd(); sit != esit; ++sit)
+            {
+                ContextCond bwCxt;
+                DPIm bwItem((*sit)->getId(), bwCxt);
+                backwardTraverse(bwItem);
+            }
+            if (timeStat)
+                saberTimeStat.backwardTraverseTime += (SVFStat::getClk(true) - bwStart) / TIMEINTERVAL;
+
+            if (needDefaultAllPathSolve())
+            {
+                double solveStart = 0;
+                if (timeStat)
+                    solveStart = SVFStat::getClk(true);
+                if (getCurSlice()->AllPathReachableSolve())
+                    getCurSlice()->setAllReachable();
+                if (timeStat)
+                    saberTimeStat.solveTime += (SVFStat::getClk(true) - solveStart) / TIMEINTERVAL;
+            }
+        }
+
+        if (!getCurSlice()->getSinks().empty())
+            ++saberTimeStat.uafSourcesWithSinks;
+
+        reportBug(getCurSlice());
+
+        if (progress)
+        {
+            const double now = SVFStat::getClk(true);
+            if (now >= nextProgressTime || sourceIndex == numSrcs)
+            {
+                outs() << "[UAF][source-progress] index=" << sourceIndex
+                       << "/" << numSrcs
+                       << " elapsed=" << (now - totalStart) / TIMEINTERVAL
+                       << " withSinks=" << saberTimeStat.uafSourcesWithSinks
+                       << " reported=" << saberTimeStat.uafReportedSources
+                       << "\n";
+                outs().flush();
+                nextProgressTime = now + 5 * TIMEINTERVAL;
+            }
+        }
+    }
+
+    if (progress || timeStat)
+    {
+        const double elapsed = (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL;
+        if (timeStat)
+            saberTimeStat.totalTime = elapsed;
+        if (progress)
+        {
+            outs() << "[UAF][analyze-done] sources=" << numSrcs
+                   << " withSinks=" << saberTimeStat.uafSourcesWithSinks
+                   << " reported=" << saberTimeStat.uafReportedSources
+                   << " elapsed=" << elapsed << "\n";
+            outs().flush();
+        }
+    }
+    finalize();
+}
+
 bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, GenericBug::EventStack& eventStack){
+    const bool timeStat = Options::SaberTimeStat();
+    double checkStart = 0;
+    if (timeStat)
+        checkStart = SVFStat::getClk(true);
+
     bool flag = true;
     const SVFGNodeSet* freeSet = &freeNodes;
     const SVFGNodeSet* useSet = &useNodes;
@@ -176,10 +297,14 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, Gene
         freeSet = &slice->getUAFFreeNodes();
         useSet = &slice->getUAFUseNodes();
     }
+
+    u32_t pairChecks = 0;
+    u32_t feasiblePairs = 0;
     for(SVFGNodeSetIter fit = freeSet->begin(), efit = freeSet->end(); fit!=efit; ++fit)
     {
         for(SVFGNodeSetIter uit = useSet->begin(), euit = useSet->end(); uit!=euit; ++uit)
         {
+            ++pairChecks;
             ProgSlice::Condition guard = slice->condAnd(slice->getVFCond(*fit),slice->getVFCond(*uit));
             if(!slice->isEquivalentBranchCond(guard, slice->getFalseCond()))
             {
@@ -194,9 +319,35 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, Gene
                 slice->setFinalCond(slice->getVFCond(*uit));
                 slice->evalFinalCond2Event(eventStack);
                 flag = false;
+                ++feasiblePairs;
 
                 if(hasLoopBackEdge(ficfg, uicfg)) eventStack.push_back(SVFBugEvent(SVFBugEvent::PotentialLoop, ficfg));
             }
+        }
+    }
+
+    if (timeStat)
+    {
+        double t = (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL;
+        saberTimeStat.uafPairCheckTime += t;
+        saberTimeStat.uafTotalPairChecks += pairChecks;
+        if (pairChecks > saberTimeStat.uafMaxPairChecks)
+            saberTimeStat.uafMaxPairChecks = pairChecks;
+        if (freeSet->size() > saberTimeStat.uafMaxSliceFreeNodes)
+            saberTimeStat.uafMaxSliceFreeNodes = freeSet->size();
+        if (useSet->size() > saberTimeStat.uafMaxSliceUseNodes)
+            saberTimeStat.uafMaxSliceUseNodes = useSet->size();
+        if (t >= kSlowPairCheckSec)
+        {
+            outs() << "[UAF][pair-check-slow] source=" << slice->getSource()->getId()
+                   << " freeNodes=" << freeSet->size()
+                   << " useNodes=" << useSet->size()
+                   << " pairChecks=" << pairChecks
+                   << " feasible=" << feasiblePairs
+                   << " time=" << t
+                   << " hit=" << (flag ? 0 : 1)
+                   << "\n";
+            outs().flush();
         }
     }
 
@@ -205,11 +356,35 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, Gene
 
 void UseAfterFreeChecker::reportBug(ProgSlice* slice)
 {
+    const bool timeStat = Options::SaberTimeStat();
+    double reportStart = 0;
+    if (timeStat)
+    {
+        reportStart = SVFStat::getClk(true);
+        ++saberTimeStat.uafReportCalls;
+    }
+
     GenericBug::EventStack eventStack;
 
     if(!isSatisfiableForFreeAndUsePairs(slice, eventStack))
     {
         eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource())));
         report.addSaberBug(GenericBug::USEAFTERFREE, eventStack);
+        ++saberTimeStat.uafReportedSources;
+    }
+
+    if (timeStat)
+    {
+        const double reportTime = (SVFStat::getClk(true) - reportStart) / TIMEINTERVAL;
+        saberTimeStat.uafReportTime += reportTime;
+        if (reportTime >= kSlowSourceReportSec)
+        {
+            outs() << "[UAF][source-slow] source=" << slice->getSource()->getId()
+                   << " reportTime=" << reportTime
+                   << " forwardSlice=" << slice->getForwardSliceSize()
+                   << " sinks=" << slice->getSinks().size()
+                   << "\n";
+            outs().flush();
+        }
     }
 }

@@ -392,6 +392,19 @@ void SrcSnkDDA::printSaberTimeStat() const
     outs() << "NumSinks                  " << saberTimeStat.numSinks << "\n";
     outs() << "BackwardTraverseTime(sec) " << saberTimeStat.backwardTraverseTime << "\n";
     outs() << "SolveTime(sec)            " << saberTimeStat.solveTime << "\n";
+    if (Options::UAFCheck())
+    {
+        outs() << "UafReportTime(sec)        " << saberTimeStat.uafReportTime << "\n";
+        outs() << "UafPairCheckTime(sec)     " << saberTimeStat.uafPairCheckTime << "\n";
+        outs() << "UafReportCalls            " << saberTimeStat.uafReportCalls << "\n";
+        outs() << "UafSourcesWithSinks       " << saberTimeStat.uafSourcesWithSinks << "\n";
+        outs() << "UafReportedSources        " << saberTimeStat.uafReportedSources << "\n";
+        outs() << "UafTotalPairChecks        " << saberTimeStat.uafTotalPairChecks << "\n";
+        outs() << "UafMaxPairChecks          " << saberTimeStat.uafMaxPairChecks << "\n";
+        outs() << "UafMaxForwardSlice        " << saberTimeStat.uafMaxForwardSlice << "\n";
+        outs() << "UafMaxSliceFreeNodes      " << saberTimeStat.uafMaxSliceFreeNodes << "\n";
+        outs() << "UafMaxSliceUseNodes       " << saberTimeStat.uafMaxSliceUseNodes << "\n";
+    }
     if (Options::UninitCheck())
     {
         outs() << "UninitReportTime(sec)     " << saberTimeStat.uninitReportTime << "\n";

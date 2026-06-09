@@ -223,10 +223,11 @@ bool UninitChecker::runOnModule(SVFIR* pag) {
 
 void UninitChecker::analyze()
 {
+    const bool progress = Options::UninitCheck();
     const bool timeStat = Options::SaberTimeStat();
     double totalStart = 0;
     double nextProgressTime = 0;
-    if (timeStat)
+    if (progress || timeStat)
     {
         totalStart = SVFStat::getClk(true);
         nextProgressTime = totalStart + 5 * TIMEINTERVAL;
@@ -236,9 +237,10 @@ void UninitChecker::analyze()
 
     ContextCond::setMaxCxtLen(Options::CxtLimit());
 
-    if (timeStat)
+    const u32_t numSrcs = getSources().size();
+    if (progress)
     {
-        outs() << "[UNINIT][analyze-begin] sources=" << saberTimeStat.numSrcs << "\n";
+        outs() << "[UNINIT][analyze-begin] sources=" << numSrcs << "\n";
         outs().flush();
     }
 
@@ -269,13 +271,13 @@ void UninitChecker::analyze()
             continue;
 
         reportBug(getCurSlice());
-        if (timeStat)
+        if (progress)
         {
             const double now = SVFStat::getClk(true);
-            if (now >= nextProgressTime || sourceIndex == saberTimeStat.numSrcs)
+            if (now >= nextProgressTime || sourceIndex == numSrcs)
             {
                 outs() << "[UNINIT][source-progress] index=" << sourceIndex
-                       << "/" << saberTimeStat.numSrcs
+                       << "/" << numSrcs
                        << " elapsed=" << (now - totalStart) / TIMEINTERVAL
                        << " withCandidates=" << saberTimeStat.uninitSourcesWithCandidates
                        << " reported=" << saberTimeStat.uninitReportedSources
@@ -286,14 +288,19 @@ void UninitChecker::analyze()
         }
     }
 
-    if (timeStat)
+    if (progress || timeStat)
     {
-        saberTimeStat.totalTime = (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL;
-        outs() << "[UNINIT][analyze-done] sources=" << saberTimeStat.numSrcs
-               << " withCandidates=" << saberTimeStat.uninitSourcesWithCandidates
-               << " reported=" << saberTimeStat.uninitReportedSources
-               << " elapsed=" << saberTimeStat.totalTime << "\n";
-        outs().flush();
+        const double elapsed = (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL;
+        if (timeStat)
+            saberTimeStat.totalTime = elapsed;
+        if (progress)
+        {
+            outs() << "[UNINIT][analyze-done] sources=" << numSrcs
+                   << " withCandidates=" << saberTimeStat.uninitSourcesWithCandidates
+                   << " reported=" << saberTimeStat.uninitReportedSources
+                   << " elapsed=" << elapsed << "\n";
+            outs().flush();
+        }
     }
     finalize();
 }
@@ -1345,8 +1352,7 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         finishReport(0);
         return;
     }
-    if (timeStat)
-        ++saberTimeStat.uninitSourcesWithCandidates;
+    ++saberTimeStat.uninitSourcesWithCandidates;
 
     GenericBug::EventStack eventStack;
     u32_t candidateIndex = 0;
@@ -1408,8 +1414,7 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         }
         eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, sourceICFG));
         report.addSaberBug(GenericBug::UNINIT, eventStack);
-        if (timeStat)
-            ++saberTimeStat.uninitReportedSources;
+        ++saberTimeStat.uninitReportedSources;
     }
     finishReport(candidateLoads.size());
 }

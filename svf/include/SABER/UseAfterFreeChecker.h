@@ -33,6 +33,8 @@ public:
         return false;
     }
 
+    virtual void analyze() override;
+
     /// Report file/close bugs
     void reportBug(ProgSlice* slice) override;
 
