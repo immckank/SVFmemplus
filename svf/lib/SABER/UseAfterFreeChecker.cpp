@@ -124,6 +124,7 @@ static void collectReachableUsesFromFree(
     const ICFGNode* start,
     const std::unordered_map<const ICFGNode*, std::vector<const SVFGNode*>>& usesByICFGNode,
     const size_t totalIndexedUses,
+    const size_t maxVisitedNodes,
     std::vector<const SVFGNode*>& outUses)
 {
     if (start == nullptr || usesByICFGNode.empty() || totalIndexedUses == 0)
@@ -133,6 +134,7 @@ static void collectReachableUsesFromFree(
     std::deque<const ICFGNode*> worklist;
     worklist.push_back(start);
 
+    size_t visitedNodes = 0;
     while (!worklist.empty())
     {
         const ICFGNode* node = worklist.front();
@@ -140,6 +142,9 @@ static void collectReachableUsesFromFree(
 
         if (!visited.insert(node).second)
             continue;
+        ++visitedNodes;
+        if (visitedNodes >= maxVisitedNodes)
+            return;
 
         auto it = usesByICFGNode.find(node);
         if (it != usesByICFGNode.end())
@@ -351,7 +356,8 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, Gene
             continue;
 
         std::vector<const SVFGNode*> reachableUses;
-        collectReachableUsesFromFree(ficfg, usesByICFGNode, totalIndexedUses, reachableUses);
+        const size_t maxVisitedNodes = Options::SaberUAFReachMaxNodes();
+        collectReachableUsesFromFree(ficfg, usesByICFGNode, totalIndexedUses, maxVisitedNodes, reachableUses);
 
         for (const SVFGNode* useNode : reachableUses)
         {

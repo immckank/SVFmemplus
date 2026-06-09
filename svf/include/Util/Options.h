@@ -283,6 +283,8 @@ public:
     static const Option<u32_t> SaberUninitMaxBackwardSteps;
     // Print SABER phase timing statistics, Default: false
     static const Option<bool> SaberTimeStat;
+    // UAF: Maximum number of ICFG nodes visited per free when collecting reachable uses, Default: 50000
+    static const Option<u32_t> SaberUAFReachMaxNodes;
 
     // GraphReader
     static const Option<std::string> FindCallSites;

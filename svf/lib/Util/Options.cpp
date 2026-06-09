@@ -981,5 +981,10 @@ const Option<bool> Options::SaberTimeStat(
     "Print SABER phase timing statistics (src/sink collection, traverse, solve)",
     false
 );
+const Option<u32_t> Options::SaberUAFReachMaxNodes(
+    "saber-uaf-reach-max-nodes",
+    "UAF: max ICFG nodes visited per free when collecting reachable uses (hard cutoff)",
+    50000
+);
 
 } // namespace SVF.
