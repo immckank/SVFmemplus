@@ -385,6 +385,8 @@ private:
     SaberCondAllocator* pathAllocator;		///<  path condition allocator
     const SVFGNode* _curSVFGNode;			///<  current svfg node during guard computation
     Condition finalCond;					///<  final condition
+    const SVFGNode* pairedSinkA;			///<  first sink in a satisfiable sink pair
+    const SVFGNode* pairedSinkB;			///<  second sink in a satisfiable sink pair
     const SVFG* svfg;						///<  SVFG
     bool uafNodeTracking;
     SVFGNodeSet uafFreeNodes;
