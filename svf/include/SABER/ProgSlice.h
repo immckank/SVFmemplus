@@ -68,7 +68,8 @@ public:
     /// Constructor
     ProgSlice(const SVFGNode* src, SaberCondAllocator* pa, const SVFG* graph):
         root(src), partialReachable(false), fullReachable(false), reachGlob(false),
-        pathAllocator(pa), _curSVFGNode(nullptr), finalCond(pa->getFalseCond()), svfg(graph),
+        pathAllocator(pa), _curSVFGNode(nullptr), finalCond(pa->getFalseCond()),
+        pairedSinkA(nullptr), pairedSinkB(nullptr), svfg(graph),
         uafNodeTracking(false)
     {
     }
@@ -175,6 +176,21 @@ public:
     bool AllPathReachableSolve(bool runAllPathCheck = true);
     bool isSatisfiableForAll();
     bool isSatisfiableForPairs();
+
+    inline bool hasSatisfiableSinkPair() const
+    {
+        return pairedSinkA != nullptr && pairedSinkB != nullptr;
+    }
+
+    inline const SVFGNode* getFirstSatisfiableSink() const
+    {
+        return pairedSinkA;
+    }
+
+    inline const SVFGNode* getSecondSatisfiableSink() const
+    {
+        return pairedSinkB;
+    }
 
     /// Get callsite ID and get returnsiteID from SVFGEdge
     //@{
@@ -324,6 +340,18 @@ protected:
     inline void setFinalCond(const Condition &cond)
     {
         finalCond = cond;
+    }
+
+    inline void clearSatisfiableSinkPair()
+    {
+        pairedSinkA = nullptr;
+        pairedSinkB = nullptr;
+    }
+
+    inline void setSatisfiableSinkPair(const SVFGNode* first, const SVFGNode* second)
+    {
+        pairedSinkA = first;
+        pairedSinkB = second;
     }
 
     inline void addToUAFFreeNodes(const SVFGNode* node)

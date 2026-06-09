@@ -2,6 +2,8 @@
 #include "SABER/UninitChecker.h"
 #include "SABER/SaberCheckerAPI.h"
 #include "SVFIR/SVFIR.h"
+#include "SVFIR/SVFType.h"
+#include "Util/SVFStat.h"
 #include "Util/SVFUtil.h"
 #include "SABER/ProgSlice.h"
 #include "Util/WorkList.h"
@@ -26,6 +28,9 @@ typedef FIFOWorkList<const SVFGNode*> ForwardWorkList;
  * - Fall back to an event location in the current path if needed.
  * - As a last resort, anchor at the containing function entry.
  */
+static constexpr double kSlowSourceReportSec = 1.0;
+static constexpr double kSlowPathCheckSec = 3.0;
+
 static const ICFGNode* getBugEventICFGNode(const SVFGNode* node)
 {
     return node == nullptr ? nullptr : node->getICFGNode();
@@ -180,26 +185,103 @@ bool UninitChecker::runOnModule(SVFIR* pag) {
     return false;
 }
 
+void UninitChecker::analyze()
+{
+    const bool timeStat = Options::SaberTimeStat();
+    double totalStart = 0;
+    double nextProgressTime = 0;
+    if (timeStat)
+    {
+        totalStart = SVFStat::getClk(true);
+        nextProgressTime = totalStart + 5 * TIMEINTERVAL;
+    }
+
+    initialize();
+
+    ContextCond::setMaxCxtLen(Options::CxtLimit());
+
+    if (timeStat)
+    {
+        outs() << "[UNINIT][analyze-begin] sources=" << saberTimeStat.numSrcs << "\n";
+        outs().flush();
+    }
+
+    u32_t sourceIndex = 0;
+    for (SVFGNodeSetIter iter = sourcesBegin(), eiter = sourcesEnd();
+            iter != eiter; ++iter)
+    {
+        ++sourceIndex;
+        setCurSlice(*iter);
+
+        ContextCond cxt;
+        DPIm item((*iter)->getId(), cxt);
+
+        double fwdStart = 0;
+        if (timeStat)
+            fwdStart = SVFStat::getClk(true);
+        forwardTraverse(item);
+        if (timeStat)
+        {
+            saberTimeStat.forwardTraverseTime += (SVFStat::getClk(true) - fwdStart) / TIMEINTERVAL;
+            saberTimeStat.numSinks += getCurSlice()->getSinks().size();
+            if (getCurSlice()->getForwardSliceSize() > saberTimeStat.uninitMaxForwardSlice)
+                saberTimeStat.uninitMaxForwardSlice = getCurSlice()->getForwardSliceSize();
+
+        }
+
+        reportBug(getCurSlice());
+        if (timeStat)
+        {
+            const double now = SVFStat::getClk(true);
+            if (now >= nextProgressTime || sourceIndex == saberTimeStat.numSrcs)
+            {
+                outs() << "[UNINIT][source-progress] index=" << sourceIndex
+                       << "/" << saberTimeStat.numSrcs
+                       << " elapsed=" << (now - totalStart) / TIMEINTERVAL
+                       << " withCandidates=" << saberTimeStat.uninitSourcesWithCandidates
+                       << " reported=" << saberTimeStat.uninitReportedSources
+                       << "\n";
+                outs().flush();
+                nextProgressTime = now + 5 * TIMEINTERVAL;
+            }
+        }
+    }
+
+    if (timeStat)
+    {
+        saberTimeStat.totalTime = (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL;
+        outs() << "[UNINIT][analyze-done] sources=" << saberTimeStat.numSrcs
+               << " withCandidates=" << saberTimeStat.uninitSourcesWithCandidates
+               << " reported=" << saberTimeStat.uninitReportedSources
+               << " elapsed=" << saberTimeStat.totalTime << "\n";
+        outs().flush();
+    }
+    finalize();
+}
+
 void UninitChecker::initSrcs()
 {
     SVFIR* pag = getPAG();
 
+    summaryBoundaryToLoads.clear();
+    summaryBoundaryToBoundaries.clear();
+    ignorePtrStoreForLoadCache.clear();
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
         SVFVar* var = it->second;
+        if (!var->hasOutgoingEdges(SVFStmt::Addr))
+            continue;
 
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Addr))
         {
             if(getSVFG()->hasStmtVFGNode(ld)){
-                SVFGNode* addrVFGNode = getSVFG()->getStmtVFGNode(ld);
-                
-                if(addrVFGNode->toString().find("alloca") != std::string::npos){
+                const SVFVar* obj = ld->getSrcNode();
+                if (SVFUtil::isa<StackObjVar>(obj)){
                     addToSources(getSVFG()->getStmtVFGNode(ld));
                 }
             }
         }
-            
     }
 }
 
@@ -210,47 +292,57 @@ void UninitChecker::initSnks()
 {
     SVFIR* pag = getPAG();
 
+    storeNodes.clear();
+    loadNodes.clear();
+    ptrStoreNodes.clear();
+    ptrLoadNodes.clear();
+    ignorePtrStoreForLoadCache.clear();
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
         SVFVar* var = it->second;
 
-        for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Store))
+        if (var->hasOutgoingEdges(SVFStmt::Store))
         {
-            if(getSVFG()->hasStmtVFGNode(ld)){
-                addToStoreNodes(getSVFG()->getStmtVFGNode(ld));
+            for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Store))
+            {
+                if(getSVFG()->hasStmtVFGNode(ld)){
+                    const SVFGNode* storeNode = getSVFG()->getStmtVFGNode(ld);
+                    addToStoreNodes(storeNode);
+                    if (ld->getSrcNode()->isPointer())
+                        ptrStoreNodes.insert(storeNode);
+                }
             }
         }
-        for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Load))
-        {   
-            if(getSVFG()->hasStmtVFGNode(ld)){
-                addToSinks(getSVFG()->getStmtVFGNode(ld));
-                addToLoadNodes(getSVFG()->getStmtVFGNode(ld));
+        if (var->hasOutgoingEdges(SVFStmt::Load))
+        {
+            for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Load))
+            {   
+                if(getSVFG()->hasStmtVFGNode(ld)){
+                    const SVFGNode* loadNode = getSVFG()->getStmtVFGNode(ld);
+                    addToSinks(loadNode);
+                    addToLoadNodes(loadNode);
+                    if (ld->getDstNode()->isPointer())
+                        ptrLoadNodes.insert(loadNode);
+                }
             }
         }
-            
     }
+}
+
+bool UninitChecker::isPtrStoreNode(const SVFGNode* node) const
+{
+    return ptrStoreNodes.find(node) != ptrStoreNodes.end();
+}
+
+bool UninitChecker::isPtrLoadNode(const SVFGNode* node) const
+{
+    return ptrLoadNodes.find(node) != ptrLoadNodes.end();
 }
 
 bool UninitChecker::shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const
 {
     return shouldConsiderStoreForMode(store, slice, shouldIgnorePtrStoreForLoad(load));
-}
-
-bool UninitChecker::isLoadCoveredByStores(ProgSlice* guardSlice,
-                                          const SVFGNode* load,
-                                          const SVFGNodeSet& curStoreSet) const
-{
-    auto& solver = ProgSlice::Condition::getSolver();
-    solver.push();
-    solver.add(guardSlice->getVFCond(load).getExpr());
-
-    for (SVFGNodeSetIter sit = curStoreSet.begin(), esit = curStoreSet.end(); sit != esit; ++sit)
-        solver.add(!guardSlice->getVFCond(*sit).getExpr());
-
-    z3::check_result res = solver.check();
-    solver.pop();
-    return res == z3::unsat;
 }
 
 bool UninitChecker::shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const
@@ -259,7 +351,7 @@ bool UninitChecker::shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool
         return false;
     if (!ignorePtrStore)
         return true;
-    return node->toString().find("store ptr") == std::string::npos;
+    return !isPtrStoreNode(node);
 }
 
 bool UninitChecker::isSummaryBoundaryNode(const SVFGNode* node) const
@@ -278,15 +370,17 @@ u64_t UninitChecker::getSummaryKey(const SVFGNode* node, bool ignorePtrStore) co
     return key;
 }
 
-void UninitChecker::getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore, SVFGNodeSet& reachableLoads, SVFGNodeSet& nextBoundaries)
+void UninitChecker::getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore,
+                                                 const SVFGNodeSet*& reachableLoads,
+                                                 const SVFGNodeSet*& nextBoundaries)
 {
     u64_t key = getSummaryKey(boundary, ignorePtrStore);
     auto itLoad = summaryBoundaryToLoads.find(key);
     auto itBoundary = summaryBoundaryToBoundaries.find(key);
     if (itLoad != summaryBoundaryToLoads.end() && itBoundary != summaryBoundaryToBoundaries.end())
     {
-        reachableLoads = itLoad->second;
-        nextBoundaries = itBoundary->second;
+        reachableLoads = &itLoad->second;
+        nextBoundaries = &itBoundary->second;
         return;
     }
 
@@ -324,30 +418,46 @@ void UninitChecker::getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool 
 
     summaryBoundaryToLoads[key] = localLoads;
     summaryBoundaryToBoundaries[key] = localBoundaries;
-    reachableLoads = summaryBoundaryToLoads[key];
-    nextBoundaries = summaryBoundaryToBoundaries[key];
+    reachableLoads = &summaryBoundaryToLoads[key];
+    nextBoundaries = &summaryBoundaryToBoundaries[key];
 }
 
 bool UninitChecker::shouldIgnorePtrStoreForLoad(const SVFGNode* load) const
 {
-    if (load->toString().find("load ptr") == std::string::npos)
+    auto cached = ignorePtrStoreForLoadCache.find(load);
+    if (cached != ignorePtrStoreForLoadCache.end())
+        return cached->second;
+
+    bool ignorePtrStore = true;
+    if (!isPtrLoadNode(load))
+    {
+        ignorePtrStoreForLoadCache[load] = ignorePtrStore;
         return true;
+    }
 
     for (auto edge : load->getOutEdges())
     {
         SVFGNode* next = edge->getDstNode();
         if (ActualParmVFGNode::classof(next) && next->getOutEdges().empty())
+        {
+            ignorePtrStoreForLoadCache[load] = ignorePtrStore;
             return true;
+        }
     }
-    return false;
+    ignorePtrStore = false;
+    ignorePtrStoreForLoadCache[load] = ignorePtrStore;
+    return ignorePtrStore;
 }
 
 bool UninitChecker::shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const
 {
+    if (storeNodes.find(store) == storeNodes.end())
+        return false;
+
     if (!ignorePtrStore)
         return true;
 
-    if (store->toString().find("store ptr") == std::string::npos)
+    if (!isPtrStoreNode(store))
         return true;
 
     bool formal_param = false;
@@ -363,6 +473,11 @@ bool UninitChecker::shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice*
     return cur_alloc && formal_param;
 }
 
+bool UninitChecker::inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const
+{
+    return slice->inBackwardSlice(node) || slice->inForwardSlice(node);
+}
+
 void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable)
 {
     mayUninitReachable.clear();
@@ -374,25 +489,25 @@ void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignore
     while (!workList.empty())
     {
         const SVFGNode* node = workList.pop();
-        if (!slice->inBackwardSlice(node))
+        if (!inUninitCandidateSlice(slice, node))
             continue;
         if (!mayUninitReachable.insert(node).second)
             continue;
 
         if (isSummaryBoundaryNode(node))
         {
-            SVFGNodeSet summaryLoads;
-            SVFGNodeSet summaryBoundaries;
+            const SVFGNodeSet* summaryLoads = nullptr;
+            const SVFGNodeSet* summaryBoundaries = nullptr;
             getOrBuildSummaryForBoundary(node, ignorePtrStore, summaryLoads, summaryBoundaries);
 
-            for (SVFGNodeSetIter lit = summaryLoads.begin(), elit = summaryLoads.end(); lit != elit; ++lit)
+            for (SVFGNodeSetIter lit = summaryLoads->begin(), elit = summaryLoads->end(); lit != elit; ++lit)
             {
-                if (slice->inBackwardSlice(*lit))
+                if (inUninitCandidateSlice(slice, *lit))
                     mayUninitReachable.insert(*lit);
             }
-            for (SVFGNodeSetIter bit = summaryBoundaries.begin(), ebit = summaryBoundaries.end(); bit != ebit; ++bit)
+            for (SVFGNodeSetIter bit = summaryBoundaries->begin(), ebit = summaryBoundaries->end(); bit != ebit; ++bit)
             {
-                if (slice->inBackwardSlice(*bit))
+                if (inUninitCandidateSlice(slice, *bit))
                     workList.push(*bit);
             }
             continue;
@@ -401,7 +516,7 @@ void UninitChecker::computeQualifierInferenceState(ProgSlice* slice, bool ignore
         for (auto edge : node->getOutEdges())
         {
             const SVFGNode* succ = edge->getDstNode();
-            if (!slice->inBackwardSlice(succ))
+            if (!inUninitCandidateSlice(slice, succ))
                 continue;
             if (shouldConsiderStoreForSummaryMode(succ, ignorePtrStore))
                 continue;
@@ -433,31 +548,27 @@ void UninitChecker::collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnor
     }
 }
 
-std::unique_ptr<ProgSlice> UninitChecker::buildGuardSlice(ProgSlice* rawSlice,
-                                                           const SVFGNodeSet& candidateLoads) const
+std::unique_ptr<ProgSlice> UninitChecker::buildStoreBypassGuardSlice(ProgSlice* rawSlice,
+                                                                     const SVFGNode* load) const
 {
     auto guardSlice = std::make_unique<ProgSlice>(rawSlice->getSource(), getSaberCondAllocator(), getSVFG());
     BackwardWorkList backwardWorkList;
     SVFGNodeSet reducedBackward;
 
-    for (SVFGNodeSetIter lit = candidateLoads.begin(), elit = candidateLoads.end(); lit != elit; ++lit)
-    {
-        const SVFGNode* load = *lit;
-        if (!rawSlice->inBackwardSlice(load))
-            continue;
-        guardSlice->addToSinks(load);
-        backwardWorkList.push(load);
-    }
-
-    if (guardSlice->getSinks().empty())
+    if (load == nullptr || !inUninitCandidateSlice(rawSlice, load))
         return nullptr;
+
+    guardSlice->addToSinks(load);
+    backwardWorkList.push(load);
 
     guardSlice->setPartialReachable();
 
     while (!backwardWorkList.empty())
     {
         const SVFGNode* node = backwardWorkList.pop();
-        if (!rawSlice->inBackwardSlice(node))
+        if (!inUninitCandidateSlice(rawSlice, node))
+            continue;
+        if (node != load && shouldConsiderStoreForLoad(load, node, rawSlice))
             continue;
         if (!reducedBackward.insert(node).second)
             continue;
@@ -465,7 +576,7 @@ std::unique_ptr<ProgSlice> UninitChecker::buildGuardSlice(ProgSlice* rawSlice,
         for (auto edge : node->getInEdges())
         {
             const SVFGNode* pre = edge->getSrcNode();
-            if (rawSlice->inBackwardSlice(pre))
+            if (inUninitCandidateSlice(rawSlice, pre) && !shouldConsiderStoreForLoad(load, pre, rawSlice))
                 backwardWorkList.push(pre);
         }
     }
@@ -476,84 +587,242 @@ std::unique_ptr<ProgSlice> UninitChecker::buildGuardSlice(ProgSlice* rawSlice,
     return guardSlice;
 }
 
-bool UninitChecker::isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardSlice,
-                                          const SVFGNodeSet& candidateLoads,
-                                          const SVFGNodeSet& qualifierStateIgnorePtrStore,
-                                          const SVFGNodeSet& qualifierStateAllStore,
-                                          GenericBug::EventStack& eventStack){
-    bool flag = true;
+bool UninitChecker::hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardSlice,
+                                          const SVFGNode* load,
+                                          GenericBug::EventStack& eventStack)
+{
+    const bool timeStat = Options::SaberTimeStat();
+    double checkStart = 0;
+    if (timeStat)
+    {
+        checkStart = SVFStat::getClk(true);
+    }
 
-    for(SVFGNodeSetIter lit = candidateLoads.begin(), elit = candidateLoads.end(); lit!=elit; ++lit){
-        const SVFGNode* load = *lit;
-        bool ignorePtrStore = shouldIgnorePtrStoreForLoad(load);
-        const SVFGNodeSet& qualifierState = ignorePtrStore ? qualifierStateIgnorePtrStore : qualifierStateAllStore;
-        if(isDefinitelyInitInComputedState(qualifierState, load))
-            continue;
-        if(!guardSlice->inBackwardSlice(load))
-            continue;
+    ProgSlice::VFWorkList worklist;
+    worklist.push(rawSlice->getSource());
+    guardSlice->setVFCond(rawSlice->getSource(), guardSlice->getTrueCond());
 
-        SVFGNodeSet curStoreSet;
+    u32_t visitedNodes = 0;
+    while(!worklist.empty())
+    {
+        const SVFGNode* node = worklist.pop();
+        ++visitedNodes;
 
-        BackwardWorkList backwardWorkList;
-        backwardWorkList.push(load);
-        const u32_t maxBackwardSteps = Options::SaberUninitMaxBackwardSteps();
-        u32_t backwardSteps = 0;
-
-        while (!backwardWorkList.empty())
+        if (node == load)
         {
-            if (backwardSteps >= maxBackwardSteps)
-                break;
-
-            const SVFGNode* node = backwardWorkList.pop();
-            ++backwardSteps;
-            // if(!slice->inBackwardSlice(node)) continue;
-
-            for(auto edge : node->getInEdges()){
-                SVFGNode* pre = edge->getSrcNode();
-                if(guardSlice->inBackwardSlice(pre)) backwardWorkList.push(pre);
+            ProgSlice::Condition loadCond = guardSlice->getVFCond(load);
+            if (!guardSlice->isEquivalentBranchCond(loadCond, guardSlice->getFalseCond()) &&
+                    getSaberCondAllocator()->isSatisfiable(loadCond))
+            {
+                guardSlice->setFinalCond(loadCond);
+                guardSlice->evalFinalCond2Event(eventStack);
+                if (const ICFGNode* loadICFG = getBugEventICFGNode(load))
+                    eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, loadICFG));
+                if (timeStat)
+                {
+                    double t = (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL;
+                    saberTimeStat.uninitLoadCheckTime += t;
+                    if (t >= kSlowPathCheckSec)
+                    {
+                        outs() << "[UNINIT][path-check-slow] source=" << rawSlice->getSource()->getId()
+                               << " load=" << load->getId()
+                               << " visited=" << visitedNodes
+                               << " time=" << t
+                               << " guardBackward=" << guardSlice->getBackwardSliceSize()
+                               << " hit=1\n";
+                        outs().flush();
+                    }
+                }
+                return true;
             }
-
-            if(storeNodes.find(node) != storeNodes.end() && shouldConsiderStoreForLoad(load, node, rawSlice))
-                curStoreSet.insert(node);
         }
 
+        guardSlice->setCurSVFGNode(node);
+        ProgSlice::Condition invalidCond = guardSlice->computeInvalidCondFromRemovedSUVFEdge(node);
+        ProgSlice::Condition cond = guardSlice->getVFCond(node);
+        for(SVFGNode::const_iterator it = node->OutEdgeBegin(), eit = node->OutEdgeEnd(); it!=eit; ++it)
+        {
+            const SVFGEdge* edge = (*it);
+            const SVFGNode* succ = edge->getDstNode();
+            if(!guardSlice->inBackwardSlice(succ))
+                continue;
+            if (shouldConsiderStoreForLoad(load, succ, rawSlice))
+                continue;
 
-        if(!isLoadCoveredByStores(guardSlice, load, curStoreSet)){
-            flag = false;
-            if (const ICFGNode* loadICFG = getBugEventICFGNode(load))
-                eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, loadICFG));
+            ProgSlice::Condition vfCond;
+            const SVFBasicBlock* nodeBB = guardSlice->getSVFGNodeBB(node);
+            const SVFBasicBlock* succBB = guardSlice->getSVFGNodeBB(succ);
+            if (nodeBB == nullptr || succBB == nullptr)
+                continue;
+            guardSlice->clearCFCond();
+
+            if(edge->isCallVFGEdge())
+            {
+                const CallICFGNode* callSite = guardSlice->getCallSite(edge);
+                if (callSite == nullptr || callSite->getParent() == nullptr)
+                    continue;
+                vfCond = guardSlice->ComputeInterCallVFGGuard(nodeBB, succBB, callSite->getParent());
+            }
+            else if(edge->isRetVFGEdge())
+            {
+                const CallICFGNode* retSite = guardSlice->getRetSite(edge);
+                if (retSite == nullptr || retSite->getParent() == nullptr)
+                    continue;
+                vfCond = guardSlice->ComputeInterRetVFGGuard(nodeBB, succBB, retSite->getParent());
+            }
+            else
+                vfCond = guardSlice->ComputeIntraVFGGuard(nodeBB, succBB);
+
+            vfCond = guardSlice->condAnd(vfCond, guardSlice->condNeg(invalidCond));
+            ProgSlice::Condition succPathCond = guardSlice->condAnd(cond, vfCond);
+            if(guardSlice->setVFCond(succ, guardSlice->condOr(guardSlice->getVFCond(succ), succPathCond)))
+                worklist.push(succ);
         }
     }
-    return flag;
+
+    if (timeStat)
+    {
+        double t = (SVFStat::getClk(true) - checkStart) / TIMEINTERVAL;
+        saberTimeStat.uninitLoadCheckTime += t;
+        if (t >= kSlowPathCheckSec)
+        {
+            outs() << "[UNINIT][path-check-slow] source=" << rawSlice->getSource()->getId()
+                   << " load=" << load->getId()
+                   << " visited=" << visitedNodes
+                   << " time=" << t
+                   << " guardBackward=" << guardSlice->getBackwardSliceSize()
+                   << " hit=0\n";
+            outs().flush();
+        }
+    }
+    return false;
 }
 
 
 void UninitChecker::reportBug(ProgSlice* rawSlice)
 {
+    const bool timeStat = Options::SaberTimeStat();
+    double reportStart = 0;
+    if (timeStat)
+    {
+        reportStart = SVFStat::getClk(true);
+        ++saberTimeStat.uninitReportCalls;
+    }
+
     SVFGNodeSet qualifierStateIgnorePtrStore;
     SVFGNodeSet qualifierStateAllStore;
+
+    double phaseStart = 0;
+    if (timeStat)
+    {
+        phaseStart = SVFStat::getClk(true);
+    }
     computeQualifierInferenceState(rawSlice, true, qualifierStateIgnorePtrStore);
     computeQualifierInferenceState(rawSlice, false, qualifierStateAllStore);
+    if (timeStat)
+    {
+        double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
+        saberTimeStat.uninitQualifierTime += t;
+    }
 
     SVFGNodeSet candidateLoads;
+    if (timeStat)
+        phaseStart = SVFStat::getClk(true);
     collectCandidateLoads(qualifierStateIgnorePtrStore, qualifierStateAllStore, candidateLoads);
+    if (timeStat)
+    {
+        double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
+        saberTimeStat.uninitCollectCandidateTime += t;
+        saberTimeStat.uninitTotalCandidateLoads += candidateLoads.size();
+        if (candidateLoads.size() > saberTimeStat.uninitMaxCandidateLoads)
+            saberTimeStat.uninitMaxCandidateLoads = candidateLoads.size();
+    }
+    auto finishReport = [&](u32_t candidateCount) {
+        if (!timeStat)
+            return;
+        const double reportTime = (SVFStat::getClk(true) - reportStart) / TIMEINTERVAL;
+        saberTimeStat.uninitReportTime += reportTime;
+        if (reportTime >= kSlowSourceReportSec)
+        {
+            outs() << "[UNINIT][source-slow] source=" << rawSlice->getSource()->getId()
+                   << " reportTime=" << reportTime
+                   << " forwardSlice=" << rawSlice->getForwardSliceSize()
+                   << " candidates=" << candidateCount
+                   << "\n";
+            outs().flush();
+        }
+    };
+
     if (candidateLoads.empty())
+    {
+        finishReport(0);
         return;
-
-    std::unique_ptr<ProgSlice> guardSlice = buildGuardSlice(rawSlice, candidateLoads);
-    if (!guardSlice)
-        return;
-
-    guardSlice->AllPathReachableSolve(false);
+    }
+    if (timeStat)
+        ++saberTimeStat.uninitSourcesWithCandidates;
 
     GenericBug::EventStack eventStack;
-    if(!isSatisfiableForLoads(rawSlice, guardSlice.get(), candidateLoads,
-                              qualifierStateIgnorePtrStore, qualifierStateAllStore, eventStack))
+    u32_t candidateIndex = 0;
+    bool foundBug = false;
+    for (SVFGNodeSetIter lit = candidateLoads.begin(), elit = candidateLoads.end(); lit != elit; ++lit)
+    {
+        ++candidateIndex;
+
+        if (timeStat)
+        {
+            phaseStart = SVFStat::getClk(true);
+        }
+        std::unique_ptr<ProgSlice> guardSlice = buildStoreBypassGuardSlice(rawSlice, *lit);
+        if (!guardSlice)
+        {
+            if (timeStat)
+            {
+                double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
+                saberTimeStat.uninitGuardBuildTime += t;
+            }
+            continue;
+        }
+        if (timeStat)
+        {
+            double t = (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
+            saberTimeStat.uninitGuardBuildTime += t;
+            if (guardSlice->getBackwardSliceSize() > saberTimeStat.uninitMaxGuardBackwardSlice)
+                saberTimeStat.uninitMaxGuardBackwardSlice = guardSlice->getBackwardSliceSize();
+        }
+
+        double solveStart = 0;
+        if (timeStat)
+        {
+            solveStart = SVFStat::getClk(true);
+        }
+        eventStack.clear();
+        bool hasUninitPath = hasFeasibleUninitPath(rawSlice, guardSlice.get(), *lit, eventStack);
+        if (timeStat)
+        {
+            double t = (SVFStat::getClk(true) - solveStart) / TIMEINTERVAL;
+            addSolveTime(t);
+            saberTimeStat.uninitGuardSolveTime += t;
+        }
+
+        if(hasUninitPath)
+        {
+            foundBug = true;
+            break;
+        }
+    }
+
+    if (foundBug)
     {
         const ICFGNode* sourceICFG = selectBestSourceICFGNode(rawSlice->getSource(), eventStack, getPAG());
         if (sourceICFG == nullptr)
+        {
+            finishReport(candidateLoads.size());
             return;
+        }
         eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, sourceICFG));
         report.addSaberBug(GenericBug::UNINIT, eventStack);
+        if (timeStat)
+            ++saberTimeStat.uninitReportedSources;
     }
+    finishReport(candidateLoads.size());
 }

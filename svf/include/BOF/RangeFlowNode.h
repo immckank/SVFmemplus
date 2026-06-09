@@ -36,14 +36,21 @@
 
 
 namespace SVF {
+    class ICFGNode;
+
     class RangeFlowNode{
         public:
-            const SVFVar* base;
-            const SVFVar* parent;
-            Range accumulate_offset;
-            const bool isHeap;
+            const SVFVar* base;            ///< current variable carrying the offset
+            const SVFVar* parent;          ///< buffer root object (object-level aggregation)
+            Range accumulate_offset;       ///< accumulated offset from the buffer root
+            bool isHeap;                   ///< true if parent is a heap (byte-domain) buffer
+            uint8_t callDepth;             ///< interprocedural (plan A) expansion depth bound
+            const ICFGNode* callContext;   ///< call-site context (k=1) for context-sensitive
+                                           ///< integer-argument range binding; null at top level
 
-            RangeFlowNode(const SVFVar* _base, const SVFVar* _parent, Range _accumulate_offset, bool _isHeap = false);
+            RangeFlowNode(const SVFVar* _base, const SVFVar* _parent, Range _accumulate_offset,
+                          bool _isHeap = false, uint8_t _callDepth = 0,
+                          const ICFGNode* _callContext = nullptr);
     };
 }
 

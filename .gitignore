@@ -9,6 +9,7 @@ Release+Asserts/
 Debug+Asserts/
 autoconf/
 tests/result/
+tests/
 doxygen/
 .*
 !.config.in

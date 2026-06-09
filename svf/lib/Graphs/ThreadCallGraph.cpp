@@ -107,6 +107,8 @@ void ThreadCallGraph::updateCallGraph(PointerAnalysis* pta)
                     if(obj->isFunction())
                     {
                         const FunObjVar* svfCallee = SVFUtil::cast<FunObjVar>(obj)->getFunction();
+                        if (!pag->hasFunArgsList(svfCallee))
+                            continue;
                         this->addIndirectForkEdge(*it, svfCallee);
                     }
                 }

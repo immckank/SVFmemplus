@@ -1,123 +1,92 @@
+//===- HeapAllocationHandler.cpp -- Handle heap allocation --------------------//
+//
+//                     SVF: Static Value-Flow Analysis
+//
+// Copyright (C) <2013->  <Yulei Sui>
+//
+
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+//
+//===----------------------------------------------------------------------===//
+
+/*
+ * HeapAllocationHandler.cpp
+ *
+ *  Created on: May 11, 2026
+ *      Author: Yaokun Yang
+ */
+
 #include "BOF/HeapAllocationHandler.h"
+#include "Graphs/ICFGNode.h"
 
 using namespace SVF;
 
-/**
- * Define the allocation API map with the allocation-size expression.
- * This follows SaberCheckerAPI's table-driven API classification, but BOF also
- * needs the argument expression that represents the allocated byte size.
- */
-const std::map<std::string, HeapAllocationHandler::AllocSizeSpec> HeapAllocationHandler::allocApiMap = {
-    {"alloc", {1, AS_ARG, 0, 0}},
-    {"alloc_check", {1, AS_ARG, 0, 0}},
-    {"alloc_clear", {1, AS_ARG, 0, 0}},
-    {"calloc", {2, AS_MUL_ARGS, 0, 1}},
-    {"lalloc", {1, AS_ARG, 0, 0}},
-    {"lalloc_clear", {1, AS_ARG, 0, 0}},
-    {"malloc", {1, AS_ARG, 0, 0}},
-    {"safe_calloc", {2, AS_MUL_ARGS, 0, 1}},
-    {"safe_malloc", {1, AS_ARG, 0, 0}},
-    {"safecalloc", {2, AS_MUL_ARGS, 0, 1}},
-    {"safemalloc", {1, AS_ARG, 0, 0}},
-    {"safexcalloc", {2, AS_MUL_ARGS, 0, 1}},
-    {"safexmalloc", {1, AS_ARG, 0, 0}},
-    {"savealloc", {1, AS_ARG, 0, 0}},
-    {"xalloc", {1, AS_ARG, 0, 0}},
-    {"xcalloc", {2, AS_MUL_ARGS, 0, 1}},
-    {"xmalloc", {1, AS_ARG, 0, 0}},
-    {"SoftBusMalloc", {1, AS_ARG, 0, 0}},
-    {"SoftBusCalloc", {2, AS_MUL_ARGS, 0, 1}},
-    {"SysMalloc", {1, AS_ARG, 0, 0}},
-    {"SysCalloc", {2, AS_MUL_ARGS, 0, 1}},
-    {"FillpMemAlloc", {1, AS_ARG, 0, 0}},
-    {"FillpMemCalloc", {2, AS_MUL_ARGS, 0, 1}},
-    {"OhosMalloc", {1, AS_ARG, 0, 0}},
-    {"VOS_MemAlloc", {1, AS_ARG, 0, 0}},
-    {"_TIFFmalloc", {1, AS_ARG, 0, 0}},
-    {"__kmalloc", {1, AS_ARG, 0, 0}},
-    {"kmalloc_large", {1, AS_ARG, 0, 0}},
-    {"kmalloc_trace", {1, AS_ARG, 0, 0}},
-    {"realloc", {2, AS_ARG, 1, 0}},
-    {"strndup", {2, AS_ARG, 1, 0}},
-    {"LOS_MemAlloc", {2, AS_ARG, 1, 0}},
-    {"LOS_MemAllocAlign", {3, AS_ARG, 1, 0}},
-    {"LOS_MemRealloc", {3, AS_ARG, 2, 0}},
-    {"alloca", {1, AS_ARG, 0, 0}},
-    // Project-specific helper that allocates dest->buffer internally via malloc.
-    // The copied byte count is not exposed as a direct return-size expression here,
-    // so keep it as unknown-size heap allocation for BOF propagation.
-    {"CopyResponseBody", {0, AS_UNKNOWN, 0, 0}},
-
-    {"strdup", {0, AS_UNKNOWN, 0, 0}},
-    {"realpath", {0, AS_UNKNOWN, 0, 0}},
-    {"jpeg_alloc_huff_table", {0, AS_UNKNOWN, 0, 0}},
-    {"jpeg_alloc_quant_table", {0, AS_UNKNOWN, 0, 0}},
-    {"png_create_info_struct", {0, AS_UNKNOWN, 0, 0}},
-    {"png_create_write_struct", {0, AS_UNKNOWN, 0, 0}},
-    {"SSL_CTX_new", {0, AS_UNKNOWN, 0, 0}},
-    {"SSL_new", {0, AS_UNKNOWN, 0, 0}},
-    {"kmem_cache_alloc", {0, AS_UNKNOWN, 0, 0}},
-    {"kmem_cache_zalloc", {0, AS_UNKNOWN, 0, 0}}
-};
-
 HeapAllocationHandler::HeapAllocationHandler(RangeAnalysis* _ra) : ra(_ra) {}
 
-bool HeapAllocationHandler::isAllocAPI(const std::string& funcName, size_t actualParamCount) const {
-    auto it = allocApiMap.find(funcName);
-    return it != allocApiMap.end() && actualParamCount >= it->second.requiredArgs;
+bool HeapAllocationHandler::isAllocAPI(const FunObjVar* fun) const {
+    return registry.isAllocAPI(fun);
 }
 
-Range HeapAllocationHandler::analyzeAllocSize(const FunObjVar* funObjVar) {
-    if(funObjVar == nullptr)
-        return Range::BOTTOM;
+Range HeapAllocationHandler::analyzeAllocSize(const CallICFGNode* call) {
+    const FunObjVar* fun = call->getCalledFunction();
+    AllocSpec spec;
+    if (!fun || !registry.resolveAlloc(fun, spec))
+        return Range(0);
 
-    auto it = allocApiMap.find(funObjVar->getName());
-    if(it == allocApiMap.end() || funObjVar->arg_size() < it->second.requiredArgs)
-        return Range::BOTTOM;
+    const u32_t argn = call->arg_size();
 
-    return analyzeBySpec(it->second, funObjVar);
+    // calloc-style: size = arg[count] * arg[size]
+    if (spec.kind == AllocSpec::ELEM_MUL_ARG) {
+        if (spec.countArgIdx < 0 || spec.sizeArgIdx < 0 ||
+            (u32_t)spec.countArgIdx >= argn || (u32_t)spec.sizeArgIdx >= argn)
+            return Range(0);
+        Range countRange = ra->analyzeVarRange(call->getArgument(spec.countArgIdx));
+        Range sizeRange  = ra->analyzeVarRange(call->getArgument(spec.sizeArgIdx));
+        return Range::mul(countRange, sizeRange);
+    }
+
+    // malloc / realloc style: size = arg[sizeArgIdx] (read from actual call args)
+    if (spec.sizeArgIdx < 0 || (u32_t)spec.sizeArgIdx >= argn)
+        return Range(0);
+    return ra->analyzeVarRange(call->getArgument(spec.sizeArgIdx));
 }
 
-Range HeapAllocationHandler::analyzeAllocSize(const CallICFGNode* callInst) {
-    if(callInst == nullptr || callInst->isIndirectCall())
-        return Range::BOTTOM;
+bool HeapAllocationHandler::getAllocSizeOperand(const CallICFGNode* call,
+                                                AllocSizeSym& out) {
+    const FunObjVar* fun = call->getCalledFunction();
+    AllocSpec spec;
+    if (!fun || !registry.resolveAlloc(fun, spec))
+        return false;
 
-    const FunObjVar* funObjVar = callInst->getCalledFunction();
-    if(funObjVar == nullptr)
-        return Range::BOTTOM;
+    const u32_t argn = call->arg_size();
 
-    std::string funcName = funObjVar->getName();
-    auto it = allocApiMap.find(funcName);
-    if(it == allocApiMap.end() || callInst->arg_size() < it->second.requiredArgs)
-        return Range::BOTTOM;
+    if (spec.kind == AllocSpec::ELEM_MUL_ARG) {
+        if (spec.countArgIdx < 0 || spec.sizeArgIdx < 0 ||
+            (u32_t)spec.countArgIdx >= argn || (u32_t)spec.sizeArgIdx >= argn)
+            return false;
+        out.isElemMul = true;
+        out.sizeVar = call->getArgument(spec.countArgIdx);
+        // Element byte size, if a positive constant.
+        Range elem = ra->analyzeVarRange(call->getArgument(spec.sizeArgIdx));
+        out.factor = (elem.isConstant() && elem.getLower() > 0) ? elem.getLower() : 0;
+        return out.sizeVar != nullptr;
+    }
 
-    return analyzeBySpec(it->second, callInst);
-}
-
-Range HeapAllocationHandler::analyzeArgRange(const CallICFGNode* callInst, u32_t idx) const {
-    if(callInst == nullptr || idx >= callInst->arg_size())
-        return Range::BOTTOM;
-    return ra->analyzeVarRange(callInst->getArgument(idx));
-}
-
-Range HeapAllocationHandler::analyzeArgRange(const FunObjVar* funObjVar, u32_t idx) const {
-    if(funObjVar == nullptr || idx >= funObjVar->arg_size())
-        return Range::BOTTOM;
-    return ra->analyzeVarRange(funObjVar->getArg(idx));
-}
-
-Range HeapAllocationHandler::analyzeBySpec(const AllocSizeSpec& spec, const CallICFGNode* callInst) const {
-    if(spec.kind == AS_ARG)
-        return analyzeArgRange(callInst, spec.arg0);
-    if(spec.kind == AS_MUL_ARGS)
-        return Range::mul(analyzeArgRange(callInst, spec.arg0), analyzeArgRange(callInst, spec.arg1));
-    return Range::TOP;
-}
-
-Range HeapAllocationHandler::analyzeBySpec(const AllocSizeSpec& spec, const FunObjVar* funObjVar) const {
-    if(spec.kind == AS_ARG)
-        return analyzeArgRange(funObjVar, spec.arg0);
-    if(spec.kind == AS_MUL_ARGS)
-        return Range::mul(analyzeArgRange(funObjVar, spec.arg0), analyzeArgRange(funObjVar, spec.arg1));
-    return Range::TOP;
+    if (spec.sizeArgIdx < 0 || (u32_t)spec.sizeArgIdx >= argn)
+        return false;
+    out.isElemMul = false;
+    out.factor = 1;
+    out.sizeVar = call->getArgument(spec.sizeArgIdx);
+    return out.sizeVar != nullptr;
 }

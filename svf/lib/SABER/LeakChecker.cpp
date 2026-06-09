@@ -147,7 +147,7 @@ void LeakChecker::initSnks()
     }
 }
 
-static std::string getSinkNodeLoc(const SVFGNode* snk)
+std::string LeakChecker::getSinkNodeLoc(const SVFGNode* snk) const
 {
     const ICFGNode* icfgNode = nullptr;
     if (SVFUtil::isa<ActualParmVFGNode>(snk))

@@ -971,4 +971,10 @@ const Option<u32_t> Options::SaberUninitMaxBackwardSteps(
     500
 );
 
+const Option<bool> Options::SaberTimeStat(
+    "saber-time-stat",
+    "Print SABER phase timing statistics (src/sink collection, traverse, solve)",
+    false
+);
+
 } // namespace SVF.

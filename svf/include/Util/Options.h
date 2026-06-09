@@ -279,6 +279,8 @@ public:
     
     // Maximum number of backward traversal steps in UninitChecker, Default: 2000
     static const Option<u32_t> SaberUninitMaxBackwardSteps;
+    // Print SABER phase timing statistics, Default: false
+    static const Option<bool> SaberTimeStat;
 
     // GraphReader
     static const Option<std::string> FindCallSites;

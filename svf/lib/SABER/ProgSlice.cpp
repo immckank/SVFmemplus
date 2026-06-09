@@ -169,6 +169,7 @@ bool ProgSlice::isSatisfiableForAll()
  */
 bool ProgSlice::isSatisfiableForPairs()
 {
+    clearSatisfiableSinkPair();
 
     for(SVFGNodeSetIter it = sinksBegin(), eit = sinksEnd(); it!=eit; ++it)
     {
@@ -180,6 +181,7 @@ bool ProgSlice::isSatisfiableForPairs()
             if(!isEquivalentBranchCond(guard, getFalseCond()))
             {
                 setFinalCond(guard);
+                setSatisfiableSinkPair(*it, *sit);
                 return false;
             }
         }

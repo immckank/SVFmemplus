@@ -42,6 +42,7 @@
 #include "SABER/SaberSVFGBuilder.h"
 #include "Util/GraphReachSolver.h"
 #include "Util/SVFBugReport.h"
+#include "Util/SVFStat.h"
 
 namespace SVF
 {
@@ -79,6 +80,36 @@ protected:
     CallGraph* callgraph;
     SVFBugReport report; /// Bug Reporter
 
+    struct SaberTimeStat
+    {
+        double collectSrcTime = 0;
+        double collectSinkTime = 0;
+        double anderTime = 0;
+        double svfgBuildTime = 0;
+        double condAllocTime = 0;
+        double forwardTraverseTime = 0;
+        double backwardTraverseTime = 0;
+        double solveTime = 0;
+        double totalTime = 0;
+        u32_t numSrcs = 0;
+        u32_t numSinks = 0;
+        u32_t numAllSinks = 0;
+        double uninitReportTime = 0;
+        double uninitQualifierTime = 0;
+        double uninitCollectCandidateTime = 0;
+        double uninitGuardBuildTime = 0;
+        double uninitGuardSolveTime = 0;
+        double uninitLoadCheckTime = 0;
+        u32_t uninitReportCalls = 0;
+        u32_t uninitSourcesWithCandidates = 0;
+        u32_t uninitReportedSources = 0;
+        u32_t uninitTotalCandidateLoads = 0;
+        u32_t uninitMaxCandidateLoads = 0;
+        u32_t uninitMaxForwardSlice = 0;
+        u32_t uninitMaxGuardBackwardSlice = 0;
+    };
+    SaberTimeStat saberTimeStat;
+
 public:
 
     /// Constructor
@@ -113,6 +144,7 @@ public:
     /// Finalize analysis
     virtual void finalize()
     {
+        printSaberTimeStat();
         dumpSlices();
     }
 
@@ -328,6 +360,8 @@ protected:
     void dumpSlices();
     void annotateSlice(ProgSlice* slice);
     void printZ3Stat();
+    void printSaberTimeStat() const;
+    void addSolveTime(double t);
     //@}
 
 };

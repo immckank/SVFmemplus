@@ -251,9 +251,19 @@ void AndersenBase::connectCaller2ForkedFunParams(const CallICFGNode* cs, const F
           << *F << "\n");
 
     ThreadCallGraph *tdCallGraph = SVFUtil::dyn_cast<ThreadCallGraph>(callgraph);
+    SVFIR* pag = this->getPAG();
+
+    if (!pag->hasFunArgsList(F))
+    {
+        DBOUT(DAndersen, outs() << "skip fork param wiring: forked function "
+              << F->getName() << " has no formal args in SVFIR\n");
+        return;
+    }
 
     const PAGNode *cs_arg = tdCallGraph->getThreadAPI()->getActualParmAtForkSite(cs);
     const PAGNode *fun_arg = tdCallGraph->getThreadAPI()->getFormalParmOfForkedFun(F);
+    if (fun_arg == nullptr)
+        return;
 
     if(cs_arg->isPointer() && fun_arg->isPointer())
     {
