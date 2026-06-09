@@ -229,6 +229,9 @@ void UninitChecker::analyze()
 
         }
 
+        if (getCurSlice()->getSinks().empty())
+            continue;
+
         reportBug(getCurSlice());
         if (timeStat)
         {
@@ -259,6 +262,40 @@ void UninitChecker::analyze()
     finalize();
 }
 
+bool UninitChecker::isParameterSpillStackObject(StackObjVar* stackObj, SVFIR* pag) const
+{
+    const FunObjVar* fun = stackObj->getFunction();
+    if (fun == nullptr)
+        return false;
+
+    // By-value aggregate parameters may carry uninitialized bytes from the caller.
+    if (stackObj->isVarStruct() || stackObj->isVarArray() || stackObj->isArray())
+        return false;
+
+    if (!stackObj->hasOutgoingEdges(SVFStmt::Addr))
+        return false;
+
+    bool hasSpillSlot = false;
+    for (const SVFStmt* addrStmt : stackObj->getOutgoingEdges(SVFStmt::Addr))
+    {
+        const SVFVar* slotPtr = addrStmt->getDstNode();
+        if (slotPtr == nullptr || !slotPtr->hasIncomingEdges(SVFStmt::Store))
+            return false;
+
+        hasSpillSlot = true;
+        for (SVFStmt::SVFStmtSetTy::const_iterator sit = slotPtr->getIncomingEdgesBegin(SVFStmt::Store),
+                seit = slotPtr->getIncomingEdgesEnd(SVFStmt::Store); sit != seit; ++sit)
+        {
+            const SVFVar* rhs = SVFUtil::cast<StoreStmt>(*sit)->getRHSVar();
+            const ArgValVar* arg = SVFUtil::dyn_cast<ArgValVar>(rhs);
+            if (arg == nullptr || arg->getFunction() != fun)
+                return false;
+        }
+    }
+
+    return hasSpillSlot;
+}
+
 void UninitChecker::initSrcs()
 {
     SVFIR* pag = getPAG();
@@ -276,8 +313,11 @@ void UninitChecker::initSrcs()
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Addr))
         {
             if(getSVFG()->hasStmtVFGNode(ld)){
-                const SVFVar* obj = ld->getSrcNode();
-                if (SVFUtil::isa<StackObjVar>(obj)){
+                SVFVar* obj = const_cast<SVFVar*>(ld->getSrcNode());
+                if (StackObjVar* stackObj = SVFUtil::dyn_cast<StackObjVar>(obj))
+                {
+                    if (isParameterSpillStackObject(stackObj, pag))
+                        continue;
                     addToSources(getSVFG()->getStmtVFGNode(ld));
                 }
             }
@@ -531,6 +571,126 @@ bool UninitChecker::isDefinitelyInitInComputedState(const SVFGNodeSet& mayUninit
     return mayUninitReachable.find(load) == mayUninitReachable.end();
 }
 
+bool UninitChecker::isFormalParameterPointerLoad(const SVFGNode* load) const
+{
+    if (!isPtrLoadNode(load))
+        return false;
+
+    for (auto edge : load->getInEdges())
+    {
+        const SVFGNode* pred = edge->getSrcNode();
+        if (FormalParmVFGNode::classof(pred))
+            return true;
+        if (const InterPHIVFGNode* phi = SVFUtil::dyn_cast<InterPHIVFGNode>(pred))
+        {
+            if (phi->isFormalParmPHI())
+                return true;
+        }
+    }
+    return false;
+}
+
+bool UninitChecker::isDirectParameterSpillLoad(const SVFGNode* load) const
+{
+    if (!SVFUtil::isa<LoadSVFGNode>(load))
+        return false;
+
+    for (auto edge : load->getInEdges())
+    {
+        if (SVFUtil::isa<GepSVFGNode>(edge->getSrcNode()))
+            return false;
+    }
+
+    BackwardWorkList worklist;
+    worklist.push(load);
+    SVFGNodeSet visited;
+    u32_t steps = 0;
+    constexpr u32_t kMaxSpillTraceSteps = 8;
+
+    while (!worklist.empty() && steps++ < kMaxSpillTraceSteps)
+    {
+        const SVFGNode* node = worklist.pop();
+        if (!visited.insert(node).second)
+            continue;
+
+        if (FormalParmVFGNode::classof(node))
+            return true;
+        if (const InterPHIVFGNode* phi = SVFUtil::dyn_cast<InterPHIVFGNode>(node))
+        {
+            if (phi->isFormalParmPHI())
+                return true;
+        }
+
+        for (auto edge : node->getInEdges())
+        {
+            const SVFGNode* pred = edge->getSrcNode();
+            if (FormalParmVFGNode::classof(pred))
+                return true;
+
+            if (const StoreSVFGNode* store = SVFUtil::dyn_cast<StoreSVFGNode>(pred))
+            {
+                for (auto storeIn : store->getInEdges())
+                {
+                    if (FormalParmVFGNode::classof(storeIn->getSrcNode()))
+                        return true;
+                }
+            }
+
+            if (SVFUtil::isa<AddrSVFGNode>(pred) || SVFUtil::isa<CopySVFGNode>(pred) ||
+                    SVFUtil::isa<PHISVFGNode>(pred) ||
+                    (SVFUtil::isa<LoadSVFGNode>(pred) && isPtrLoadNode(pred)))
+                worklist.push(pred);
+        }
+    }
+    return false;
+}
+
+bool UninitChecker::isPtrLoadAddressComputationOnly(const SVFGNode* load) const
+{
+    if (!isPtrLoadNode(load))
+        return false;
+
+    ForwardWorkList worklist;
+    worklist.push(load);
+    SVFGNodeSet visited;
+
+    while (!worklist.empty())
+    {
+        const SVFGNode* node = worklist.pop();
+        if (!visited.insert(node).second)
+            continue;
+
+        if (node != load && loadNodes.find(node) != loadNodes.end() && !isPtrLoadNode(node))
+            return false;
+
+        for (auto edge : node->getOutEdges())
+        {
+            const SVFGNode* succ = edge->getDstNode();
+
+            if (loadNodes.find(succ) != loadNodes.end())
+            {
+                worklist.push(succ);
+            }
+            else if (storeNodes.find(succ) != storeNodes.end() ||
+                     SVFUtil::isa<GepSVFGNode>(succ) ||
+                     SVFUtil::isa<CopySVFGNode>(succ) ||
+                     SVFUtil::isa<PHISVFGNode>(succ))
+            {
+                worklist.push(succ);
+            }
+            else if (ActualParmVFGNode::classof(succ) || isSummaryBoundaryNode(succ))
+            {
+                continue;
+            }
+            else
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 void UninitChecker::collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnorePtrStore,
                                           const SVFGNodeSet& qualifierStateAllStore,
                                           SVFGNodeSet& candidateLoads) const
@@ -540,6 +700,11 @@ void UninitChecker::collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnor
     {
         const SVFGNode* load = *lit;
         if (loadNodes.find(load) == loadNodes.end())
+            continue;
+        // Loads from spilled formal-parameter slots, or pointer loads only used for
+        // address computation, do not read uninitialized pointee bytes.
+        if (isDirectParameterSpillLoad(load) || isFormalParameterPointerLoad(load) ||
+                isPtrLoadAddressComputationOnly(load))
             continue;
         bool ignorePtrStore = shouldIgnorePtrStoreForLoad(load);
         const SVFGNodeSet& qualifierState = ignorePtrStore ? qualifierStateIgnorePtrStore : qualifierStateAllStore;

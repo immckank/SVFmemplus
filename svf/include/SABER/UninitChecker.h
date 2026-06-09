@@ -106,6 +106,10 @@ private:
     bool inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const;
     void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable);
     bool isDefinitelyInitInComputedState(const SVFGNodeSet& mayUninitReachable, const SVFGNode* load) const;
+    bool isFormalParameterPointerLoad(const SVFGNode* load) const;
+    bool isPtrLoadAddressComputationOnly(const SVFGNode* load) const;
+    bool isDirectParameterSpillLoad(const SVFGNode* load) const;
+    bool isParameterSpillStackObject(StackObjVar* stackObj, SVFIR* pag) const;
 
 };
 
