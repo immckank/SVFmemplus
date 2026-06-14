@@ -53,6 +53,19 @@ using namespace SVF;
 
 namespace
 {
+/// Whether an index/offset range is *effectively* unbounded (degraded toward
+/// infinity), i.e. the loop-induction MAY scenario the LLM triage overlay
+/// targets. We cannot rely on the strict Range::isTop() here: arithmetic on the
+/// saturated sentinels (e.g. negate/sext) can produce NINF+1 / INF-1 rather
+/// than the exact NINF / INF constants, so isTop() would miss them even though
+/// Range::toString() already renders them as "-INF"/"INF". This mirrors that
+/// tolerant rendering and is used only by the read-only overlay (never affects
+/// the sound MUST/MAY classification).
+inline bool effectivelyUnbounded(const Range& r)
+{
+    return r.getUpper() >= Range::INF - 1024 || r.getLower() <= Range::NINF + 1024;
+}
+
 /// Make source-location strings friendlier for end users.
 ///
 /// SVF core (svf-llvm/LLVMUtil.cpp::getSourceLoc) serialises locations with the
@@ -382,6 +395,7 @@ void BufferOverflowChecker::handleGep(const GepStmt* gepStmt, const RangeFlowNod
     const AccessPath::IdxOperandPairs& idxOperandPairs = ap.getIdxOperandPairVec();
 
     Range total_offset = Range(0);
+    const SVFVar* idxVar = nullptr; // first unbounded (TOP) non-const index, for triage
     for (int i = (int)idxOperandPairs.size() - 1; i >= 0; i--)
     {
         const SVFVar* var = idxOperandPairs[i].first;
@@ -400,6 +414,17 @@ void BufferOverflowChecker::handleGep(const GepStmt* gepStmt, const RangeFlowNod
         // (unknown) so the access is conservatively reported (at least MAY).
         if (var_offset.isBottom() && !SVFUtil::isa<ConstIntValVar>(var))
             var_offset = Range::TOP;
+
+        // Remember the (first) genuinely unbounded non-constant index operand:
+        // this is the loop-induction variable behind a surviving MAY, used by
+        // the LLM triage overlay to slice the access. Read-only; no effect on
+        // the sound classification below.
+        // Remember the (first) genuinely unbounded non-constant index operand:
+        // this is the loop-induction variable behind a surviving MAY, used by
+        // the LLM triage overlay to slice the access. Read-only; no effect on
+        // the sound classification below.
+        if (!idxVar && !SVFUtil::isa<ConstIntValVar>(var) && effectivelyUnbounded(var_offset))
+            idxVar = var;
 
         if (type == nullptr)
         {
@@ -434,7 +459,12 @@ void BufferOverflowChecker::handleGep(const GepStmt* gepStmt, const RangeFlowNod
             Range type_size = Range(0, (long long)so.size() - 1);
             if (!var_offset.isSubset(type_size))
             {
-                checkAccess(dstVar, var_offset, type_size, false, BofKind::GEP_OOB, loc);
+                // The surviving MAY for an array index `a[i]` is emitted *here*
+                // (the field-flatten path), not at the function tail where the
+                // offset has already been clamped to the valid range. Pass the
+                // triage index so the LLM MAY-triage overlay can slice it.
+                checkAccess(dstVar, var_offset, type_size, false, BofKind::GEP_OOB, loc,
+                            srcNode.callContext, idxVar);
                 var_offset = Range::meet(var_offset, type_size);
             }
             // After clamping, var_offset is within [0, so.size()-1]; guard anyway.
@@ -451,7 +481,7 @@ void BufferOverflowChecker::handleGep(const GepStmt* gepStmt, const RangeFlowNod
     Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
     checkAccess(dstVar, accumulate_offset, buffer_size, srcNode.isHeap, BofKind::GEP_OOB, loc,
-                srcNode.callContext);
+                srcNode.callContext, idxVar);
     enqueue(dstVar, srcNode.parent, accumulate_offset, srcNode.isHeap, srcNode.callDepth,
             srcNode.callContext);
 }
@@ -496,7 +526,8 @@ void BufferOverflowChecker::handleRet(const RetPE* retPE, const RangeFlowNode& s
 void BufferOverflowChecker::checkAccess(const SVFVar* dstVar, const Range& offset,
                                         const Range& size, bool isHeap,
                                         BofKind kind, const ICFGNode* loc,
-                                        const ICFGNode* callContext)
+                                        const ICFGNode* callContext,
+                                        const SVFVar* indexVar)
 {
     // Unknown buffer size (object not modeled): nothing to check.
     if (size.isBottom())
@@ -516,7 +547,8 @@ void BufferOverflowChecker::checkAccess(const SVFVar* dstVar, const Range& offse
     const bool mustOverflow =
         (offset.getLower() > size.getUpper()) || (offset.getUpper() < size.getLower());
 
-    reportBufferOverflowError(dstVar, offset, size, isHeap, kind, loc, mustOverflow, callContext);
+    reportBufferOverflowError(dstVar, offset, size, isHeap, kind, loc, mustOverflow,
+                              callContext, indexVar);
 }
 
 // ===========================================================================
@@ -716,7 +748,24 @@ void BufferOverflowChecker::checkMemoryOps(SVFIR* pag)
         if (!fun) // indirect call
             continue;
 
-        const std::string fname = fun->getName();
+        // Normalize LLVM mem-intrinsic names to their libc counterparts. On
+        // Linux/-O0 (where _FORTIFY_SOURCE is inactive) clang lowers
+        // memcpy/memmove/memset to the intrinsics llvm.memcpy.p0.p0.i64 /
+        // llvm.memmove.p0.p0.i64 / llvm.memset.p0.i64, whereas macOS SDK headers
+        // emit the *_chk symbols. The intrinsic argument layout matches the libc
+        // rule indices exactly -- memcpy/memmove(dst=0, src=1, len=2, isvol=3),
+        // memset(dst=0, val=1, len=2, isvol=3) -- so the same rules apply once
+        // the type-suffixed intrinsic name is mapped back. Without this the same
+        // source (e.g. memcpy_oob.c) is silently un-checked on Linux.
+        const std::string rawName = fun->getName();
+        std::string fname = rawName;
+        if (rawName.compare(0, 11, "llvm.memcpy") == 0)
+            fname = "memcpy";
+        else if (rawName.compare(0, 12, "llvm.memmove") == 0)
+            fname = "memmove";
+        else if (rawName.compare(0, 11, "llvm.memset") == 0)
+            fname = "memset";
+
         const std::vector<MemCopyRule>* ruleSet = memCopyRegistry.getRules(fname);
         if (!ruleSet)
             continue;
@@ -833,7 +882,8 @@ void BufferOverflowChecker::reportBufferOverflowError(const SVFVar* base, const 
                                                       const Range& size, bool isHeap,
                                                       BofKind kind, const ICFGNode* loc,
                                                       bool mustOverflow,
-                                                      const ICFGNode* callContext)
+                                                      const ICFGNode* callContext,
+                                                      const SVFVar* indexVar)
 {
     // Record-time dedup by (source location, kind, call context). The call
     // context (k=1 call-site, null for intraprocedural accesses) keeps the
@@ -860,6 +910,7 @@ void BufferOverflowChecker::reportBufferOverflowError(const SVFVar* base, const 
     pr.loc = loc;
     pr.mustOverflow = mustOverflow;
     pr.callContext = callContext;
+    pr.indexVar = indexVar;
     pendingReports.push_back(pr);
 }
 
@@ -884,6 +935,9 @@ void BufferOverflowChecker::flushReports()
     //      per-context verdicts (different offset intervals, e.g. write_at(a,11)
     //      vs write_at(a,10)) are preserved.
     std::set<std::string> emitted;
+    // Surviving loop-induction MAYs eligible for LLM triage: slice id -> the
+    // friendly source location (for the terminal annotation pass below).
+    std::vector<std::pair<std::string, std::string>> triagedMays;
     for (const PendingReport& pr : pendingReports)
     {
         if (pr.loc)
@@ -924,6 +978,63 @@ void BufferOverflowChecker::flushReports()
         if (pr.loc)
             SVFUtil::outs() << "  Location   : " << friendlyLoc(pr.loc->getSourceLoc()) << "\n";
         SVFUtil::outs() << "\n";
+
+        // LLM MAY-triage overlay (pure add-on): slice surviving loop-induction
+        // MAYs whose index degraded to TOP. Read-only over the IR; the sound
+        // report emitted above is untouched.
+        if (!pr.mustOverflow && pr.kind == BofKind::GEP_OOB && effectivelyUnbounded(pr.offset) &&
+            pr.indexVar && pr.loc)
+        {
+            BofSlice slice;
+            if (llmTriage.collectSlice(pr.base, pr.indexVar, pr.size, pr.isHeap,
+                                       pr.loc, rangeAnalysis, slice))
+            {
+                llmTriage.addSlice(slice);
+                triagedMays.emplace_back(slice.id, friendlyLoc(pr.loc->getSourceLoc()));
+            }
+        }
+    }
+
+    // ===== LLM MAY-triage tail: always export slices; optionally annotate. ====
+    if (!llmTriage.empty())
+    {
+        if (llmTriage.writeSlices())
+            SVFUtil::outs() << "[LLMTriage] exported " << llmTriage.size()
+                            << " slice(s) to " << llmTriage.config().sliceOutPath
+                            << "\n";
+
+        std::map<std::string, LLMVerdict> verdicts;
+        if (llmTriage.config().hasApi() && llmTriage.runSidecarAndLoad(verdicts))
+        {
+            const double thr = llmTriage.config().threshold;
+            for (const auto& tm : triagedMays)
+            {
+                auto it = verdicts.find(tm.first);
+                if (it == verdicts.end())
+                    continue;
+                const LLMVerdict& v = it->second;
+                // SOUNDNESS: only *upgrade* MAY -> suspected overflow. Never
+                // clear to SAFE; SAFE merely lowers display priority.
+                if (v.verdict == "OUT_OF_BOUNDS" && v.confidence >= thr)
+                {
+                    SVFUtil::outs() << "[LLMTriage] LLM_SUSPECT (overflow, conf="
+                                    << v.confidence << ") at " << tm.second
+                                    << "\n    max_index_reasoned: " << v.maxIndexReasoned
+                                    << "\n    rationale: " << v.rationale << "\n\n";
+                }
+                else if (v.verdict == "SAFE")
+                {
+                    SVFUtil::outs() << "[LLMTriage] LLM hint SAFE (display only, MAY "
+                                       "retained, conf=" << v.confidence << ") at "
+                                    << tm.second << "\n\n";
+                }
+            }
+        }
+        else if (!llmTriage.config().hasApi())
+        {
+            SVFUtil::outs() << "[LLMTriage] no LLM endpoint configured; slices "
+                               "exported for manual review only.\n";
+        }
     }
 }
 

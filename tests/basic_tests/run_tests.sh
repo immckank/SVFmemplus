@@ -65,6 +65,7 @@ declare -a CASES=(
     "complex_heap    2   0"   # heap a[b*c] byte-scaled: p[16],q[9] MUST; p[9],q[6] safe
     "struct_oob      1   0"   # struct field index OOB MUST; struct_safe none
     "alloc_offbyone_memcpy_s  1  1"   # symbolic under-alloc: const_under MUST, cond_under MAY, exact safe
+    "loop_oob        0  -1"   # off-by-one loop a[i] i<=10 -> MAY (>=1); safe_loop none; no MUST
 )
 
 pass=0
@@ -113,4 +114,75 @@ done
 
 echo
 echo "Summary: $pass passed, $fail failed."
-[[ "$fail" -eq 0 ]] && exit 0 || exit 1
+
+# ----------------------------------------------------------------------------
+# LLM MAY-triage overlay assertions (pure add-on; must not change sound counts).
+#   1. API-empty mode: bof_slices.json is always written with the full schema.
+#   2. Mock sidecar:    the surviving loop MAY is upgraded to LLM_SUSPECT.
+# ----------------------------------------------------------------------------
+echo
+echo "=== LLM MAY-triage overlay ==="
+
+triage_pass=0
+triage_fail=0
+
+PY="${PYTHON:-python3}"
+LL="$SCRIPT_DIR/loop_oob.ll"
+WORK="$(mktemp -d 2>/dev/null || echo /tmp/bof_triage_$$)"
+mkdir -p "$WORK"
+
+if [[ ! -f "$LL" ]]; then
+    "$CLANG" -S -emit-llvm -g -O0 -fno-discard-value-names \
+        "$SCRIPT_DIR/loop_oob.c" -o "$LL" 2>/dev/null
+fi
+
+# --- 1. API-empty: slices exported with complete schema ---------------------
+SLICES="$WORK/bof_slices.json"
+( cd "$WORK" && "$BOF" "$LL" -llm-slice-out="$SLICES" >/dev/null 2>&1 )
+
+schema_ok=1
+if [[ -f "$SLICES" ]]; then
+    for key in '"schema": "bof-slice/v1"' '"capacity"' '"guards"' \
+               '"induction"' '"code_snippet"' '"index_range_static"'; do
+        if ! grep -q "$key" "$SLICES"; then
+            schema_ok=0
+            echo "  missing field: $key"
+        fi
+    done
+else
+    schema_ok=0
+    echo "  bof_slices.json was NOT generated"
+fi
+
+if [[ "$schema_ok" -eq 1 ]]; then
+    echo "[PASS] API-empty: bof_slices.json exported with full schema"
+    triage_pass=$((triage_pass+1))
+else
+    echo "[FAIL] API-empty: slice schema incomplete or missing"
+    triage_fail=$((triage_fail+1))
+fi
+
+# --- 2. Mock sidecar: MAY upgraded to LLM_SUSPECT ---------------------------
+if [[ -x "$(command -v "$PY" 2>/dev/null)" || -n "$(command -v "$PY" 2>/dev/null)" ]]; then
+    MOCK="$SCRIPT_DIR/mock_sidecar.py"
+    out_mock="$(cd "$WORK" && BOF_LLM_API_URL="mock://test" BOF_LLM_MODEL="mock" \
+        "$BOF" "$LL" -llm-slice-out="$SLICES" -llm-sidecar="$MOCK" 2>&1)"
+    if printf '%s\n' "$out_mock" | grep -q "LLM_SUSPECT"; then
+        echo "[PASS] mock sidecar: surviving MAY annotated LLM_SUSPECT"
+        triage_pass=$((triage_pass+1))
+    else
+        echo "[FAIL] mock sidecar: no LLM_SUSPECT annotation produced"
+        printf '%s\n' "$out_mock" | grep -i "triage\|suspect" || true
+        triage_fail=$((triage_fail+1))
+    fi
+else
+    echo "[SKIP] mock sidecar test ($PY not found)"
+fi
+
+rm -rf "$WORK" 2>/dev/null
+
+echo
+echo "Triage summary: $triage_pass passed, $triage_fail failed."
+
+total_fail=$((fail + triage_fail))
+[[ "$total_fail" -eq 0 ]] && exit 0 || exit 1

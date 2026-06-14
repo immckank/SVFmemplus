@@ -4,7 +4,7 @@
 > 评审视角：可靠性（Soundness）、精度（Precision）、可维护性、可扩展性、工程规范
 > 参考对标：SVF 自带的 `SABER`（源-汇分析）与 `AE`（抽象执行 `BufOverflowDetector`）
 
-> **落地状态总览（2026-06 重构完成）**：本文档列出的 P0/P1/P2 共 13 项改进**已全部落地**，并新增四项进阶特性（堆分配统一识别、内存拷贝函数检查、跨函数越界检测、符号仿射少分配判定，详见《BOF模块新特性设计文档.md》）。改动**自包含在 BOF 模块内**，未修改 SVF 核心/master 文件（`extapi.json`、`SaberCheckerAPI`、`AE` 等均只读复用）。下文逐项以 **`[已落地]`** 标注，并说明实现要点与差异。
+> **落地状态总览（2026-06 重构完成）**：本文档列出的 P0/P1/P2 共 13 项改进**已全部落地**，并新增五项进阶特性（堆分配统一识别、内存拷贝函数检查、跨函数越界检测、符号仿射少分配判定、**LLM 辅助 MAY-triage overlay**，详见《BOF模块新特性设计文档.md》）。改动**自包含在 BOF 模块内**，未修改 SVF 核心/master 文件（`extapi.json`、`SaberCheckerAPI`、`AE` 等均只读复用）。下文逐项以 **`[已落地]`** 标注，并说明实现要点与差异。
 
 ---
 
@@ -70,6 +70,10 @@
 `!accumulate_offset.isSubset(buffer_size)` 只要区间**有一点**可能越界就报。对 `[0, TOP]` 这类被拓宽成 `TOP` 的偏移会**必报**（在缺少 Phi 处理时尤为严重）→ 误报泛滥。需要区分"必然越界（must）"与"可能越界（may）"并分级报告。
 > **实现**：`checkAccess` 区分 **must**（偏移完全落在合法范围之外）与 **may**（部分重叠），分别映射到 `FULLBUFOVERFLOW`/`PARTIALBUFOVERFLOW`，终端输出 `MUST`/`MAY` 前缀。
 
+**14. 循环退化 MAY 缺乏二次甄别手段（超出原始评审范围的增强）** — **`[已落地]`（LLM 辅助 MAY-triage overlay）**
+承接问题 3：循环归纳变量经 widening 仍可能拓宽为 `TOP`，使 `for(i=0;i<=10;i++) a[i]`（越界）与 `for(i=0;i<10;i++) a[i]`（安全）**都报 MAY**，区间域无法把循环守卫 `i<=10` 与下标 `a[i]` 关联起来甄别。这是非关系型区间域的固有表达力墙，靠继续打补丁无法根治。
+> **实现**：新增 `LLMTriage`（`svf/{include,lib}/BOF/LLMTriage.{h,cpp}`）作为**纯叠加 overlay**，不改 `checkAccess` 的 MUST/MAY 判定与 sound 报告。在 `flushReports` 末尾，对**幸存**（未被 MUST 抑制）的 `GEP_OOB` 且下标 `isTop()` 的 MAY，抽取结构化最小完备切片（访问点 / 容量 / 归纳变量 init·step·算子 / 循环守卫谓词 / 源码片段，序列化 `bof-slice/v1` JSON），**始终写出 `bof_slices.json`**（API 为空时即作人工校对 / schema 自验兜底）。若配置了 LLM（`-llm-config` 或环境变量 `BOF_LLM_*`），经 Python sidecar（`llm_triage.py`，OpenAI 兼容、`temperature=0`）调用后读回 `bof_verdicts.json`，把 `verdict=OUT_OF_BOUNDS && confidence≥threshold` 的 MAY 升级标注为 `LLM_SUSPECT`。**soundness 硬约束**：只允许「升级或维持 MAY」，**绝不降为 SAFE**，sidecar 失败/超时一律保持 MAY——最坏只多报、绝不漏报。C++/Python 解耦使工具链零新增三方依赖。回归用例 `loop_oob.c` + `mock_sidecar.py` 验证：API 为空时切片字段齐全，mock 裁决时该 MAY 被标 `LLM_SUSPECT`，既有用例 MUST/MAY 不变。
+
 ### P2 — 工程 / 可维护性
 
 **10. 命名空间与代码风格** — **`[已落地]`**
@@ -110,5 +114,6 @@
 2. **第二步（对标需求 1/2）**：统一分配 API 识别（复用 `SaberCheckerAPI`/`ExtAPI`）；新增 memcpy/memset 等内存操作 API 的越界规则表（对标 AE 的 `extAPIBufOverflowCheckRules`）。
 3. **第三步（对标需求 3）**：引入跨函数传播——短期在 worklist 中处理 `CallPE/RetPE`，中期迁移到 SVFG 做上下文敏感分析。
 4. **第四步（工程化）**：补 `tests/` 回归用例、清理死代码、统一日志风格。
+5. **第五步（语义增强，正交于抽象域）**：对区间域天生啃不动的循环退化 MAY，叠加 **LLM 辅助 MAY-triage overlay**——抽取结构化切片交大模型语义判定，分流 `LLM_SUSPECT`/维持 MAY；恪守"绝不降为 SAFE"，不触碰 sound 核心。详见《BOF模块技术定位与优劣分析.md》路线 C。
 
 > 三项新需求的详细技术方案见同目录《BOF模块新特性设计文档.md》。

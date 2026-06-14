@@ -246,7 +246,87 @@ std::string locationToken(const SVFVar* var);
 
 ---
 
-## 四、统一落地的数据结构调整
+## 特性 5：LLM 辅助 MAY-triage（循环归纳越界分流）
+
+> 目标：在**不改动 sound 区间分析任何判定**的前提下，对静态分析退化为 **MAY** 的循环归纳越界（典型 `int a[10]; for(i=0;i<=10;i++) a[i]`，下标退化为 `TOP`）抽取**最小完备代码切片**，交大模型判定，把 MAY 进一步分流为「疑似越界（LLM_SUSPECT）/ 维持 MAY」。该层为**纯叠加（overlay）**。
+
+### 5.1 问题根因
+区间域无法建模循环守卫 `i <= 10`：`RangeAnalysis::analyzeVarRange` 处理 `Load/Store/Copy/BinaryOp/Phi/Select`，但**不处理 `CmpStmt/BranchStmt`**，循环回边 join 后归纳变量被 widening 抬到 `TOP`，下标无界 → 访问只能报 **MAY**（保守不漏报，但精度不足、噪声大）。完全在区间域内补关系判定（如循环不变式）工程量大；本特性改用「**抽取结构化切片 + 大模型语义判定**」的低成本路径。
+
+### 5.2 设计：纯 overlay 的三段式
+```
+flushReports 发射阶段（幸存 MAY）
+  └─ 命中「GEP_OOB 且 offset.isTop() 且存在非常量下标 indexVar」
+       └─ LLMTriage::collectSlice 抽取切片（只读 IR）
+            access(file/line/col/base/index_expr/index_range_static)
+            buffer(capacity/is_heap/domain)
+            induction(var/init/step/update_op，尽力而为)
+            guards[]（谓词/两操作数/界区间，CmpStmt 结构化 token 关联）
+            code_snippet（访问点上下文源码窗口）
+       └─ 始终写 bof_slices.json（API 为空兜底 + schema 自验）
+       └─ 若配置 LLM 端点 → std::system 调 Python sidecar → 读回 bof_verdicts.json
+            verdict=OUT_OF_BOUNDS 且 confidence≥threshold → 终端标注 LLM_SUSPECT
+            verdict=SAFE → 仅降展示优先级（MAY 保留）
+            UNKNOWN/sidecar 失败 → 维持 MAY
+```
+
+### 5.3 soundness 硬约束（最重要）
+- LLM **永不**把 MAY 直接清成 SAFE：只允许「**升级**为 LLM_SUSPECT 标注」或「**维持** MAY」。
+- sound 报告（`SVFBugReport`/`bof-report` JSON）**完全不变**；triage 结果只出现在**终端标注**与新增的 `bof_slices.json`/`bof_verdicts.json` 两个 overlay 文件中。
+- 最坏情况只多报、绝不漏报。从机制上保证「triage 层不污染 sound 结果」。
+
+### 5.4 C++ / Python 解耦
+- C++ 仅负责**切片导出**与**读回裁决**，不内嵌任何 HTTP 依赖（SVF 工具链无 curl）。
+- 实际 API 调用隔离到 Python sidecar `svf-llvm/tools/BOF/llm_triage.py`（标准库 `urllib`，OpenAI 兼容 `/chat/completions`，`temperature=0` 利于论文可复现）。
+- API Key 经**环境变量** `BOF_LLM_API_KEY` 传给子进程（不落命令行）；`api_url/model` 同理。
+- 任何失败（非零退出 / 缺文件 / 解析失败）一律按「无裁决」处理，保持 MAY，不阻塞、不改变 sound 结论。
+
+### 5.5 切片字段清单（`bof-slice/v1`）
+| 分组 | 字段 | 来源 |
+| --- | --- | --- |
+| access | file/line/col | `ICFGNode::getSourceLoc()` 解析 `{ln,cl,fl}` |
+| access | base | GEP 结果指针友好名 |
+| access | index_expr | `RangeAnalysis::analyzeAffine(indexVar)` 符号仿射形 |
+| access | index_range_static | `analyzeVarRange(indexVar)`（通常 TOP） |
+| buffer | capacity | `getBufferRange(base)`（发射时的 size） |
+| buffer | is_heap / domain | `elements`/`bytes` |
+| induction | var/init/step/update_op | 尽力而为：扫 `BinaryOPStmt(Add/Sub)` 经 `locationToken` 关联归纳槽取步长 |
+| guards[] | predicate/lhs/rhs/rhs_range | 扫 `CmpStmt`，operand 的 `locationToken` 与下标 token 相等即关联 |
+| - | code_snippet | 读源码文件，访问行上方 8 行 + 下方 2 行（覆盖 `for` 头） |
+
+> Range 统一以 `{lower,upper,is_top,is_bottom}` **字符串**编码，`+INF/-INF` 用字符串规避非有限数值进 JSON 的问题。
+
+### 5.6 关键技术决策
+- **切口选择「幸存 + TOP + GEP_OOB」**：精准命中循环退化场景，控制 LLM 调用量与噪声，对已能判定的访问零开销（热路径不触发）。
+- **守卫关联是唯一新增遍历**：复用既有 `CmpStmt::getPredicate()/getOpVar`、`BinaryOPStmt::getOpcode()`，以 `RangeAnalysis::locationToken` 做结构化 token 匹配（-O0 下 `a[i]` 与 `i<=10` 是同一槽的两次 load，token 相同），无需指向分析。守卫关联失败时 `guards=[]`（仍导出切片，交 LLM/人工 + code_snippet 判定）。
+- **复用既有切片基建**：`analyzeAffine()`（索引符号式）、`locationToken()`（结构标识）、`getBufferRange()`（容量）、`getSourceLoc()`（源码位置）。
+- **解析复用 cJSON**：config / verdicts 解析复用 SVF 自带 `Util/cJSON`；slices 输出为手写最小转义序列化（可控、与现有字符串处理风格一致）。
+
+### 5.7 配置与命令行
+```
+-llm-config=<file>     # JSON: {api_url, api_key, model, threshold, sidecar, slice_out, python}
+-llm-slice-out=<file>  # 切片导出路径（默认 bof_slices.json，始终写出）
+-llm-sidecar=<py>      # Python sidecar 路径；为空 => API 为空模式（仅导出切片）
+# 端点回退：环境变量 BOF_LLM_API_URL / BOF_LLM_API_KEY / BOF_LLM_MODEL
+# 启用条件 hasApi() := api_url 与 sidecar 均就绪
+```
+
+### 5.8 验收
+- **API 为空**：`bof a.ll -llm-slice-out=...` 仍生成 `bof_slices.json`，schema 字段齐全（schema/capacity/guards/induction/code_snippet/index_range_static）。
+- **mock sidecar**：`tests/basic_tests/mock_sidecar.py` 返回 OUT_OF_BOUNDS(0.99)，幸存循环 MAY 被标注 `LLM_SUSPECT`。
+- **零退化**：既有 9 个基础回归用例 MUST/MAY 计数不变（triage 不改 sound 分类）。
+
+### 5.9 `[实现状态]` ✅ 已实现
+- 新增 `svf/include/BOF/LLMTriage.h` + `svf/lib/BOF/LLMTriage.cpp`：切片数据模型（`BofSlice/GuardInfo/InductionInfo/SliceRange`）、`LLMTriageConfig`（文件 + env 加载）、`LLMVerdict`，及 `collectSlice/writeSlices/runSidecarAndLoad`、`extractGuards/extractInduction/readCodeSnippet`。
+- `BufferOverflowChecker`：`PendingReport` 增 `indexVar`，经 `handleGep`(取首个 TOP 非常量下标)→`checkAccess`→`reportBufferOverflowError` 透传；`flushReports` 末尾对幸存 `TOP MAY GEP_OOB` 收切片→始终写 `bof_slices.json`→有配置则跑 sidecar 读回→按阈值终端标注。新增 `setLLMTriageConfig`。
+- `svf-llvm/tools/BOF/bof.cpp`：新增 `-llm-config/-llm-slice-out/-llm-sidecar`，`runOnModule` 前注入 `LLMTriageConfig`（含 env 回退）。
+- `svf-llvm/tools/BOF/llm_triage.py`：OpenAI 兼容 sidecar，`temperature=0`，按 `bof-verdict/v1` 写 `bof_verdicts.json`；失败降级 UNKNOWN。
+- 回归：新增 `tests/basic_tests/loop_oob.c`（off-by-one 循环，MUST=0/MAY≥1）+ `mock_sidecar.py`，`run_tests.sh` 增 API-空 schema 校验与 mock-sidecar `LLM_SUSPECT` 断言。
+- **构建附带修复**：新增头文件触发 `SvfCore` 全量重编，暴露既有潜在告警 `SABER/FileChecker.h` 的 `-Werror=inconsistent-missing-override`，补 `override` 修复（与本特性无关的latent error，最小修正）。
+- **范围限定（v1）**：仅切片「幸存 MAY + GEP_OOB + 下标 TOP」的循环访问；memcpy 等其他类型暂不纳入。`enter_loop_when` 暂置 `unknown`（谓词 + rhs + code_snippet 已足以让 LLM 判定）。
+
+---
+
 
 为同时支撑三项特性，建议对核心结构做如下增量（向后兼容）：
 
@@ -271,6 +351,7 @@ void reportBufferOverflowError(..., BofKind kind, const ICFGNode* loc,
 - `MemCopyAPIRegistry` + `checkMemoryOps()`（特性 2）
 - `propagate` 内 `handleCall/handleRet`（特性 3 方案 A）或 `SVFGBofSolver`（方案 B）
 - `RangeAnalysis::analyzeAffine/locationToken` + `allocResultSym/allocAddrSym` 旁路表 + `trySymbolicUnderAlloc`（特性 4）
+- `LLMTriage`（切片抽取 + 导出 + sidecar）+ `PendingReport.indexVar` 透传 + `llm_triage.py`（特性 5，纯 overlay）
 
 ---
 
@@ -280,6 +361,7 @@ void reportBufferOverflowError(..., BofKind kind, const ICFGNode* loc,
 2. **特性 2（内存拷贝检查）** — 依赖特性 1 的缓冲区尺寸，规则表清晰、收益直观。✅ 已完成
 3. **特性 3（跨函数）方案 A** — 在前两者基础上打通过程间，配合 widening。✅ 已完成
 4. **特性 4（符号仿射少分配）** — 在前三者基础上叠加轻量关系判定，攻克同源 off-by-one 漏报。✅ 已完成
-5. （可选）**特性 3 方案 B（SVFG）** — 精度升级，作为长期目标。⏳ 未实现（保留演进）
+5. **特性 5（LLM 辅助 MAY-triage）** — 在 sound 区间分析之上叠加纯 overlay，对循环归纳 MAY 抽切片交大模型分流。✅ 已完成
+6. （可选）**特性 3 方案 B（SVFG）** — 精度升级，作为长期目标。⏳ 未实现（保留演进）
 
 > **落地补充**：在三特性之前已先行落地《BOF模块评价与改进建议.md》全部 P0 项（`PhiStmt`/不动点+widening/`size>=1`/报告去重与源码位置），否则跨函数与循环场景的精度无法保证。配套回归用例位于 `tests/basic_tests/`（简单版 9/9）与 `tests/advanced_tests/`（真实项目困难用例），经 `setup.sh`+`build.sh` 全量编译通过（日常用 `build_bof.sh` 增量）并验证。

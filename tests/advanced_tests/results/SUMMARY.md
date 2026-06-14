@@ -1,18 +1,18 @@
 # BOF 困难版测试结果汇总
 
-- 生成时间: 2026-06-05 23:12:48
+- 生成时间: 2026-06-14 23:54:11
 - 检测器: `/home/cloud/Project/SVFmemplus/Release-build/bin/bof`
 - 说明: `bof` 仅检测 BUFFER_OVERFLOW(BO) 类缺陷；ML/UAF/DF/UU 不在职责范围，不计入 ground truth。
 - 本表统计 **检测到的 MUST/MAY 报告数** 与 **注入的 BO 缺陷数(期望)** 的对照；困难版以收集+分析为目标，不因漏报判失败。
 
 | 用例 | 期望BO | MUST | MAY | 检测合计 | 覆盖率(检测/期望) | 来源 |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| object1_kernel_50 | 10 | 13 | 11 | 24 | 240% | kernel sentry driver, 50 defects (BO: DEFECT-2,7,11,16,21,27,32,37,42,47) |
+| object1_kernel_50 | 10 | 15 | 9 | 24 | 240% | kernel sentry driver, 50 defects (BO: DEFECT-2,7,11,16,21,27,32,37,42,47) |
 | object3_ubs_50 | 10 | 16 | 0 | 16 | 160% | ubs_engine, 50 defects (BO: DEFECT-2,7,11,16,21,27,32,37,42,47) |
-| object1_kernel_10 | 2 | 2 | 67 | 69 | 3450% | kernel sentry driver subset, 10 defects (BO-1,BO-2) |
+| object1_kernel_10 | 2 | 2 | 70 | 72 | 3600% | kernel sentry driver subset, 10 defects (BO-1,BO-2) |
 | object3_ubs_10 | 2 | 68 | 115 | 183 | 9150% | ubs_engine sdk subset, 10 defects (BO-1,BO-2) |
 | openharmony_40 | 8 | 2 | 4 | 6 | 75% | OpenHarmony wlan client, 40 defects (BO-1..BO-8) |
-| **合计** | **32** | | | **298** | | |
+| **合计** | **32** | | | **301** | | |
 
 ## 各用例检测到的越界位置（line/file）
 
@@ -20,9 +20,9 @@
 
 ```
 [BufferOverflowChecker] start buffer overflow analysis
-[BufferOverflowChecker] MAY buffer overflow (array/pointer access)
+[BufferOverflowChecker] MUST buffer overflow (array/pointer access)
   Location   : { "line": 374, "col": 17, "file": "focused_src/sentry_remote_client_defects.c" }
-[BufferOverflowChecker] MAY buffer overflow (array/pointer access)
+[BufferOverflowChecker] MUST buffer overflow (array/pointer access)
   Location   : { "line": 375, "col": 3, "file": "focused_src/sentry_remote_client_defects.c" }
 [BufferOverflowChecker] MAY buffer overflow (array/pointer access)
   Location   : { "line": 422, "col": 17, "file": "focused_src/sentry_remote_client_defects.c" }
