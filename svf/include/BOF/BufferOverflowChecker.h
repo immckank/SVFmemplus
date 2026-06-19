@@ -36,6 +36,7 @@
 #include "RangeAnalysis.h"
 #include "HeapAllocationHandler.h"
 #include "MemCopyAPIRegistry.h"
+#include "LLMTriage.h"
 #include "Util/SVFBugReport.h"
 
 #include <queue>
@@ -79,7 +80,8 @@ namespace SVF {
                                            const Range& size, bool isHeap,
                                            BofKind kind, const ICFGNode* loc,
                                            bool mustOverflow,
-                                           const ICFGNode* callContext = nullptr);
+                                           const ICFGNode* callContext = nullptr,
+                                           const SVFVar* indexVar = nullptr);
 
             /// Flush deferred reports: at every access point (source location +
             /// kind) where some calling context proves a MUST overflow, suppress
@@ -90,6 +92,14 @@ namespace SVF {
 
             /// Dump structured bug report to a JSON file.
             void dumpReport(const std::string& filePath);
+
+            /// Configure the (optional) LLM MAY-triage overlay. Must be called
+            /// before runOnModule(). When unset, triage stays in "API-empty"
+            /// mode: slices are still exported for manual review.
+            void setLLMTriageConfig(const LLMTriageConfig& cfg)
+            {
+                llmTriage.setConfig(cfg);
+            }
 
         private:
             /// Per-edge dispatch handlers (split from the old monolithic propagate).
@@ -124,7 +134,8 @@ namespace SVF {
             /// source-location dedup).
             void checkAccess(const SVFVar* dstVar, const Range& offset, const Range& size,
                              bool isHeap, BofKind kind, const ICFGNode* loc,
-                             const ICFGNode* callContext = nullptr);
+                             const ICFGNode* callContext = nullptr,
+                             const SVFVar* indexVar = nullptr);
 
             /// Recover the byte-domain capacity and byte offset of a buffer
             /// pointer @p var (used by checkMemoryOps). Heap buffers are already
@@ -188,6 +199,10 @@ namespace SVF {
                 const ICFGNode* loc = nullptr;
                 bool mustOverflow = false;
                 const ICFGNode* callContext = nullptr;
+                /// GEP index variable behind this access (null for non-GEP
+                /// paths). Used only by the LLM MAY-triage overlay to slice the
+                /// surviving loop-induction MAYs; never affects sound emission.
+                const SVFVar* indexVar = nullptr;
             };
 
             std::queue<RangeFlowNode> worklist;
@@ -195,6 +210,9 @@ namespace SVF {
             HeapAllocationHandler heapAllocationHandler;
             MemCopyAPIRegistry memCopyRegistry;
             SVFBugReport bugReport;
+            /// Optional LLM-assisted MAY-triage overlay (pure add-on; does not
+            /// alter the sound MUST/MAY classification in bugReport).
+            LLMTriage llmTriage;
 
             /// Fixpoint state: (parent buffer root, base var, k=1 call context) ->
             /// known accumulated offset. The call context keeps the *same*

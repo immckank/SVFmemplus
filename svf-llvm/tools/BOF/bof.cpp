@@ -39,6 +39,20 @@ using namespace SVF;
 static const Option<std::string> BofReportFile(
     "bof-report", "Dump the buffer-overflow bug report to the given JSON file", "");
 
+// ---- LLM MAY-triage overlay (pure add-on; never alters sound results) ----
+static const Option<std::string> LlmConfigFile(
+    "llm-config",
+    "JSON config for the LLM MAY-triage sidecar (api_url/api_key/model/threshold)",
+    "");
+static const Option<std::string> LlmSliceOut(
+    "llm-slice-out",
+    "Path for the exported bof-slice/v1 JSON (always written when MAYs survive)",
+    "bof_slices.json");
+static const Option<std::string> LlmSidecar(
+    "llm-sidecar",
+    "Path to the Python triage sidecar (llm_triage.py); empty => API-empty mode",
+    "");
+
 int main(int argc, char** argv)
 {
     auto moduleNameVec =
@@ -68,6 +82,19 @@ int main(int argc, char** argv)
     }
 
     BufferOverflowChecker bufferOverflowChecker;
+
+    // Assemble the LLM MAY-triage config: optional JSON file first, then env
+    // fallback (BOF_LLM_API_URL/KEY/MODEL), then CLI overrides for paths.
+    LLMTriageConfig llmCfg;
+    if (!LlmConfigFile().empty())
+        llmCfg.loadFromFile(LlmConfigFile());
+    llmCfg.loadFromEnv();
+    if (!LlmSliceOut().empty())
+        llmCfg.sliceOutPath = LlmSliceOut();
+    if (!LlmSidecar().empty())
+        llmCfg.sidecarPath = LlmSidecar();
+    bufferOverflowChecker.setLLMTriageConfig(llmCfg);
+
     bufferOverflowChecker.runOnModule(pag);
 
     // Optionally persist the structured bug report as JSON.
