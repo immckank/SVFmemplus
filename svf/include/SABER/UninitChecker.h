@@ -88,6 +88,7 @@ private:
         {
             WholeObject,
             Field,
+            CollapsedObject,
             Unknown
         };
 
@@ -115,6 +116,52 @@ private:
     };
 
     typedef std::unordered_set<RegionKey, RegionKeyHash> RegionSet;
+    typedef std::unordered_map<const SVFGNode*, RegionSet> NodeToRegionStateMap;
+
+    enum StoreBlockReason
+    {
+        StoreBlocks,
+        NotStoreNode,
+        NotStrongStore,
+        EmptyRegionSet,
+        RegionDoesNotIntersect,
+        RHSMayCarryUninit
+    };
+
+    enum StrongUpdateFailureReason
+    {
+        StrongOK,
+        StrongNotStore,
+        StrongNoPTA,
+        StrongMultiPts,
+        StrongMultiRegion,
+        StrongCollapsedRegion,
+        StrongUnknownRegion,
+        StrongFieldInsensitive,
+        StrongVarArray
+    };
+
+    struct StoreBlockDebugStats
+    {
+        u32_t checks = 0;
+        u32_t storeNodes = 0;
+        u32_t strongStores = 0;
+        u32_t regionIntersects = 0;
+        u32_t blockers = 0;
+        u32_t notStore = 0;
+        u32_t notStrong = 0;
+        u32_t strongMultiPts = 0;
+        u32_t strongMultiRegion = 0;
+        u32_t strongCollapsedRegion = 0;
+        u32_t strongUnknownRegion = 0;
+        u32_t strongFieldInsensitive = 0;
+        u32_t strongVarArray = 0;
+        u32_t emptyRegion = 0;
+        u32_t regionMiss = 0;
+        u32_t rhsMayCarry = 0;
+        u32_t reachedSource = 0;
+        u32_t visitedBackward = 0;
+    };
 
     void collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnorePtrStore,
                                const SVFGNodeSet& qualifierStateAllStore,
@@ -131,6 +178,7 @@ private:
     mutable std::unordered_map<const SVFGNode*, RegionSet> loadReadRegionCache;
     mutable std::unordered_map<const SVFGNode*, RegionSet> storeWriteRegionCache;
     mutable std::unordered_map<const SVFGNode*, bool> ignorePtrStoreForLoadCache;
+    mutable u32_t uninitDebugLinesPrinted = 0;
     u32_t smallInitSkippedSources = 0;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToBoundaries;
@@ -138,6 +186,10 @@ private:
     bool isPtrLoadNode(const SVFGNode* node) const;
     bool isCriticalUninitSink(const SVFGNode* load) const;
     bool flowsToCriticalUseWithinBudget(const SVFGNode* load, u32_t maxSteps) const;
+    bool isMemsetLikeCall(const ICFGNode* node) const;
+    bool isMemcpyLikeCall(const ICFGNode* node) const;
+    bool isCopyFromUserLikeCall(const ICFGNode* node) const;
+    bool isAPIInitStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
     bool shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const;
     bool isSummaryBoundaryNode(const SVFGNode* node) const;
     u64_t getSummaryKey(const SVFGNode* node, bool ignorePtrStore) const;
@@ -147,12 +199,38 @@ private:
     bool shouldIgnorePtrStoreForLoad(const SVFGNode* load) const;
     bool shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const;
     bool shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
+    StoreBlockReason classifyStoreBlocker(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
+    StrongUpdateFailureReason classifyStrongUpdateFailure(const SVFGNode* store) const;
+    const char* strongUpdateFailureName(StrongUpdateFailureReason reason) const;
+    const char* storeBlockReasonName(StoreBlockReason reason) const;
+    void updateStoreBlockDebugStats(StoreBlockDebugStats& stats, StoreBlockReason reason,
+                                    const SVFGNode* store) const;
+    void debugCandidateBlockers(ProgSlice* slice, const SVFGNode* load) const;
+    bool sameBasicBlockReachableBefore(const ICFGNode* beforeNode, const ICFGNode* afterNode) const;
+    bool sameFunctionDominates(const ICFGNode* domNode, const ICFGNode* useNode) const;
+    bool hasDominatingInitBlocker(ProgSlice* slice, const SVFGNode* load) const;
     bool inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const;
     RegionKey makeWholeRegion(NodeID obj) const;
     RegionKey makeFieldRegion(NodeID obj, APOffset field) const;
+    RegionKey makeCollapsedRegion(NodeID obj) const;
     RegionKey makeUnknownRegion(NodeID obj) const;
     bool regionsMayIntersect(const RegionKey& lhs, const RegionKey& rhs) const;
     bool regionSetsMayIntersect(const RegionSet& lhs, const RegionSet& rhs) const;
+    bool regionCoveredByWrite(const RegionKey& region, const RegionKey& writeRegion) const;
+    bool regionSetsCover(const RegionSet& regions, const RegionSet& writeRegions) const;
+    bool isSameAddressStoreLoad(const SVFGNode* store, const SVFGNode* load) const;
+    bool isLoadSpecificStoreKill(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
+    bool eraseInitializedRegions(RegionSet& state, const RegionSet& writeRegions) const;
+    bool getStoreStmtWriteRegions(const StoreStmt* store, RegionSet& regions) const;
+    bool storeStmtRHSMayBeUninitSource(const StoreStmt* store, const SVFGNode* source) const;
+    bool isMustExecuteDirectInitStore(const StoreStmt* store, const BaseObjVar* obj) const;
+    bool refineInitialRegionsWithDirectStores(const BaseObjVar* obj, const SVFGNode* source,
+                                              RegionSet& regions) const;
+    bool mergeRegionState(NodeToRegionStateMap& states, const SVFGNode* node, const RegionSet& incoming) const;
+    bool storeRHSMayCarryUninitInState(const SVFGNode* store, ProgSlice* slice,
+                                       const NodeToRegionStateMap& states) const;
+    void computeRegionUninitState(ProgSlice* slice, NodeToRegionStateMap& states) const;
+    bool loadMayReadUninitRegion(const SVFGNode* load, const NodeToRegionStateMap& states) const;
     bool addPointeeRegions(NodeID ptr, RegionSet& regions) const;
     bool addObjectRegion(NodeID obj, RegionSet& regions) const;
     bool getInitialRegionsForSource(const SVFGNode* source, RegionSet& regions) const;

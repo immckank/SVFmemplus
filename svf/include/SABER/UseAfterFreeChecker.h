@@ -90,6 +90,15 @@ protected:
     }
 
 private:
+    static const SVFVar* getFreedPointerVar(const SVFGNode* freeNode);
+    static const SVFVar* getUsePointerVar(const SVFGNode* useNode);
+    static bool maySameFreedObject(const SVFG* svfg, const SVFGNode* freeNode,
+                                   const SVFGNode* useNode);
+    static ProgSlice::Condition computeControlOrderGuard(ProgSlice* slice,
+            const SVFGNode* freeNode, const SVFGNode* useNode);
+    bool isFeasibleFreeUsePair(ProgSlice* slice, const SVFGNode* freeNode,
+                               const SVFGNode* useNode, ProgSlice::Condition& outGuard) const;
+
     SVFGNodeSet freeNodes;
     SVFGNodeSet useNodes;
 

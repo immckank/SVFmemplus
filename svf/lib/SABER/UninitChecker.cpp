@@ -1,15 +1,18 @@
 // svf/lib/SABER/UninitChecker.cpp
 #include "SABER/UninitChecker.h"
 #include "SABER/SaberCheckerAPI.h"
+#include "SABER/SaberMemTransferAPI.h"
 #include "SVFIR/SVFIR.h"
 #include "SVFIR/SVFType.h"
 #include "Util/SVFStat.h"
 #include "Util/SVFUtil.h"
+#include "Util/ExtAPI.h"
 #include "SABER/ProgSlice.h"
 #include "Util/WorkList.h"
 #include "SVFIR/SVFValue.h"
 #include "Graphs/ICFG.h"
 #include <deque>
+#include <queue>
 #include <unordered_set>
 #include <string>
 
@@ -429,6 +432,12 @@ UninitChecker::RegionKey UninitChecker::makeFieldRegion(NodeID obj, APOffset fie
     return RegionKey(baseObj ? baseObj->getId() : obj, field, RegionKey::Field);
 }
 
+UninitChecker::RegionKey UninitChecker::makeCollapsedRegion(NodeID obj) const
+{
+    const BaseObjVar* baseObj = getPAG()->getBaseObject(obj);
+    return RegionKey(baseObj ? baseObj->getId() : obj, 0, RegionKey::CollapsedObject);
+}
+
 UninitChecker::RegionKey UninitChecker::makeUnknownRegion(NodeID obj) const
 {
     const BaseObjVar* baseObj = getPAG()->getBaseObject(obj);
@@ -441,6 +450,8 @@ bool UninitChecker::regionsMayIntersect(const RegionKey& lhs, const RegionKey& r
         return false;
 
     if (lhs.precision == RegionKey::Unknown || rhs.precision == RegionKey::Unknown)
+        return true;
+    if (lhs.precision == RegionKey::CollapsedObject || rhs.precision == RegionKey::CollapsedObject)
         return true;
     if (lhs.precision == RegionKey::WholeObject || rhs.precision == RegionKey::WholeObject)
         return true;
@@ -461,6 +472,324 @@ bool UninitChecker::regionSetsMayIntersect(const RegionSet& lhs, const RegionSet
     return false;
 }
 
+bool UninitChecker::regionCoveredByWrite(const RegionKey& region, const RegionKey& writeRegion) const
+{
+    if (region.base != writeRegion.base)
+        return false;
+
+    if (writeRegion.precision == RegionKey::Unknown)
+        return region.precision == RegionKey::Unknown;
+
+    if (writeRegion.precision == RegionKey::WholeObject)
+        return true;
+
+    if (writeRegion.precision == RegionKey::CollapsedObject)
+        return region.precision == RegionKey::CollapsedObject;
+
+    if (region.precision == RegionKey::Field)
+        return region.field == writeRegion.field;
+
+    // A field write does not prove that an unknown/whole-object region is fully initialized.
+    return false;
+}
+
+bool UninitChecker::regionSetsCover(const RegionSet& regions, const RegionSet& writeRegions) const
+{
+    if (regions.empty() || writeRegions.empty())
+        return false;
+
+    for (const RegionKey& region : regions)
+    {
+        bool covered = false;
+        for (const RegionKey& writeRegion : writeRegions)
+        {
+            if (regionCoveredByWrite(region, writeRegion))
+            {
+                covered = true;
+                break;
+            }
+        }
+        if (!covered)
+            return false;
+    }
+    return true;
+}
+
+bool UninitChecker::eraseInitializedRegions(RegionSet& state, const RegionSet& writeRegions) const
+{
+    bool changed = false;
+    for (RegionSet::iterator it = state.begin(); it != state.end();)
+    {
+        bool covered = false;
+        for (const RegionKey& writeRegion : writeRegions)
+        {
+            if (regionCoveredByWrite(*it, writeRegion))
+            {
+                covered = true;
+                break;
+            }
+        }
+
+        if (covered)
+        {
+            it = state.erase(it);
+            changed = true;
+        }
+        else
+            ++it;
+    }
+    return changed;
+}
+
+bool UninitChecker::getStoreStmtWriteRegions(const StoreStmt* store, RegionSet& regions) const
+{
+    regions.clear();
+    if (store == nullptr || store->getLHSVar() == nullptr)
+        return false;
+    return addPointeeRegions(store->getLHSVarID(), regions);
+}
+
+bool UninitChecker::storeStmtRHSMayBeUninitSource(const StoreStmt* store, const SVFGNode* source) const
+{
+    if (store == nullptr || source == nullptr)
+        return true;
+
+    const SVFVar* rhs = store->getRHSVar();
+    if (rhs == nullptr)
+        return true;
+    if (rhs->isConstDataOrAggDataButNotNullPtr())
+        return false;
+
+    const SVFGNode* rhsDef = getSVFG()->getDefSVFGNode(rhs);
+    if (rhsDef == source)
+        return true;
+
+    if (rhs->isPointer())
+    {
+        RegionSet rhsRegions;
+        RegionSet sourceRegions;
+        if (addPointeeRegions(rhs->getId(), rhsRegions) &&
+                getInitialRegionsForSource(source, sourceRegions) &&
+                regionSetsMayIntersect(rhsRegions, sourceRegions))
+            return true;
+    }
+
+    return false;
+}
+
+bool UninitChecker::isMustExecuteDirectInitStore(const StoreStmt* store, const BaseObjVar* obj) const
+{
+    if (store == nullptr || obj == nullptr)
+        return false;
+
+    const ICFGNode* storeNode = store->getICFGNode();
+    const ICFGNode* objNode = obj->getICFGNode();
+    if (storeNode == nullptr || objNode == nullptr)
+        return false;
+
+    const FunObjVar* fun = objNode->getFun();
+    if (fun == nullptr || storeNode->getFun() != fun)
+        return false;
+
+    const SVFBasicBlock* storeBB = storeNode->getBB();
+    if (storeBB == nullptr)
+        return false;
+
+    const auto& domTree = fun->getDomTreeMap();
+    if (domTree.empty())
+        return false;
+
+    for (auto it = domTree.begin(), eit = domTree.end(); it != eit; ++it)
+    {
+        const SVFBasicBlock* bb = it->first;
+        if (bb != storeBB && !fun->dominate(storeBB, bb))
+            return false;
+    }
+    return true;
+}
+
+bool UninitChecker::refineInitialRegionsWithDirectStores(const BaseObjVar* obj, const SVFGNode* source,
+                                                         RegionSet& regions) const
+{
+    if (obj == nullptr || source == nullptr || regions.empty())
+        return false;
+
+    bool changed = false;
+    std::deque<SVFVar*> worklist;
+    std::unordered_set<const SVFVar*> visited;
+
+    if (SVFVar* objVar = const_cast<SVFVar*>(SVFUtil::dyn_cast<SVFVar>(obj)))
+    {
+        if (objVar->hasOutgoingEdges(SVFStmt::Addr))
+        {
+            for (const SVFStmt* addrStmt : objVar->getOutgoingEdges(SVFStmt::Addr))
+            {
+                if (addrStmt != nullptr && addrStmt->getDstNode() != nullptr)
+                    worklist.push_back(addrStmt->getDstNode());
+            }
+        }
+    }
+
+    u32_t steps = 0;
+    constexpr u32_t kMaxDirectInitPtrTrace = 64;
+    while (!worklist.empty() && steps++ < kMaxDirectInitPtrTrace)
+    {
+        SVFVar* ptr = worklist.front();
+        worklist.pop_front();
+        if (ptr == nullptr || !visited.insert(ptr).second)
+            continue;
+
+        if (ptr->hasIncomingEdges(SVFStmt::Store))
+        {
+            for (SVFStmt::SVFStmtSetTy::const_iterator sit = ptr->getIncomingEdgesBegin(SVFStmt::Store),
+                    seit = ptr->getIncomingEdgesEnd(SVFStmt::Store); sit != seit; ++sit)
+            {
+                const StoreStmt* store = SVFUtil::dyn_cast<StoreStmt>(*sit);
+                if (store == nullptr)
+                    continue;
+
+                RegionSet writeRegions;
+                if (!getStoreStmtWriteRegions(store, writeRegions))
+                    continue;
+                if (!regionSetsMayIntersect(regions, writeRegions))
+                    continue;
+                if (storeStmtRHSMayBeUninitSource(store, source))
+                    continue;
+                if (!isMustExecuteDirectInitStore(store, obj))
+                    continue;
+
+                changed |= eraseInitializedRegions(regions, writeRegions);
+                if (regions.empty())
+                    return changed;
+            }
+        }
+
+        if (ptr->hasOutgoingEdges(SVFStmt::Gep))
+        {
+            for (const SVFStmt* gepStmt : ptr->getOutgoingEdges(SVFStmt::Gep))
+            {
+                if (gepStmt != nullptr && gepStmt->getDstNode() != nullptr)
+                    worklist.push_back(gepStmt->getDstNode());
+            }
+        }
+        if (ptr->hasOutgoingEdges(SVFStmt::Copy))
+        {
+            for (const SVFStmt* copyStmt : ptr->getOutgoingEdges(SVFStmt::Copy))
+            {
+                if (copyStmt != nullptr && copyStmt->getDstNode() != nullptr)
+                    worklist.push_back(copyStmt->getDstNode());
+            }
+        }
+    }
+    return changed;
+}
+
+bool UninitChecker::mergeRegionState(NodeToRegionStateMap& states, const SVFGNode* node,
+                                     const RegionSet& incoming) const
+{
+    if (node == nullptr || incoming.empty())
+        return false;
+
+    RegionSet& state = states[node];
+    bool changed = false;
+    for (const RegionKey& region : incoming)
+    {
+        if (state.insert(region).second)
+            changed = true;
+    }
+    return changed;
+}
+
+bool UninitChecker::storeRHSMayCarryUninitInState(const SVFGNode* store, ProgSlice* slice,
+                                                 const NodeToRegionStateMap& states) const
+{
+    const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(store);
+    if (storeNode == nullptr)
+        return true;
+
+    const SVFVar* rhs = storeNode->getPAGSrcNode();
+    if (rhs == nullptr)
+        return true;
+
+    if (rhs->isConstDataOrAggDataButNotNullPtr())
+        return false;
+
+    const SVFGNode* rhsDef = getSVFG()->getDefSVFGNode(rhs);
+    if (rhsDef == nullptr)
+        return true;
+
+    if (storeRHSMayCarryUninit(store, slice))
+        return true;
+
+    // Address constants and freshly materialized values do not carry bytes from
+    // the current uninitialized object. For value-producing nodes, consult the
+    // current source-local region state instead of the whole forward slice.
+    if (!(SVFUtil::isa<LoadSVFGNode>(rhsDef) ||
+          SVFUtil::isa<CopySVFGNode>(rhsDef) ||
+          SVFUtil::isa<PHISVFGNode>(rhsDef) ||
+          SVFUtil::isa<ActualRetVFGNode>(rhsDef) ||
+          SVFUtil::isa<FormalParmVFGNode>(rhsDef)))
+        return false;
+
+    NodeToRegionStateMap::const_iterator stateIt = states.find(rhsDef);
+    return stateIt != states.end() && !stateIt->second.empty();
+}
+
+void UninitChecker::computeRegionUninitState(ProgSlice* slice, NodeToRegionStateMap& states) const
+{
+    states.clear();
+    if (slice == nullptr || slice->getSource() == nullptr)
+        return;
+
+    RegionSet sourceRegions;
+    if (!getInitialRegionsForSource(slice->getSource(), sourceRegions))
+        return;
+
+    std::deque<const SVFGNode*> worklist;
+    if (mergeRegionState(states, slice->getSource(), sourceRegions))
+        worklist.push_back(slice->getSource());
+
+    while (!worklist.empty())
+    {
+        const SVFGNode* node = worklist.front();
+        worklist.pop_front();
+
+        NodeToRegionStateMap::const_iterator stateIt = states.find(node);
+        if (stateIt == states.end() || stateIt->second.empty())
+            continue;
+
+        RegionSet outgoingState = stateIt->second;
+        if (storeNodes.find(node) != storeNodes.end() && isStoreStrongRegionKill(node) &&
+                !storeRHSMayCarryUninitInState(node, slice, states))
+        {
+            const RegionSet& writeRegions = getStoreWriteRegions(node);
+            eraseInitializedRegions(outgoingState, writeRegions);
+        }
+
+        if (outgoingState.empty())
+            continue;
+
+        for (auto edge : node->getOutEdges())
+        {
+            const SVFGNode* succ = edge->getDstNode();
+            if (!inUninitCandidateSlice(slice, succ))
+                continue;
+            if (mergeRegionState(states, succ, outgoingState))
+                worklist.push_back(succ);
+        }
+    }
+}
+
+bool UninitChecker::loadMayReadUninitRegion(const SVFGNode* load, const NodeToRegionStateMap& states) const
+{
+    NodeToRegionStateMap::const_iterator stateIt = states.find(load);
+    if (stateIt == states.end() || stateIt->second.empty())
+        return false;
+
+    const RegionSet& readRegions = getLoadReadRegions(load);
+    return !readRegions.empty() && regionSetsMayIntersect(stateIt->second, readRegions);
+}
+
 bool UninitChecker::addObjectRegion(NodeID obj, RegionSet& regions) const
 {
     SVFIR* pag = getPAG();
@@ -471,7 +800,7 @@ bool UninitChecker::addObjectRegion(NodeID obj, RegionSet& regions) const
 
     if (baseObj->isFieldInsensitive() || baseObj->isArray() || baseObj->isVarArray())
     {
-        regions.insert(makeUnknownRegion(baseObj->getId()));
+        regions.insert(makeCollapsedRegion(baseObj->getId()));
         return true;
     }
 
@@ -561,28 +890,66 @@ const UninitChecker::RegionSet& UninitChecker::getStoreWriteRegions(const SVFGNo
 
 bool UninitChecker::isStoreStrongRegionKill(const SVFGNode* store) const
 {
+    return classifyStrongUpdateFailure(store) == StrongOK;
+}
+
+UninitChecker::StrongUpdateFailureReason UninitChecker::classifyStrongUpdateFailure(const SVFGNode* store) const
+{
     const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(store);
     if (storeNode == nullptr)
-        return false;
+        return StrongNotStore;
 
     PointerAnalysis* pta = getSVFG()->getPTA();
     if (pta == nullptr)
-        return false;
+        return StrongNoPTA;
 
     const PointsTo& pts = pta->getPts(storeNode->getPAGDstNodeID());
     if (pts.count() != 1)
-        return false;
+        return StrongMultiPts;
 
     const RegionSet& writeRegions = getStoreWriteRegions(store);
     if (writeRegions.size() != 1)
-        return false;
+        return StrongMultiRegion;
 
     const RegionKey& writeRegion = *writeRegions.begin();
+    if (writeRegion.precision == RegionKey::CollapsedObject)
+        return StrongCollapsedRegion;
     if (writeRegion.precision == RegionKey::Unknown)
-        return false;
+        return StrongUnknownRegion;
 
     const BaseObjVar* baseObj = getPAG()->getBaseObject(writeRegion.base);
-    return baseObj != nullptr && !baseObj->isFieldInsensitive() && !baseObj->isVarArray();
+    if (baseObj == nullptr || baseObj->isFieldInsensitive())
+        return StrongFieldInsensitive;
+    if (baseObj->isVarArray())
+        return StrongVarArray;
+
+    return StrongOK;
+}
+
+const char* UninitChecker::strongUpdateFailureName(StrongUpdateFailureReason reason) const
+{
+    switch (reason)
+    {
+    case StrongOK:
+        return "strong-ok";
+    case StrongNotStore:
+        return "not-store";
+    case StrongNoPTA:
+        return "no-pta";
+    case StrongMultiPts:
+        return "multi-pts";
+    case StrongMultiRegion:
+        return "multi-region";
+    case StrongCollapsedRegion:
+        return "collapsed-region";
+    case StrongUnknownRegion:
+        return "unknown-region";
+    case StrongFieldInsensitive:
+        return "field-insensitive";
+    case StrongVarArray:
+        return "var-array";
+    }
+    return "unknown";
 }
 
 bool UninitChecker::storeMayKillLoadRegion(const SVFGNode* store, const SVFGNode* load) const
@@ -598,6 +965,31 @@ bool UninitChecker::storeMayKillLoadRegion(const SVFGNode* store, const SVFGNode
         return false;
 
     return regionSetsMayIntersect(writeRegions, readRegions);
+}
+
+bool UninitChecker::isSameAddressStoreLoad(const SVFGNode* store, const SVFGNode* load) const
+{
+    const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(store);
+    const LoadSVFGNode* loadNode = SVFUtil::dyn_cast<LoadSVFGNode>(load);
+    if (storeNode == nullptr || loadNode == nullptr)
+        return false;
+
+    return storeNode->getPAGDstNodeID() == loadNode->getPAGSrcNodeID();
+}
+
+bool UninitChecker::isLoadSpecificStoreKill(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const
+{
+    if (storeNodes.find(store) == storeNodes.end())
+        return false;
+    if (!isSameAddressStoreLoad(store, load))
+        return false;
+
+    const RegionSet& writeRegions = getStoreWriteRegions(store);
+    const RegionSet& readRegions = getLoadReadRegions(load);
+    if (!regionSetsCover(readRegions, writeRegions))
+        return false;
+
+    return !storeRHSMayCarryUninit(store, slice);
 }
 
 bool UninitChecker::storeRHSMayCarryUninit(const SVFGNode* store, ProgSlice* slice) const
@@ -693,6 +1085,12 @@ void UninitChecker::initSrcs()
                     RegionSet initialRegions;
                     if (!addObjectRegion(stackObj->getId(), initialRegions))
                         continue;
+                    refineInitialRegionsWithDirectStores(stackObj, source, initialRegions);
+                    if (initialRegions.empty())
+                    {
+                        ++smallInitSkippedSources;
+                        continue;
+                    }
                     sourceInitialRegions[source] = initialRegions;
                     addToSources(source);
                 }
@@ -884,12 +1282,381 @@ bool UninitChecker::flowsToCriticalUseWithinBudget(const SVFGNode* load, u32_t m
     return false;
 }
 
-bool UninitChecker::shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const
+bool UninitChecker::isMemsetLikeCall(const ICFGNode* node) const
 {
-    if (!storeMayKillLoadRegion(store, load))
+    const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(node);
+    if (call == nullptr)
         return false;
 
-    return !storeRHSMayCarryUninit(store, slice);
+    SaberMemTransferAPI* mtAPI = SaberMemTransferAPI::getAPI();
+    CallGraph::FunctionSet callees;
+    getCallgraph()->getCallees(call, callees);
+    for (CallGraph::FunctionSet::const_iterator it = callees.begin(), eit = callees.end(); it != eit; ++it)
+    {
+        if (mtAPI->isMemsetLike(*it))
+            return true;
+    }
+    return false;
+}
+
+bool UninitChecker::isMemcpyLikeCall(const ICFGNode* node) const
+{
+    const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(node);
+    if (call == nullptr)
+        return false;
+
+    SaberMemTransferAPI* mtAPI = SaberMemTransferAPI::getAPI();
+    CallGraph::FunctionSet callees;
+    getCallgraph()->getCallees(call, callees);
+    for (CallGraph::FunctionSet::const_iterator it = callees.begin(), eit = callees.end(); it != eit; ++it)
+    {
+        if (mtAPI->isMemcpyLike(*it))
+            return true;
+    }
+    return false;
+}
+
+bool UninitChecker::isCopyFromUserLikeCall(const ICFGNode* node) const
+{
+    const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(node);
+    if (call == nullptr)
+        return false;
+
+    SaberMemTransferAPI* mtAPI = SaberMemTransferAPI::getAPI();
+    CallGraph::FunctionSet callees;
+    getCallgraph()->getCallees(call, callees);
+    for (CallGraph::FunctionSet::const_iterator it = callees.begin(), eit = callees.end(); it != eit; ++it)
+    {
+        if (mtAPI->isUserCopyLike(*it))
+            return true;
+    }
+    return false;
+}
+
+bool UninitChecker::isAPIInitStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const
+{
+    const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(store);
+    if (storeNode == nullptr)
+        return false;
+
+    const ICFGNode* icfgNode = storeNode->getICFGNode();
+    if (icfgNode == nullptr)
+        return false;
+
+    if (isCopyFromUserLikeCall(icfgNode))
+        return false;
+
+    const RegionSet& writeRegions = getStoreWriteRegions(store);
+    const RegionSet& readRegions = getLoadReadRegions(load);
+    if (writeRegions.empty() || readRegions.empty() || !regionSetsCover(readRegions, writeRegions))
+        return false;
+
+    if (isMemsetLikeCall(icfgNode))
+        return true;
+
+    if (isMemcpyLikeCall(icfgNode))
+        return !storeRHSMayCarryUninit(store, slice);
+
+    return false;
+}
+
+bool UninitChecker::shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const
+{
+    return classifyStoreBlocker(load, store, slice) == StoreBlocks;
+}
+
+UninitChecker::StoreBlockReason UninitChecker::classifyStoreBlocker(const SVFGNode* load,
+                                                                    const SVFGNode* store,
+                                                                    ProgSlice* slice) const
+{
+    if (storeNodes.find(store) == storeNodes.end())
+        return NotStoreNode;
+    if (isAPIInitStoreForLoad(load, store, slice))
+        return StoreBlocks;
+    if (isLoadSpecificStoreKill(load, store, slice))
+        return StoreBlocks;
+    if (!isStoreStrongRegionKill(store))
+        return NotStrongStore;
+
+    const RegionSet& writeRegions = getStoreWriteRegions(store);
+    const RegionSet& readRegions = getLoadReadRegions(load);
+    if (writeRegions.empty() || readRegions.empty())
+        return EmptyRegionSet;
+    if (!regionSetsMayIntersect(writeRegions, readRegions))
+        return RegionDoesNotIntersect;
+    if (storeRHSMayCarryUninit(store, slice))
+        return RHSMayCarryUninit;
+
+    return StoreBlocks;
+}
+
+const char* UninitChecker::storeBlockReasonName(StoreBlockReason reason) const
+{
+    switch (reason)
+    {
+    case StoreBlocks:
+        return "blocks";
+    case NotStoreNode:
+        return "not-store";
+    case NotStrongStore:
+        return "not-strong";
+    case EmptyRegionSet:
+        return "empty-region";
+    case RegionDoesNotIntersect:
+        return "region-miss";
+    case RHSMayCarryUninit:
+        return "rhs-may-carry";
+    }
+    return "unknown";
+}
+
+void UninitChecker::updateStoreBlockDebugStats(StoreBlockDebugStats& stats, StoreBlockReason reason,
+                                               const SVFGNode* store) const
+{
+    ++stats.checks;
+    switch (reason)
+    {
+    case StoreBlocks:
+        ++stats.storeNodes;
+        ++stats.strongStores;
+        ++stats.regionIntersects;
+        ++stats.blockers;
+        break;
+    case NotStoreNode:
+        ++stats.notStore;
+        break;
+    case NotStrongStore:
+        ++stats.storeNodes;
+        ++stats.notStrong;
+        switch (classifyStrongUpdateFailure(store))
+        {
+        case StrongMultiPts:
+            ++stats.strongMultiPts;
+            break;
+        case StrongMultiRegion:
+            ++stats.strongMultiRegion;
+            break;
+        case StrongCollapsedRegion:
+            ++stats.strongCollapsedRegion;
+            break;
+        case StrongUnknownRegion:
+            ++stats.strongUnknownRegion;
+            break;
+        case StrongFieldInsensitive:
+            ++stats.strongFieldInsensitive;
+            break;
+        case StrongVarArray:
+            ++stats.strongVarArray;
+            break;
+        default:
+            break;
+        }
+        break;
+    case EmptyRegionSet:
+        ++stats.storeNodes;
+        ++stats.strongStores;
+        ++stats.emptyRegion;
+        break;
+    case RegionDoesNotIntersect:
+        ++stats.storeNodes;
+        ++stats.strongStores;
+        ++stats.regionMiss;
+        break;
+    case RHSMayCarryUninit:
+        ++stats.storeNodes;
+        ++stats.strongStores;
+        ++stats.regionIntersects;
+        ++stats.rhsMayCarry;
+        break;
+    }
+}
+
+void UninitChecker::debugCandidateBlockers(ProgSlice* slice, const SVFGNode* load) const
+{
+    if (!Options::SaberUninitDebug())
+        return;
+    if (uninitDebugLinesPrinted >= Options::SaberUninitDebugLimit())
+        return;
+    if (slice == nullptr || load == nullptr)
+        return;
+
+    StoreBlockDebugStats stats;
+    BackwardWorkList worklist;
+    SVFGNodeSet visited;
+    worklist.push(load);
+
+    u32_t backwardSteps = 0;
+    const u32_t maxBackwardSteps = Options::SaberUninitMaxBackwardSteps();
+    while (!worklist.empty() && backwardSteps++ < maxBackwardSteps)
+    {
+        const SVFGNode* node = worklist.pop();
+        if (!inUninitCandidateSlice(slice, node))
+            continue;
+        if (!visited.insert(node).second)
+            continue;
+        ++stats.visitedBackward;
+
+        if (node == slice->getSource())
+        {
+            ++stats.reachedSource;
+            continue;
+        }
+
+        if (node != load)
+        {
+            StoreBlockReason reason = classifyStoreBlocker(load, node, slice);
+            updateStoreBlockDebugStats(stats, reason, node);
+            if (reason == StoreBlocks)
+                continue;
+        }
+
+        for (auto edge : node->getInEdges())
+        {
+            const SVFGNode* pred = edge->getSrcNode();
+            if (!inUninitCandidateSlice(slice, pred))
+                continue;
+
+            StoreBlockReason predReason = classifyStoreBlocker(load, pred, slice);
+            if (predReason == StoreBlocks)
+            {
+                updateStoreBlockDebugStats(stats, predReason, pred);
+                continue;
+            }
+            worklist.push(pred);
+        }
+    }
+
+    ++uninitDebugLinesPrinted;
+    outs() << "[UNINIT][block-debug] source=" << slice->getSource()->getId()
+           << " load=" << load->getId()
+           << " visitedBackward=" << stats.visitedBackward
+           << " reachedSource=" << stats.reachedSource
+           << " checks=" << stats.checks
+           << " storeNodes=" << stats.storeNodes
+           << " strongStores=" << stats.strongStores
+           << " regionIntersects=" << stats.regionIntersects
+           << " blockers=" << stats.blockers
+           << " notStrong=" << stats.notStrong
+           << " strongMultiPts=" << stats.strongMultiPts
+           << " strongMultiRegion=" << stats.strongMultiRegion
+           << " strongCollapsedRegion=" << stats.strongCollapsedRegion
+           << " strongUnknownRegion=" << stats.strongUnknownRegion
+           << " strongFieldInsensitive=" << stats.strongFieldInsensitive
+           << " strongVarArray=" << stats.strongVarArray
+           << " emptyRegion=" << stats.emptyRegion
+           << " regionMiss=" << stats.regionMiss
+           << " rhsMayCarry=" << stats.rhsMayCarry
+           << " notStore=" << stats.notStore;
+    if (const ICFGNode* sourceICFG = getBugEventICFGNode(slice->getSource()))
+    {
+        if (!sourceICFG->getSourceLoc().empty())
+            outs() << " sourceLoc=\"" << sourceICFG->getSourceLoc() << "\"";
+    }
+    if (const ICFGNode* loadICFG = getBugEventICFGNode(load))
+    {
+        if (!loadICFG->getSourceLoc().empty())
+            outs() << " loadLoc=\"" << loadICFG->getSourceLoc() << "\"";
+    }
+    outs() << "\n";
+    outs().flush();
+}
+
+bool UninitChecker::sameBasicBlockReachableBefore(const ICFGNode* beforeNode, const ICFGNode* afterNode) const
+{
+    if (beforeNode == nullptr || afterNode == nullptr || beforeNode == afterNode)
+        return false;
+
+    const SVFBasicBlock* bb = beforeNode->getBB();
+    if (bb == nullptr || afterNode->getBB() != bb)
+        return false;
+    if (beforeNode->getFun() == nullptr || beforeNode->getFun() != afterNode->getFun())
+        return false;
+
+    std::queue<const ICFGNode*> worklist;
+    std::unordered_set<const ICFGNode*> visited;
+    worklist.push(beforeNode);
+    visited.insert(beforeNode);
+
+    u32_t steps = 0;
+    constexpr u32_t kMaxSameBBOrderSteps = 128;
+    while (!worklist.empty() && steps++ < kMaxSameBBOrderSteps)
+    {
+        const ICFGNode* node = worklist.front();
+        worklist.pop();
+
+        for (auto edge : node->getOutEdges())
+        {
+            if (!edge->isIntraCFGEdge())
+                continue;
+
+            const ICFGNode* succ = edge->getDstNode();
+            if (succ == nullptr || succ->getBB() != bb)
+                continue;
+            if (succ == afterNode)
+                return true;
+            if (visited.insert(succ).second)
+                worklist.push(succ);
+        }
+    }
+
+    return false;
+}
+
+bool UninitChecker::sameFunctionDominates(const ICFGNode* domNode, const ICFGNode* useNode) const
+{
+    if (domNode == nullptr || useNode == nullptr)
+        return false;
+
+    const FunObjVar* fun = domNode->getFun();
+    if (fun == nullptr || useNode->getFun() != fun)
+        return false;
+
+    const SVFBasicBlock* domBB = domNode->getBB();
+    const SVFBasicBlock* useBB = useNode->getBB();
+    if (domBB == nullptr || useBB == nullptr)
+        return false;
+
+    if (domBB == useBB)
+        return sameBasicBlockReachableBefore(domNode, useNode);
+
+    return fun->dominate(domBB, useBB);
+}
+
+bool UninitChecker::hasDominatingInitBlocker(ProgSlice* slice, const SVFGNode* load) const
+{
+    if (slice == nullptr || load == nullptr)
+        return false;
+
+    const ICFGNode* loadICFG = load->getICFGNode();
+    if (loadICFG == nullptr)
+        return false;
+
+    BackwardWorkList worklist;
+    SVFGNodeSet visited;
+    worklist.push(load);
+
+    u32_t backwardSteps = 0;
+    const u32_t maxBackwardSteps = Options::SaberUninitMaxBackwardSteps();
+    while (!worklist.empty() && backwardSteps++ < maxBackwardSteps)
+    {
+        const SVFGNode* node = worklist.pop();
+        if (!inUninitCandidateSlice(slice, node))
+            continue;
+        if (!visited.insert(node).second)
+            continue;
+
+        if (node != load && classifyStoreBlocker(load, node, slice) == StoreBlocks &&
+                sameFunctionDominates(node->getICFGNode(), loadICFG))
+            return true;
+
+        for (auto edge : node->getInEdges())
+        {
+            const SVFGNode* pred = edge->getSrcNode();
+            if (inUninitCandidateSlice(slice, pred))
+                worklist.push(pred);
+        }
+    }
+    return false;
 }
 
 bool UninitChecker::shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const
@@ -1228,6 +1995,14 @@ void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& c
     if (!getInitialRegionsForSource(slice->getSource(), sourceRegions))
         return;
 
+    NodeToRegionStateMap regionStates;
+    if (Options::SaberUninitRegionState())
+    {
+        computeRegionUninitState(slice, regionStates);
+        if (regionStates.empty())
+            return;
+    }
+
     for (SVFGNodeSetIter lit = slice->sinksBegin(), elit = slice->sinksEnd(); lit != elit; ++lit)
     {
         const SVFGNode* load = *lit;
@@ -1244,6 +2019,10 @@ void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& c
 
         const RegionSet& readRegions = getLoadReadRegions(load);
         if (readRegions.empty() || !regionSetsMayIntersect(sourceRegions, readRegions))
+            continue;
+        if (Options::SaberUninitRegionState() && !loadMayReadUninitRegion(load, regionStates))
+            continue;
+        if (hasDominatingInitBlocker(slice, load))
             continue;
 
         BackwardWorkList worklist;
@@ -1527,6 +2306,7 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
 
         if(hasUninitPath)
         {
+            debugCandidateBlockers(rawSlice, *lit);
             foundBug = true;
             break;
         }

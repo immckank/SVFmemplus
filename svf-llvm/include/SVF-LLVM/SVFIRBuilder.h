@@ -242,6 +242,8 @@ protected:
     //@{
     virtual const Type *getBaseTypeAndFlattenedFields(const Value *V, std::vector<AccessPath> &fields, const Value* szValue);
     virtual void addComplexConsForExt(Value *D, Value *S, const Value* sz);
+    /// Model *dst = *src for pointer-sized memcpy/memmove (e.g. memcpy(&field, &localPtr, sizeof(void*))).
+    virtual void addPtrSizedMemcpyCons(Value* dstAddr, Value* srcAddr);
     virtual void handleExtCall(const CallBase* cs, const Function* callee);
     //@}
 
