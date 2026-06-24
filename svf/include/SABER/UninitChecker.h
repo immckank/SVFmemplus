@@ -3,6 +3,7 @@
 #define UNINITCHECKER_H_
 
 #include "SABER/LeakChecker.h"
+#include "SABER/UninitLLMTriage.h"
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -11,10 +12,6 @@
 namespace SVF
 {
 
-/*!
- * Double free checker to check deallocations of memory
- */
-
 class UninitChecker : public LeakChecker
 {
 
@@ -22,13 +19,12 @@ public:
     UninitChecker();
     virtual ~UninitChecker();
 
-    /// We start from here
     virtual bool runOnModule(SVFIR* pag) override;
     virtual void analyze() override;
-
-    /// Report file/close bugs
     void reportBug(ProgSlice* slice) override;
+    void finalize() override;
 
+    static void setLLMTriageConfig(const UninitLLMTriageConfig& cfg);
 
     virtual void initSrcs() override;
     virtual void initSnks() override;
@@ -115,6 +111,17 @@ private:
         }
     };
 
+    struct PendingUninitReport
+    {
+        GenericBug::EventStack eventStack;
+        const SVFGNode* source = nullptr;
+        std::string sourceKind;
+        std::string allocator;
+        bool zeroing = false;
+        std::string reportKey;
+        UninitSlice slice;
+    };
+
     typedef std::unordered_set<RegionKey, RegionKeyHash> RegionSet;
     typedef std::unordered_map<const SVFGNode*, RegionSet> NodeToRegionStateMap;
 
@@ -163,6 +170,14 @@ private:
         u32_t visitedBackward = 0;
     };
 
+    void flushPendingReports();
+    std::string makeReportKey(const ICFGNode* sourceICFG, const ICFGNode* useICFG) const;
+    bool shouldSkipHeaderSourceReport(const ICFGNode* sourceICFG, const ICFGNode* useICFG) const;
+    std::string classifySourceKind(const SVFGNode* source) const;
+    std::string classifyAllocator(const SVFGNode* source) const;
+    bool isPlainKmallocAllocatorName(const std::string& name) const;
+    bool isMemsetLikeInitializingStore(const SVFGNode* store) const;
+
     void collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnorePtrStore,
                                const SVFGNodeSet& qualifierStateAllStore,
                                SVFGNodeSet& candidateLoads) const;
@@ -180,8 +195,17 @@ private:
     mutable std::unordered_map<const SVFGNode*, bool> ignorePtrStoreForLoadCache;
     mutable u32_t uninitDebugLinesPrinted = 0;
     u32_t smallInitSkippedSources = 0;
+    u32_t dedupSkippedReports = 0;
+    u32_t headerSkippedReports = 0;
+    u32_t llmSuppressedReports = 0;
+    u32_t emittedUninitReports = 0;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToBoundaries;
+    std::unordered_set<std::string> reportedKeys;
+    std::vector<PendingUninitReport> pendingReports;
+    UninitLLMTriage llmTriage;
+    static UninitLLMTriageConfig s_llmCfg;
+
     bool isPtrStoreNode(const SVFGNode* node) const;
     bool isPtrLoadNode(const SVFGNode* node) const;
     bool isCriticalUninitSink(const SVFGNode* load) const;
@@ -249,9 +273,13 @@ private:
     bool isParameterSpillStackObject(StackObjVar* stackObj, SVFIR* pag) const;
     bool isSmallDirectlyInitializedStackObject(StackObjVar* stackObj, SVFIR* pag) const;
     bool isCompositeMemoryObject(const BaseObjVar* obj) const;
+    bool isSmallScalarStackObject(const BaseObjVar* obj) const;
+    bool pagNodeMayReachCallPE(const SVFVar* node, SVFIR* pag) const;
+    bool isAddressEscapingScalarStackObject(StackObjVar* stackObj, SVFIR* pag) const;
+    bool isTrackableScalarStackObject(StackObjVar* stackObj, SVFIR* pag) const;
+    bool isScalarStackValueLoad(const SVFGNode* load) const;
     bool pointeeIncludesCompositeObject(NodeID ptr) const;
     bool isReturnAnchoredICFGNode(const ICFGNode* node) const;
-
 };
 
 template<class Data>
@@ -274,20 +302,13 @@ public:
         return data_list.size();
     }
 
-    /**
-     * 是否已经访问过该节点（无论是否仍在队列中）
-     */
     inline bool isVisited(const Data &data) const
     {
         return visited.find(data) != visited.end();
     }
 
-    /**
-     * 向队列中推入一个节点（若从未访问过）
-     */
     inline bool push(const Data &data)
     {
-        // 只要访问过，就不再重复入队
         if (visited.insert(data).second) {
             data_list.push_back(data);
             return true;
@@ -295,9 +316,6 @@ public:
         return false;
     }
 
-    /**
-     * 取出队首元素（不会影响 visited 状态）
-     */
     inline Data pop()
     {
         assert(!empty() && "work list is empty");
@@ -313,10 +331,9 @@ public:
     }
 
 private:
-    DataDeque data_list;   ///< 按FIFO顺序的队列
-    DataSet visited;       ///< 所有已访问过的节点（包括已出队）
+    DataDeque data_list;
+    DataSet visited;
 };
-
 
 } // End namespace SVF
 

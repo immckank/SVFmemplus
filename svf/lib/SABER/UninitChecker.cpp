@@ -11,10 +11,14 @@
 #include "Util/WorkList.h"
 #include "SVFIR/SVFValue.h"
 #include "Graphs/ICFG.h"
+#include "Util/cJSON.h"
 #include <deque>
 #include <queue>
 #include <unordered_set>
 #include <string>
+#include <vector>
+#include <algorithm>
+#include <cstdlib>
 
 using namespace SVF;
 using namespace SVFUtil;
@@ -34,6 +38,30 @@ typedef FIFOWorkList<const SVFGNode*> ForwardWorkList;
  */
 static constexpr double kSlowSourceReportSec = 1.0;
 static constexpr double kSlowPathCheckSec = 3.0;
+
+UninitLLMTriageConfig UninitChecker::s_llmCfg;
+
+void UninitChecker::setLLMTriageConfig(const UninitLLMTriageConfig& cfg)
+{
+    s_llmCfg = cfg;
+}
+
+static bool parseLocFileLine(const std::string& locJson, std::string& file, u32_t& line)
+{
+    file.clear();
+    line = 0;
+    cJSON* lj = cJSON_Parse(locJson.c_str());
+    if (!lj)
+        return false;
+    if (cJSON* fl = cJSON_GetObjectItem(lj, "fl"))
+        if (cJSON_IsString(fl) && fl->valuestring)
+            file = fl->valuestring;
+    if (cJSON* ln = cJSON_GetObjectItem(lj, "ln"))
+        if (cJSON_IsNumber(ln))
+            line = static_cast<u32_t>(ln->valuedouble);
+    cJSON_Delete(lj);
+    return !file.empty() || line != 0;
+}
 
 static const ICFGNode* getBugEventICFGNode(const SVFGNode* node)
 {
@@ -55,6 +83,16 @@ static bool hasUsableSourceLoc(const ICFGNode* node)
 {
     return node != nullptr && node->getSourceLoc().empty() == false &&
            !isReturnAnchoredICFGNode(node);
+}
+
+static const ICFGNode* findUseICFGNodeFromEvents(const GenericBug::EventStack& eventStack)
+{
+    for (auto it = eventStack.rbegin(); it != eventStack.rend(); ++it)
+    {
+        if (it->getEventType() == SVFBugEvent::Use && hasUsableSourceLoc(it->getEventInst()))
+            return it->getEventInst();
+    }
+    return nullptr;
 }
 
 static int icfgNodeKindPenalty(const ICFGNode* node)
@@ -216,6 +254,7 @@ static const ICFGNode* selectBestSourceICFGNode(const SVFGNode* source, const Ge
 UninitChecker::UninitChecker() : LeakChecker() {
     Options::SaberKeepDerefDirSVFGEdges.setValue(true);
     Options::SABERFULLSVFG.setValue(true);
+    llmTriage.setConfig(s_llmCfg);
 }
 UninitChecker::~UninitChecker() { }
 
@@ -237,6 +276,15 @@ void UninitChecker::analyze()
     }
 
     initialize();
+
+    reportedKeys.clear();
+    pendingReports.clear();
+    dedupSkippedReports = 0;
+    headerSkippedReports = 0;
+    llmSuppressedReports = 0;
+    emittedUninitReports = 0;
+    llmTriage = UninitLLMTriage();
+    llmTriage.setConfig(s_llmCfg);
 
     ContextCond::setMaxCxtLen(Options::CxtLimit());
 
@@ -296,20 +344,24 @@ void UninitChecker::analyze()
 
     if (progress || timeStat)
     {
-        const double elapsed = (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL;
         if (timeStat)
-            saberTimeStat.totalTime = elapsed;
+            saberTimeStat.totalTime = (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL;
+    }
+    finalize();
+    if (progress || timeStat)
+    {
+        const double elapsed = (SVFStat::getClk(true) - totalStart) / TIMEINTERVAL;
         if (progress)
         {
             outs() << "[UNINIT][analyze-done] sources=" << numSrcs
                    << " withCandidates=" << saberTimeStat.uninitSourcesWithCandidates
-                   << " reported=" << saberTimeStat.uninitReportedSources
+                   << " pending=" << pendingReports.size()
+                   << " reported=" << emittedUninitReports
                    << " smallInitSkipped=" << smallInitSkippedSources
                    << " elapsed=" << elapsed << "\n";
             outs().flush();
         }
     }
-    finalize();
 }
 
 bool UninitChecker::isParameterSpillStackObject(StackObjVar* stackObj, SVFIR* pag) const
@@ -402,6 +454,86 @@ bool UninitChecker::isCompositeMemoryObject(const BaseObjVar* obj) const
     // ObjTypeInfo flags are set in SymbolTableBuilder::analyzeObjType from LLVM
     // StructType / ArrayType. Scalars and vector SingleValueTypes are excluded.
     return obj->isStruct() || obj->isVarStruct() || obj->isArray() || obj->isVarArray();
+}
+
+bool UninitChecker::isSmallScalarStackObject(const BaseObjVar* obj) const
+{
+    const StackObjVar* stackObj = SVFUtil::dyn_cast<StackObjVar>(obj);
+    if (stackObj == nullptr || isCompositeMemoryObject(stackObj))
+        return false;
+    if (!stackObj->isConstantByteSize())
+        return false;
+    const u32_t byteSize = stackObj->getByteSizeOfObj();
+    return byteSize > 0 && byteSize <= 16;
+}
+
+bool UninitChecker::pagNodeMayReachCallPE(const SVFVar* node, SVFIR* pag) const
+{
+    if (node == nullptr || pag == nullptr)
+        return false;
+
+    FIFOWorkList<const SVFVar*> worklist;
+    std::unordered_set<const SVFVar*> visited;
+    worklist.push(node);
+
+    while (!worklist.empty())
+    {
+        const SVFVar* cur = worklist.pop();
+        if (!visited.insert(cur).second)
+            continue;
+
+        SVFVar* mutableCur = const_cast<SVFVar*>(cur);
+        if (mutableCur->hasOutgoingEdges(SVFStmt::Call))
+            return true;
+
+        for (const SVFStmt* stmt : mutableCur->getOutgoingEdges(SVFStmt::Copy))
+            worklist.push(stmt->getDstNode());
+        for (const SVFStmt* stmt : mutableCur->getOutgoingEdges(SVFStmt::Gep))
+            worklist.push(stmt->getDstNode());
+        for (const SVFStmt* stmt : mutableCur->getOutgoingEdges(SVFStmt::Load))
+            worklist.push(stmt->getDstNode());
+        for (const SVFStmt* stmt : mutableCur->getOutgoingEdges(SVFStmt::Store))
+            worklist.push(stmt->getSrcNode());
+    }
+    return false;
+}
+
+bool UninitChecker::isAddressEscapingScalarStackObject(StackObjVar* stackObj, SVFIR* pag) const
+{
+    if (stackObj == nullptr || pag == nullptr)
+        return false;
+    if (!stackObj->hasOutgoingEdges(SVFStmt::Addr))
+        return false;
+
+    for (const SVFStmt* addrStmt : stackObj->getOutgoingEdges(SVFStmt::Addr))
+    {
+        const SVFVar* slotPtr = addrStmt->getDstNode();
+        if (slotPtr != nullptr && pagNodeMayReachCallPE(slotPtr, pag))
+            return true;
+    }
+    return false;
+}
+
+bool UninitChecker::isTrackableScalarStackObject(StackObjVar* stackObj, SVFIR* pag) const
+{
+    if (!isSmallScalarStackObject(stackObj))
+        return false;
+    return isAddressEscapingScalarStackObject(stackObj, pag);
+}
+
+bool UninitChecker::isScalarStackValueLoad(const SVFGNode* load) const
+{
+    if (!SVFUtil::isa<LoadSVFGNode>(load) || isPtrLoadNode(load))
+        return false;
+
+    const RegionSet& readRegions = getLoadReadRegions(load);
+    for (const RegionKey& region : readRegions)
+    {
+        const BaseObjVar* baseObj = getPAG()->getBaseObject(region.base);
+        if (isSmallScalarStackObject(baseObj))
+            return true;
+    }
+    return false;
 }
 
 bool UninitChecker::pointeeIncludesCompositeObject(NodeID ptr) const
@@ -888,6 +1020,38 @@ const UninitChecker::RegionSet& UninitChecker::getStoreWriteRegions(const SVFGNo
     return storeWriteRegionCache[store];
 }
 
+bool UninitChecker::isMemsetLikeInitializingStore(const SVFGNode* store) const
+{
+    const StoreSVFGNode* storeNode = SVFUtil::dyn_cast<StoreSVFGNode>(store);
+    if (storeNode == nullptr)
+        return false;
+
+    const ICFGNode* icfg = storeNode->getICFGNode();
+    if (icfg == nullptr)
+        return false;
+
+    if (const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(icfg))
+    {
+        CallGraph::FunctionSet callees;
+        getCallgraph()->getCallees(call, callees);
+        for (const FunObjVar* fun : callees)
+        {
+            if (fun == nullptr)
+                continue;
+            const std::string& n = fun->getName();
+            if (ExtAPI::getExtAPI()->is_memset(fun) || n == "bzero" || n == "memzero_explicit" ||
+                n.find("memset") != std::string::npos)
+                return true;
+        }
+    }
+
+    const SVFVar* rhs = storeNode->getPAGSrcNode();
+    if (rhs != nullptr && rhs->isConstDataOrAggDataButNotNullPtr())
+        return true;
+
+    return false;
+}
+
 bool UninitChecker::isStoreStrongRegionKill(const SVFGNode* store) const
 {
     return classifyStrongUpdateFailure(store) == StrongOK;
@@ -956,6 +1120,17 @@ bool UninitChecker::storeMayKillLoadRegion(const SVFGNode* store, const SVFGNode
 {
     if (storeNodes.find(store) == storeNodes.end())
         return false;
+
+    if (isMemsetLikeInitializingStore(store))
+    {
+        const RegionSet& writeRegions = getStoreWriteRegions(store);
+        const RegionSet& readRegions = getLoadReadRegions(load);
+        if (!writeRegions.empty() && !readRegions.empty() &&
+                regionSetsMayIntersect(writeRegions, readRegions))
+            return true;
+        return false;
+    }
+
     if (!isStoreStrongRegionKill(store))
         return false;
 
@@ -1015,13 +1190,35 @@ bool UninitChecker::storeRHSMayCarryUninit(const SVFGNode* store, ProgSlice* sli
 
 bool UninitChecker::isZeroingAllocatorName(const std::string& name) const
 {
-    return name.find("calloc") != std::string::npos ||
-           name.find("zalloc") != std::string::npos ||
-           name.find("alloc_clear") != std::string::npos ||
-           name.find("alloc_zero") != std::string::npos ||
-           name == "vzalloc" ||
-           name == "kvzalloc" ||
-           name == "kzalloc";
+    if (name.find("calloc") != std::string::npos ||
+        name.find("zalloc") != std::string::npos ||
+        name.find("alloc_clear") != std::string::npos ||
+        name.find("alloc_zero") != std::string::npos ||
+        name == "vzalloc" ||
+        name == "kvzalloc" ||
+        name == "kzalloc" ||
+        name == "devm_kzalloc" ||
+        name == "kcalloc" ||
+        name.find("kzalloc_node") != std::string::npos ||
+        name.find("devm_kzalloc") != std::string::npos)
+        return true;
+    return false;
+}
+
+bool UninitChecker::isPlainKmallocAllocatorName(const std::string& name) const
+{
+    if (isZeroingAllocatorName(name))
+        return false;
+    if (name == "kmalloc" || name == "__kmalloc" || name == "kmalloc_node" ||
+        name == "kmalloc_array" || name == "kmem_cache_alloc")
+        return true;
+    if (name.find("devm_kmalloc") != std::string::npos)
+        return true;
+    if (name.find("kmalloc") != std::string::npos)
+        return true;
+    if (name.find("kmem_cache_alloc") != std::string::npos)
+        return true;
+    return false;
 }
 
 bool UninitChecker::isZeroingHeapObject(const HeapObjVar* heapObj) const
@@ -1070,7 +1267,9 @@ void UninitChecker::initSrcs()
                 SVFVar* obj = const_cast<SVFVar*>(ld->getSrcNode());
                 if (StackObjVar* stackObj = SVFUtil::dyn_cast<StackObjVar>(obj))
                 {
-                    if (!isCompositeMemoryObject(stackObj))
+                    const bool composite = isCompositeMemoryObject(stackObj);
+                    const bool scalarOutParam = isTrackableScalarStackObject(stackObj, pag);
+                    if (!composite && !scalarOutParam)
                         continue;
                     if (isParameterSpillStackObject(stackObj, pag))
                         continue;
@@ -1096,16 +1295,10 @@ void UninitChecker::initSrcs()
                 }
                 else if (HeapObjVar* heapObj = SVFUtil::dyn_cast<HeapObjVar>(obj))
                 {
-                    if (isZeroingHeapObject(heapObj))
-                        continue;
-                    if (!isCompositeMemoryObject(heapObj))
-                        continue;
-                    const SVFGNode* source = getSVFG()->getStmtVFGNode(ld);
-                    RegionSet initialRegions;
-                    if (!addObjectRegion(heapObj->getId(), initialRegions))
-                        continue;
-                    sourceInitialRegions[source] = initialRegions;
-                    addToSources(source);
+                    // B2: direct composite HeapObjVar sources are dominated by kmalloc FP;
+                    // heap uninit is tracked only via explicit non-kmalloc call-site rets.
+                    (void)heapObj;
+                    continue;
                 }
             }
         }
@@ -1124,6 +1317,9 @@ void UninitChecker::initSrcs()
         {
             const FunObjVar* fun = *cit;
             if (!SaberCheckerAPI::getCheckerAPI()->isMemAlloc(fun) || isZeroingAllocatorName(fun->getName()))
+                continue;
+            // B2: skip plain kmalloc-family allocators (major FP source in kernel drivers).
+            if (isPlainKmallocAllocatorName(fun->getName()))
                 continue;
 
             CSWorkList worklist;
@@ -1212,7 +1408,7 @@ void UninitChecker::initSnks()
     for (SVFGNodeSetIter lit = loadNodes.begin(), elit = loadNodes.end(); lit != elit; ++lit)
     {
         const SVFGNode* loadNode = *lit;
-        if (isCriticalUninitSink(loadNode))
+        if (isCriticalUninitSink(loadNode) || isScalarStackValueLoad(loadNode))
         {
             criticalSinkNodes.insert(loadNode);
             addToSinks(loadNode);
@@ -1263,6 +1459,11 @@ bool UninitChecker::flowsToCriticalUseWithinBudget(const SVFGNode* load, u32_t m
                 (SVFUtil::isa<LoadSVFGNode>(node) || SVFUtil::isa<StoreSVFGNode>(node)))
             return true;
 
+        if (!ptrLoad && node != load &&
+                (SVFUtil::isa<GepSVFGNode>(node) || SVFUtil::isa<CmpVFGNode>(node) ||
+                 ActualParmVFGNode::classof(node) || SVFUtil::isa<LoadSVFGNode>(node)))
+            return true;
+
         for (auto edge : node->getOutEdges())
         {
             const SVFGNode* succ = edge->getDstNode();
@@ -1273,6 +1474,7 @@ bool UninitChecker::flowsToCriticalUseWithinBudget(const SVFGNode* load, u32_t m
                     SVFUtil::isa<BinaryOPVFGNode>(succ) ||
                     SVFUtil::isa<UnaryOPVFGNode>(succ) ||
                     SVFUtil::isa<BranchVFGNode>(succ) ||
+                    ActualParmVFGNode::classof(succ) ||
                     (ptrLoad && (SVFUtil::isa<LoadSVFGNode>(succ) ||
                                  SVFUtil::isa<StoreSVFGNode>(succ))))
                 worklist.push(succ);
@@ -2214,6 +2416,34 @@ bool UninitChecker::hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardS
     return false;
 }
 
+static u32_t getLoadSourceLine(const SVFGNode* load)
+{
+    if (load == nullptr)
+        return 0;
+    const ICFGNode* icfg = load->getICFGNode();
+    if (icfg == nullptr)
+        return 0;
+    const std::string& loc = icfg->getSourceLoc();
+    if (loc.empty())
+        return 0;
+
+    auto parseLineKey = [&](const char* key) -> u32_t {
+        const std::string needle = std::string("\"") + key + "\":";
+        const size_t pos = loc.find(needle);
+        if (pos == std::string::npos)
+            return 0;
+        const char* start = loc.c_str() + pos + needle.size();
+        while (*start == ' ')
+            ++start;
+        return static_cast<u32_t>(std::strtoul(start, nullptr, 10));
+    };
+
+    u32_t line = parseLineKey("ln");
+    if (line == 0)
+        line = parseLineKey("line");
+    return line;
+}
+
 
 void UninitChecker::reportBug(ProgSlice* rawSlice)
 {
@@ -2261,10 +2491,16 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
     }
     ++saberTimeStat.uninitSourcesWithCandidates;
 
+    std::vector<const SVFGNode*> orderedCandidates(candidateLoads.begin(), candidateLoads.end());
+    std::sort(orderedCandidates.begin(), orderedCandidates.end(),
+              [](const SVFGNode* lhs, const SVFGNode* rhs) {
+                  return getLoadSourceLine(lhs) > getLoadSourceLine(rhs);
+              });
+
     GenericBug::EventStack eventStack;
     u32_t candidateIndex = 0;
     bool foundBug = false;
-    for (SVFGNodeSetIter lit = candidateLoads.begin(), elit = candidateLoads.end(); lit != elit; ++lit)
+    for (const SVFGNode* candidateLoad : orderedCandidates)
     {
         ++candidateIndex;
 
@@ -2272,7 +2508,7 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
         {
             phaseStart = SVFStat::getClk(true);
         }
-        std::unique_ptr<ProgSlice> guardSlice = buildStoreBypassGuardSlice(rawSlice, *lit);
+        std::unique_ptr<ProgSlice> guardSlice = buildStoreBypassGuardSlice(rawSlice, candidateLoad);
         if (!guardSlice)
         {
             if (timeStat)
@@ -2296,7 +2532,7 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
             solveStart = SVFStat::getClk(true);
         }
         eventStack.clear();
-        bool hasUninitPath = hasFeasibleUninitPath(rawSlice, guardSlice.get(), *lit, eventStack);
+        bool hasUninitPath = hasFeasibleUninitPath(rawSlice, guardSlice.get(), candidateLoad, eventStack);
         if (timeStat)
         {
             double t = (SVFStat::getClk(true) - solveStart) / TIMEINTERVAL;
@@ -2320,9 +2556,188 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
             finishReport(candidateLoads.size());
             return;
         }
+        const ICFGNode* useICFG = findUseICFGNodeFromEvents(eventStack);
+        if (useICFG == nullptr)
+            useICFG = getBugEventICFGNode(rawSlice->getSource());
+
+        if (shouldSkipHeaderSourceReport(sourceICFG, useICFG))
+        {
+            ++headerSkippedReports;
+            finishReport(candidateLoads.size());
+            return;
+        }
+
         eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, sourceICFG));
-        report.addSaberBug(GenericBug::UNINIT, eventStack);
+
+        const std::string reportKey = makeReportKey(sourceICFG, useICFG);
+        if (!reportedKeys.insert(reportKey).second)
+        {
+            ++dedupSkippedReports;
+            finishReport(candidateLoads.size());
+            return;
+        }
+
+        PendingUninitReport pending;
+        pending.eventStack = eventStack;
+        pending.source = rawSlice->getSource();
+        pending.sourceKind = classifySourceKind(rawSlice->getSource());
+        pending.allocator = classifyAllocator(rawSlice->getSource());
+        pending.zeroing = false;
+        if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(rawSlice->getSource()))
+        {
+            if (const HeapObjVar* ho = SVFUtil::dyn_cast<HeapObjVar>(addr->getPAGSrcNode()))
+                pending.zeroing = isZeroingHeapObject(ho);
+        }
+        pending.reportKey = reportKey;
+        llmTriage.collectSlice(pending.source, pending.eventStack, pending.sourceKind,
+                               pending.allocator, pending.zeroing, pending.slice);
+        pendingReports.push_back(std::move(pending));
         ++saberTimeStat.uninitReportedSources;
     }
     finishReport(candidateLoads.size());
+}
+
+std::string UninitChecker::makeReportKey(const ICFGNode* sourceICFG, const ICFGNode* useICFG) const
+{
+    std::string key;
+    if (sourceICFG)
+        key += sourceICFG->getSourceLoc();
+    key += "#";
+    if (useICFG)
+        key += useICFG->getSourceLoc();
+    return key;
+}
+
+bool UninitChecker::shouldSkipHeaderSourceReport(const ICFGNode* sourceICFG,
+                                                 const ICFGNode* useICFG) const
+{
+    if (sourceICFG == nullptr || useICFG == nullptr)
+        return false;
+
+    std::string sourceFile;
+    std::string useFile;
+    u32_t dummyLine = 0;
+    parseLocFileLine(sourceICFG->getSourceLoc(), sourceFile, dummyLine);
+    parseLocFileLine(useICFG->getSourceLoc(), useFile, dummyLine);
+
+    if (sourceFile.find("include/") == std::string::npos)
+        return false;
+    return useFile.find("drivers/") != std::string::npos;
+}
+
+std::string UninitChecker::classifySourceKind(const SVFGNode* source) const
+{
+    if (source == nullptr)
+        return "unknown";
+    if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(source))
+    {
+        if (const StackObjVar* stackObj = SVFUtil::dyn_cast<StackObjVar>(addr->getPAGSrcNode()))
+        {
+            if (isTrackableScalarStackObject(const_cast<StackObjVar*>(stackObj), getPAG()))
+                return "stack_scalar";
+            if (isCompositeMemoryObject(stackObj))
+                return "stack_composite";
+        }
+        if (SVFUtil::isa<HeapObjVar>(addr->getPAGSrcNode()))
+            return "heap_other";
+    }
+    return "heap_kmalloc";
+}
+
+std::string UninitChecker::classifyAllocator(const SVFGNode* source) const
+{
+    if (source == nullptr)
+        return "unknown";
+    const ICFGNode* icfg = source->getICFGNode();
+    const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(icfg);
+    if (call == nullptr)
+        return "stack";
+
+    CallGraph::FunctionSet callees;
+    getCallgraph()->getCallees(call, callees);
+    for (const FunObjVar* fun : callees)
+    {
+        if (fun != nullptr && SaberCheckerAPI::getCheckerAPI()->isMemAlloc(fun))
+            return fun->getName();
+    }
+    return "unknown";
+}
+
+void UninitChecker::finalize()
+{
+    flushPendingReports();
+    LeakChecker::finalize();
+}
+
+void UninitChecker::flushPendingReports()
+{
+    for (const PendingUninitReport& pending : pendingReports)
+        llmTriage.addSlice(pending.slice);
+
+    std::map<std::string, UninitLLMVerdict> verdicts;
+    bool slicesWritten = false;
+    if (!llmTriage.empty())
+        slicesWritten = llmTriage.writeSlices();
+
+    const bool haveVerdicts =
+        slicesWritten && llmTriage.config().hasApi() && llmTriage.runSidecarAndLoad(verdicts);
+
+    if (slicesWritten && !haveVerdicts)
+    {
+        SVFUtil::outs() << "[UninitLLMTriage] exported " << llmTriage.size()
+                        << " slice(s) to " << llmTriage.config().sliceOutPath << "\n";
+    }
+
+    const double fpThr = llmTriage.config().thresholdFp;
+    const double confirmThr = llmTriage.config().thresholdConfirm;
+
+    u32_t emitted = 0;
+    for (const PendingUninitReport& pending : pendingReports)
+    {
+        bool suppress = false;
+
+        if (haveVerdicts)
+        {
+            auto it = verdicts.find(pending.slice.id);
+            if (it != verdicts.end())
+            {
+                const UninitLLMVerdict& v = it->second;
+                if (llmTriage.config().suppressFp && v.verdict == "LIKELY_FP" &&
+                        v.confidence >= fpThr &&
+                        !UninitLLMTriage::isWhitelistedTruePositive(pending.slice.useFile,
+                                                                    pending.slice.useLine))
+                {
+                    suppress = true;
+                    ++llmSuppressedReports;
+                    SVFUtil::outs() << "[UninitLLMTriage] SUPPRESSED (LIKELY_FP, conf="
+                                    << v.confidence << ") " << pending.slice.id
+                                    << " rationale: " << v.rationale << "\n";
+                }
+                else if (llmTriage.config().upgradeConfirm && v.verdict == "TRUE_UNINIT" &&
+                         v.confidence >= confirmThr)
+                {
+                    SVFUtil::outs() << "[UninitLLMTriage] LLM_CONFIRMED (conf="
+                                    << v.confidence << ") " << pending.slice.id << "\n";
+                }
+            }
+        }
+
+        if (suppress)
+            continue;
+
+        report.addSaberBug(GenericBug::UNINIT, pending.eventStack);
+        ++emitted;
+    }
+
+    emittedUninitReports = emitted;
+
+    if (Options::UninitCheck())
+    {
+        outs() << "[UNINIT][flush-done] pending=" << pendingReports.size()
+               << " emitted=" << emitted
+               << " dedupSkipped=" << dedupSkippedReports
+               << " headerSkipped=" << headerSkippedReports
+               << " llmSuppressed=" << llmSuppressedReports << "\n";
+        outs().flush();
+    }
 }
