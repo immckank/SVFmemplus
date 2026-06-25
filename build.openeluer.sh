@@ -9,7 +9,7 @@ jobs=4
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 SVFHOME="${SCRIPT_DIR}"
 
-LLVM_VERSION=16.0.4
+LLVM_VERSION=21.1.0
 LLVM_SRC_URL="https://github.com/llvm/llvm-project/archive/refs/tags/llvmorg-${LLVM_VERSION}.zip"
 LLVM_HOME="llvm-${LLVM_VERSION}.obj"
 

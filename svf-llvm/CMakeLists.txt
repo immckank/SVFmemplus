@@ -49,7 +49,27 @@ add_definitions(${_LLVM_DEFINITIONS})
 if(LLVM_LINK_LLVM_DYLIB)
   set(LLVM_LIBRARIES LLVM)
 else()
-  llvm_map_components_to_libnames(LLVM_LIBRARIES all)
+  llvm_map_components_to_libnames(LLVM_LIBRARIES
+    analysis
+    bitwriter
+    core
+    instcombine
+    instrumentation
+    ipo
+    irreader
+    linker
+    scalaropts
+    support
+    target
+    transformutils
+    demangle
+    Passes
+  )
+  # When the host LLVM tree already contains an in-tree SVF integration,
+  # llvm_map_components_to_libnames() can pull in those LLVMSvf* libraries
+  # transitively. Exclude them so the standalone SVF build links only against
+  # its own SvfCore/SvfLLVM targets.
+  list(FILTER LLVM_LIBRARIES EXCLUDE REGEX "^LLVMSvf(Core|LLVM)$|^LLVMSVFAnalysis$")
 endif()
 
 # Search in the executables dir for this LLVM's clang instance

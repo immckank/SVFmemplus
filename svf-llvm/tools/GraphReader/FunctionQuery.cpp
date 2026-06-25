@@ -9,6 +9,7 @@
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/FormatVariadic.h>
 #include <llvm/IR/Instructions.h>
+#include <queue>
 
 using namespace llvm;
 using namespace SVF;
@@ -321,11 +322,11 @@ void SVF::FunctionQuery::checkFunctionAlwaysReturn(const std::string& functionNa
             "exit", "_exit", "_Exit", "abort", "quick_exit", "std::terminate"
         };
         for (const char* exact : exactMatches) {
-            if (name.equals(exact)) {
+            if (name == exact) {
                 return true;
             }
         }
-        if (name.startswith("exec") || name.startswith("_exec")) {
+        if (name.starts_with("exec") || name.starts_with("_exec")) {
             return true;
         }
         return false;

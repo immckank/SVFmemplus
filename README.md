@@ -40,6 +40,24 @@ To provide detection support for use-after-free (UAF), undefined usages, and arr
 
 ## 构建与环境
 
+### Docker 镜像（推荐）
+
+工作区统一 SVF 容器镜像为 **`svf-llvm21`**（LLVM 21.1.0），定义见本目录 `Dockerfile`：
+
+```bash
+docker build -t svf-llvm21 -f SVFmemplus/Dockerfile SVFmemplus/
+```
+
+在容器内构建 SVFmemplus：
+
+```bash
+bash build_common/prepare_svf_docker.sh \
+  --svf-dir /path/to/SVFmemplus \
+  --svf-image svf-llvm21
+```
+
+### 主机 / 交付环境脚本
+
 请参考交付目录中的环境脚本（`linuxUbuntu环境` 与 `openEuler环境`）。在容器或主机环境满足依赖后：
 
 ```bash

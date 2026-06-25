@@ -3,7 +3,6 @@
 #define UNINITCHECKER_H_
 
 #include "SABER/LeakChecker.h"
-#include "SABER/UninitLLMTriage.h"
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -22,9 +21,6 @@ public:
     virtual bool runOnModule(SVFIR* pag) override;
     virtual void analyze() override;
     void reportBug(ProgSlice* slice) override;
-    void finalize() override;
-
-    static void setLLMTriageConfig(const UninitLLMTriageConfig& cfg);
 
     virtual void initSrcs() override;
     virtual void initSnks() override;
@@ -77,6 +73,9 @@ protected:
         return false;
     }
 
+    const char* sliceExportGeneratedBy() const override;
+    void onPendingReportsFlushed(u32_t pendingCount, u32_t emittedCount) override;
+
 private:
     struct RegionKey
     {
@@ -109,17 +108,6 @@ private:
                    (std::hash<APOffset>()(region.field) << 1) ^
                    (std::hash<unsigned>()(static_cast<unsigned>(region.precision)) << 2);
         }
-    };
-
-    struct PendingUninitReport
-    {
-        GenericBug::EventStack eventStack;
-        const SVFGNode* source = nullptr;
-        std::string sourceKind;
-        std::string allocator;
-        bool zeroing = false;
-        std::string reportKey;
-        UninitSlice slice;
     };
 
     typedef std::unordered_set<RegionKey, RegionKeyHash> RegionSet;
@@ -170,8 +158,6 @@ private:
         u32_t visitedBackward = 0;
     };
 
-    void flushPendingReports();
-    std::string makeReportKey(const ICFGNode* sourceICFG, const ICFGNode* useICFG) const;
     bool shouldSkipHeaderSourceReport(const ICFGNode* sourceICFG, const ICFGNode* useICFG) const;
     std::string classifySourceKind(const SVFGNode* source) const;
     std::string classifyAllocator(const SVFGNode* source) const;
@@ -197,14 +183,9 @@ private:
     u32_t smallInitSkippedSources = 0;
     u32_t dedupSkippedReports = 0;
     u32_t headerSkippedReports = 0;
-    u32_t llmSuppressedReports = 0;
     u32_t emittedUninitReports = 0;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToBoundaries;
-    std::unordered_set<std::string> reportedKeys;
-    std::vector<PendingUninitReport> pendingReports;
-    UninitLLMTriage llmTriage;
-    static UninitLLMTriageConfig s_llmCfg;
 
     bool isPtrStoreNode(const SVFGNode* node) const;
     bool isPtrLoadNode(const SVFGNode* node) const;
@@ -280,6 +261,12 @@ private:
     bool isScalarStackValueLoad(const SVFGNode* load) const;
     bool pointeeIncludesCompositeObject(NodeID ptr) const;
     bool isReturnAnchoredICFGNode(const ICFGNode* node) const;
+    bool isSystemOrGeneratedCodePath(const std::string& file) const;
+    bool isSystemOrGeneratedCodeICFG(const ICFGNode* node) const;
+    bool isHeapUninitSource(const SVFGNode* source) const;
+    bool isAllocatorInSystemLibrary(const FunObjVar* fun) const;
+    bool backwardValueFlowReachesSource(ProgSlice* slice, const SVFGNode* start,
+                                        const SVFGNode* source) const;
 };
 
 template<class Data>

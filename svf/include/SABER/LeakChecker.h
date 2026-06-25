@@ -32,6 +32,10 @@
 
 #include "SABER/SrcSnkDDA.h"
 #include "SABER/SaberCheckerAPI.h"
+#include "SABER/SaberSliceExport.h"
+#include "Util/Options.h"
+#include <unordered_set>
+#include <vector>
 
 namespace SVF
 {
@@ -58,6 +62,7 @@ public:
     /// Constructor
     LeakChecker()
     {
+        Options::SABERFULLSVFG.setValue(true);
     }
     /// Destructor
     virtual ~LeakChecker()
@@ -89,7 +94,16 @@ public:
     }
     //@}
 
+    static void setSliceExportPath(const std::string& path);
+    virtual void finalize() override;
+
 protected:
+    /// Whether initSrcs should include allocation sites in functions without callers.
+    virtual bool includeUncalledAllocSources() const
+    {
+        return Options::RunUncallFuncs();
+    }
+
     bool enableReachGlobalPrune() const override
     {
         return true;
@@ -110,6 +124,14 @@ protected:
     void validateSuccessTests(const SVFGNode* source, const FunObjVar* fun);
     void validateExpectedFailureTests(const SVFGNode* source, const FunObjVar* fun);
 
+    bool sliceExportEnabled() const;
+    void prepareSliceCollector();
+    virtual const char* sliceExportGeneratedBy() const;
+    void clearPendingReports();
+    bool queuePendingReport(SaberPendingReport&& report, const std::string& dedupKey);
+    void flushPendingReports();
+    virtual void onPendingReportsFlushed(u32_t pendingCount, u32_t emittedCount) {}
+
     /// Record a source to its callsite
     //@{
     inline void addSrcToCSID(const SVFGNode* src, const CallICFGNode* cs)
@@ -123,8 +145,16 @@ protected:
         return it->second;
     }
     //@}
+    SaberSliceCollector sliceCollector_;
+    static std::string s_sliceOutPath_;
+    static bool s_sliceExportConfigured_;
+    std::vector<SaberPendingReport> pendingReports_;
+
 private:
+    void collectSliceForPending(const SaberPendingReport& pending);
+
     SVFGNodeToCSIDMap srcToCSIDMap;
+    std::unordered_set<std::string> pendingReportKeys_;
 };
 
 } // End namespace SVF

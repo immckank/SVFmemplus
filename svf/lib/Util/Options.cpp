@@ -979,7 +979,7 @@ const Option<u32_t> Options::SaberUninitMaxBackwardSteps(
 const Option<bool> Options::SaberUninitRegionState(
     "saber-uninit-region-state",
     "Enable source-local region-state filtering in UninitChecker",
-    false
+    true
 );
 
 const Option<bool> Options::SaberUninitDebug(

@@ -43,7 +43,10 @@ void DoubleFreeChecker::reportBug(ProgSlice* slice)
         slice->evalFinalCond2Event(eventStack);
         eventStack.push_back(
             SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource())));
-        report.addSaberBug(GenericBug::DOUBLEFREE, eventStack);
+        SaberPendingReport pending;
+        pending.bugType = GenericBug::DOUBLEFREE;
+        pending.eventStack = std::move(eventStack);
+        queuePendingReport(std::move(pending), "");
         if (slice->hasSatisfiableSinkPair())
         {
             SVFUtil::errs() << "\t\t sink at : ( "

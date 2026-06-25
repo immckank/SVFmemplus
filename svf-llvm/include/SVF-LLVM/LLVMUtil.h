@@ -132,7 +132,9 @@ static inline Type* getPtrElementType(const PointerType* pty)
     assert(!pty->isOpaque() && "Opaque Pointer is used, please recompile the source adding '-Xclang -no-opaque-pointers'");
     return pty->getNonOpaquePointerElementType();
 #else
+    (void)pty; // Suppress warning of unused variable under release build
     assert(false && "llvm version 17+ only support opaque pointers!");
+    return nullptr;
 #endif
 }
 
@@ -311,7 +313,11 @@ inline static DataLayout* getDataLayout(Module* mod)
 {
     static DataLayout *dl = nullptr;
     if (dl == nullptr)
+#if LLVM_VERSION_MAJOR >= 19
+        dl = new DataLayout(mod->getDataLayout());
+#else
         dl = new DataLayout(mod);
+#endif
     return dl;
 }
 

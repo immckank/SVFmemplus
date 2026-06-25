@@ -42,18 +42,18 @@
 using namespace llvm;
 using namespace SVF;
 
-static const Option<std::string> UninitLlmConfigFile(
-    "uninit-llm-config",
-    "JSON config for Uninit LLM triage sidecar",
+static const Option<std::string> SaberSliceOut(
+    "saber-slice-out",
+    "Export saber-slice/v1 JSON for downstream LLM context",
     "");
-static const Option<std::string> UninitLlmSliceOut(
-    "uninit-llm-slice-out",
-    "Path for exported uninit-slice/v1 JSON",
-    "uninit_slices.json");
-static const Option<std::string> UninitLlmSidecar(
-    "uninit-llm-sidecar",
-    "Path to uninit_triage.py sidecar; empty => slice export only",
-    "");
+
+static void maybeSetSliceExportConfig()
+{
+    if (SaberSliceOut().empty())
+        return;
+
+    LeakChecker::setSliceExportPath(SaberSliceOut());
+}
 
 int main(int argc, char ** argv)
 {
@@ -84,24 +84,11 @@ int main(int argc, char ** argv)
     else if(Options::UAFCheck())
         saber = std::make_unique<UseAfterFreeChecker>();
     else if(Options::UninitCheck())
-    {
-        UninitLLMTriageConfig llmCfg;
-        if (!UninitLlmConfigFile().empty())
-            llmCfg.loadFromFile(UninitLlmConfigFile());
-        llmCfg.loadFromEnv();
-        if (!UninitLlmSliceOut().empty())
-            llmCfg.sliceOutPath = UninitLlmSliceOut();
-        if (!UninitLlmSidecar().empty())
-            llmCfg.sidecarPath = UninitLlmSidecar();
-        if (llmCfg.model.empty())
-            llmCfg.model = "deepseek-chat";
-        if (llmCfg.apiUrl.empty())
-            llmCfg.apiUrl = "https://api.deepseek.com/chat/completions";
-        UninitChecker::setLLMTriageConfig(llmCfg);
         saber = std::make_unique<UninitChecker>();
-    }
     else
         saber = std::make_unique<LeakChecker>();  // if no checker is specified, we use leak checker as the default one.
+
+    maybeSetSliceExportConfig();
 
     saber->runOnModule(pag);
     LLVMModuleSet::releaseLLVMModuleSet();

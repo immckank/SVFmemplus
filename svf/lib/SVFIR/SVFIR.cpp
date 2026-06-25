@@ -492,6 +492,7 @@ NodeBS& SVFIR::getAllFieldsObjVars(const BaseObjVar* obj)
 NodeBS& SVFIR::getAllFieldsObjVars(NodeID id)
 {
     const SVFVar* node = pag->getGNode(id);
+    (void)node; // Suppress warning of unused variable under release build
     assert(SVFUtil::isa<ObjVar>(node) && "need an object node");
     return getAllFieldsObjVars(getBaseObject(id));
 }
@@ -504,6 +505,7 @@ NodeBS& SVFIR::getAllFieldsObjVars(NodeID id)
 NodeBS SVFIR::getFieldsAfterCollapse(NodeID id)
 {
     const SVFVar* node = pag->getGNode(id);
+    (void)node; // Suppress warning of unused variable under release build
     assert(SVFUtil::isa<ObjVar>(node) && "need an object node");
     const BaseObjVar* obj = getBaseObject(id);
     if(obj->isFieldInsensitive())

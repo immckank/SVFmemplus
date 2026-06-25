@@ -1,5 +1,6 @@
 // svf/lib/SABER/UninitChecker.cpp
 #include "SABER/UninitChecker.h"
+#include "SABER/SaberSliceExport.h"
 #include "SABER/SaberCheckerAPI.h"
 #include "SABER/SaberMemTransferAPI.h"
 #include "SVFIR/SVFIR.h"
@@ -11,7 +12,6 @@
 #include "Util/WorkList.h"
 #include "SVFIR/SVFValue.h"
 #include "Graphs/ICFG.h"
-#include "Util/cJSON.h"
 #include <deque>
 #include <queue>
 #include <unordered_set>
@@ -39,28 +39,22 @@ typedef FIFOWorkList<const SVFGNode*> ForwardWorkList;
 static constexpr double kSlowSourceReportSec = 1.0;
 static constexpr double kSlowPathCheckSec = 3.0;
 
-UninitLLMTriageConfig UninitChecker::s_llmCfg;
-
-void UninitChecker::setLLMTriageConfig(const UninitLLMTriageConfig& cfg)
+const char* UninitChecker::sliceExportGeneratedBy() const
 {
-    s_llmCfg = cfg;
+    return "SVFmemplus-UninitChecker";
 }
 
-static bool parseLocFileLine(const std::string& locJson, std::string& file, u32_t& line)
+void UninitChecker::onPendingReportsFlushed(u32_t pendingCount, u32_t emittedCount)
 {
-    file.clear();
-    line = 0;
-    cJSON* lj = cJSON_Parse(locJson.c_str());
-    if (!lj)
-        return false;
-    if (cJSON* fl = cJSON_GetObjectItem(lj, "fl"))
-        if (cJSON_IsString(fl) && fl->valuestring)
-            file = fl->valuestring;
-    if (cJSON* ln = cJSON_GetObjectItem(lj, "ln"))
-        if (cJSON_IsNumber(ln))
-            line = static_cast<u32_t>(ln->valuedouble);
-    cJSON_Delete(lj);
-    return !file.empty() || line != 0;
+    emittedUninitReports = emittedCount;
+    if (Options::UninitCheck())
+    {
+        outs() << "[UNINIT][flush-done] pending=" << pendingCount
+               << " emitted=" << emittedCount
+               << " dedupSkipped=" << dedupSkippedReports
+               << " headerSkipped=" << headerSkippedReports << "\n";
+        outs().flush();
+    }
 }
 
 static const ICFGNode* getBugEventICFGNode(const SVFGNode* node)
@@ -254,7 +248,6 @@ static const ICFGNode* selectBestSourceICFGNode(const SVFGNode* source, const Ge
 UninitChecker::UninitChecker() : LeakChecker() {
     Options::SaberKeepDerefDirSVFGEdges.setValue(true);
     Options::SABERFULLSVFG.setValue(true);
-    llmTriage.setConfig(s_llmCfg);
 }
 UninitChecker::~UninitChecker() { }
 
@@ -277,14 +270,12 @@ void UninitChecker::analyze()
 
     initialize();
 
-    reportedKeys.clear();
-    pendingReports.clear();
+    clearPendingReports();
     dedupSkippedReports = 0;
     headerSkippedReports = 0;
-    llmSuppressedReports = 0;
     emittedUninitReports = 0;
-    llmTriage = UninitLLMTriage();
-    llmTriage.setConfig(s_llmCfg);
+    sliceCollector_ = SaberSliceCollector();
+    prepareSliceCollector();
 
     ContextCond::setMaxCxtLen(Options::CxtLimit());
 
@@ -355,7 +346,7 @@ void UninitChecker::analyze()
         {
             outs() << "[UNINIT][analyze-done] sources=" << numSrcs
                    << " withCandidates=" << saberTimeStat.uninitSourcesWithCandidates
-                   << " pending=" << pendingReports.size()
+                   << " pending=" << pendingReports_.size()
                    << " reported=" << emittedUninitReports
                    << " smallInitSkipped=" << smallInitSkippedSources
                    << " elapsed=" << elapsed << "\n";
@@ -444,6 +435,108 @@ bool UninitChecker::isSmallDirectlyInitializedStackObject(StackObjVar* stackObj,
 bool UninitChecker::isReturnAnchoredICFGNode(const ICFGNode* node) const
 {
     return ::isReturnAnchoredICFGNode(node);
+}
+
+bool UninitChecker::isSystemOrGeneratedCodePath(const std::string& file) const
+{
+    if (file.empty())
+        return false;
+
+    if (file.find("/include/c++/") != std::string::npos ||
+        file.find("/usr/lib/gcc/") != std::string::npos ||
+        file.find("/usr/local/include/") != std::string::npos ||
+        file.find("/usr/include/") != std::string::npos)
+        return true;
+
+    if (file.find(".pb.cc") != std::string::npos ||
+        file.find("_generated.h") != std::string::npos ||
+        file.find("/google/protobuf/") != std::string::npos ||
+        file.find("/protobuf/") != std::string::npos)
+        return true;
+
+    return false;
+}
+
+bool UninitChecker::isSystemOrGeneratedCodeICFG(const ICFGNode* node) const
+{
+    if (node == nullptr)
+        return false;
+
+    std::string file;
+    u32_t line = 0;
+    if (!SaberSliceExportUtil::parseLocFileLine(node->getSourceLoc(), file, line))
+        return false;
+    return isSystemOrGeneratedCodePath(file);
+}
+
+bool UninitChecker::isHeapUninitSource(const SVFGNode* source) const
+{
+    if (source == nullptr)
+        return false;
+
+    if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(source))
+        return SVFUtil::isa<HeapObjVar>(addr->getPAGSrcNode());
+
+    return SVFUtil::isa<ActualRetVFGNode>(source) ||
+           SVFUtil::isa<FormalRetVFGNode>(source);
+}
+
+bool UninitChecker::isAllocatorInSystemLibrary(const FunObjVar* fun) const
+{
+    if (fun == nullptr)
+        return false;
+
+    const std::string& name = fun->getName();
+    if (name.find("_Zn") != std::string::npos || name.find("_Znam") != std::string::npos ||
+        name.find("operator new") != std::string::npos)
+        return true;
+
+    const ICFGNode* defNode = fun->getICFGNode();
+    return isSystemOrGeneratedCodeICFG(defNode);
+}
+
+bool UninitChecker::backwardValueFlowReachesSource(ProgSlice* slice, const SVFGNode* start,
+                                                   const SVFGNode* source) const
+{
+    if (start == nullptr || source == nullptr || slice == nullptr)
+        return false;
+    if (start == source)
+        return true;
+
+    BackwardWorkList worklist;
+    SVFGNodeSet visited;
+    worklist.push(start);
+
+    u32_t steps = 0;
+    constexpr u32_t kMaxValueFlowSteps = 96;
+    while (!worklist.empty() && steps++ < kMaxValueFlowSteps)
+    {
+        const SVFGNode* node = worklist.pop();
+        if (!inUninitCandidateSlice(slice, node))
+            continue;
+        if (!visited.insert(node).second)
+            continue;
+        if (node == source)
+            return true;
+
+        for (auto edge : node->getInEdges())
+        {
+            const SVFGNode* pred = edge->getSrcNode();
+            if (!inUninitCandidateSlice(slice, pred))
+                continue;
+            if (pred == source)
+                return true;
+
+            if (SVFUtil::isa<LoadSVFGNode>(pred) || SVFUtil::isa<CopySVFGNode>(pred) ||
+                    SVFUtil::isa<PHISVFGNode>(pred) || SVFUtil::isa<GepSVFGNode>(pred) ||
+                    SVFUtil::isa<ActualRetVFGNode>(pred) || SVFUtil::isa<FormalParmVFGNode>(pred) ||
+                    SVFUtil::isa<AddrSVFGNode>(pred) || SVFUtil::isa<BinaryOPVFGNode>(pred) ||
+                    SVFUtil::isa<UnaryOPVFGNode>(pred) || ActualParmVFGNode::classof(pred))
+                worklist.push(pred);
+        }
+    }
+
+    return false;
 }
 
 bool UninitChecker::isCompositeMemoryObject(const BaseObjVar* obj) const
@@ -582,7 +675,12 @@ bool UninitChecker::regionsMayIntersect(const RegionKey& lhs, const RegionKey& r
         return false;
 
     if (lhs.precision == RegionKey::Unknown || rhs.precision == RegionKey::Unknown)
+    {
+        const RegionKey& other = lhs.precision == RegionKey::Unknown ? rhs : lhs;
+        if (other.precision == RegionKey::Field)
+            return false;
         return true;
+    }
     if (lhs.precision == RegionKey::CollapsedObject || rhs.precision == RegionKey::CollapsedObject)
         return true;
     if (lhs.precision == RegionKey::WholeObject || rhs.precision == RegionKey::WholeObject)
@@ -1268,8 +1366,9 @@ void UninitChecker::initSrcs()
                 if (StackObjVar* stackObj = SVFUtil::dyn_cast<StackObjVar>(obj))
                 {
                     const bool composite = isCompositeMemoryObject(stackObj);
+                    const bool smallScalar = isSmallScalarStackObject(stackObj);
                     const bool scalarOutParam = isTrackableScalarStackObject(stackObj, pag);
-                    if (!composite && !scalarOutParam)
+                    if (!composite && !scalarOutParam && !smallScalar)
                         continue;
                     if (isParameterSpillStackObject(stackObj, pag))
                         continue;
@@ -1279,6 +1378,8 @@ void UninitChecker::initSrcs()
                         continue;
                     }
                     if (isReturnAnchoredICFGNode(stackObj->getICFGNode()))
+                        continue;
+                    if (!composite && isSystemOrGeneratedCodeICFG(stackObj->getICFGNode()))
                         continue;
                     const SVFGNode* source = getSVFG()->getStmtVFGNode(ld);
                     RegionSet initialRegions;
@@ -1321,6 +1422,8 @@ void UninitChecker::initSrcs()
             // B2: skip plain kmalloc-family allocators (major FP source in kernel drivers).
             if (isPlainKmallocAllocatorName(fun->getName()))
                 continue;
+            if (isAllocatorInSystemLibrary(fun))
+                continue;
 
             CSWorkList worklist;
             SVFGNodeBS visited;
@@ -1348,6 +1451,8 @@ void UninitChecker::initSrcs()
                 else if ((Options::RunUncallFuncs() || !cs->getFun()->isUncalledFunction()) &&
                          !isExtCall(cs->getBB()->getParent()))
                 {
+                    if (isSystemOrGeneratedCodeICFG(cs))
+                        continue;
                     if (!pointeeIncludesCompositeObject(pagNode->getId()))
                         continue;
                     RegionSet initialRegions;
@@ -1408,6 +1513,9 @@ void UninitChecker::initSnks()
     for (SVFGNodeSetIter lit = loadNodes.begin(), elit = loadNodes.end(); lit != elit; ++lit)
     {
         const SVFGNode* loadNode = *lit;
+        if (isSystemOrGeneratedCodeICFG(loadNode->getICFGNode()) &&
+                !isScalarStackValueLoad(loadNode))
+            continue;
         if (isCriticalUninitSink(loadNode) || isScalarStackValueLoad(loadNode))
         {
             criticalSinkNodes.insert(loadNode);
@@ -2198,13 +2306,9 @@ void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& c
         return;
 
     NodeToRegionStateMap regionStates;
-    if (Options::SaberUninitRegionState())
-    {
-        computeRegionUninitState(slice, regionStates);
-        if (regionStates.empty())
-            return;
-    }
+    computeRegionUninitState(slice, regionStates);
 
+    const bool heapSource = isHeapUninitSource(slice->getSource());
     for (SVFGNodeSetIter lit = slice->sinksBegin(), elit = slice->sinksEnd(); lit != elit; ++lit)
     {
         const SVFGNode* load = *lit;
@@ -2222,7 +2326,7 @@ void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& c
         const RegionSet& readRegions = getLoadReadRegions(load);
         if (readRegions.empty() || !regionSetsMayIntersect(sourceRegions, readRegions))
             continue;
-        if (Options::SaberUninitRegionState() && !loadMayReadUninitRegion(load, regionStates))
+        if (!regionStates.empty() && !loadMayReadUninitRegion(load, regionStates))
             continue;
         if (hasDominatingInitBlocker(slice, load))
             continue;
@@ -2260,7 +2364,12 @@ void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& c
         }
 
         if (reachesSource)
+        {
+            if (heapSource &&
+                    !backwardValueFlowReachesSource(slice, load, slice->getSource()))
+                continue;
             candidateLoads.insert(load);
+        }
     }
 }
 
@@ -2542,7 +2651,7 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
 
         if(hasUninitPath)
         {
-            debugCandidateBlockers(rawSlice, *lit);
+            debugCandidateBlockers(rawSlice, candidateLoad);
             foundBug = true;
             break;
         }
@@ -2569,43 +2678,29 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
 
         eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, sourceICFG));
 
-        const std::string reportKey = makeReportKey(sourceICFG, useICFG);
-        if (!reportedKeys.insert(reportKey).second)
+        const std::string reportKey =
+            SaberSliceExportUtil::makeICFGPairLocKey(sourceICFG, useICFG);
+        SaberPendingReport pending;
+        pending.bugType = GenericBug::UNINIT;
+        pending.eventStack = eventStack;
+        pending.uninitSource = rawSlice->getSource();
+        pending.uninitSourceKind = classifySourceKind(rawSlice->getSource());
+        pending.uninitAllocator = classifyAllocator(rawSlice->getSource());
+        pending.uninitZeroing = false;
+        if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(rawSlice->getSource()))
+        {
+            if (const HeapObjVar* ho = SVFUtil::dyn_cast<HeapObjVar>(addr->getPAGSrcNode()))
+                pending.uninitZeroing = isZeroingHeapObject(ho);
+        }
+        if (!queuePendingReport(std::move(pending), reportKey))
         {
             ++dedupSkippedReports;
             finishReport(candidateLoads.size());
             return;
         }
-
-        PendingUninitReport pending;
-        pending.eventStack = eventStack;
-        pending.source = rawSlice->getSource();
-        pending.sourceKind = classifySourceKind(rawSlice->getSource());
-        pending.allocator = classifyAllocator(rawSlice->getSource());
-        pending.zeroing = false;
-        if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(rawSlice->getSource()))
-        {
-            if (const HeapObjVar* ho = SVFUtil::dyn_cast<HeapObjVar>(addr->getPAGSrcNode()))
-                pending.zeroing = isZeroingHeapObject(ho);
-        }
-        pending.reportKey = reportKey;
-        llmTriage.collectSlice(pending.source, pending.eventStack, pending.sourceKind,
-                               pending.allocator, pending.zeroing, pending.slice);
-        pendingReports.push_back(std::move(pending));
         ++saberTimeStat.uninitReportedSources;
     }
     finishReport(candidateLoads.size());
-}
-
-std::string UninitChecker::makeReportKey(const ICFGNode* sourceICFG, const ICFGNode* useICFG) const
-{
-    std::string key;
-    if (sourceICFG)
-        key += sourceICFG->getSourceLoc();
-    key += "#";
-    if (useICFG)
-        key += useICFG->getSourceLoc();
-    return key;
 }
 
 bool UninitChecker::shouldSkipHeaderSourceReport(const ICFGNode* sourceICFG,
@@ -2617,8 +2712,8 @@ bool UninitChecker::shouldSkipHeaderSourceReport(const ICFGNode* sourceICFG,
     std::string sourceFile;
     std::string useFile;
     u32_t dummyLine = 0;
-    parseLocFileLine(sourceICFG->getSourceLoc(), sourceFile, dummyLine);
-    parseLocFileLine(useICFG->getSourceLoc(), useFile, dummyLine);
+    SaberSliceExportUtil::parseLocFileLine(sourceICFG->getSourceLoc(), sourceFile, dummyLine);
+    SaberSliceExportUtil::parseLocFileLine(useICFG->getSourceLoc(), useFile, dummyLine);
 
     if (sourceFile.find("include/") == std::string::npos)
         return false;
@@ -2635,6 +2730,8 @@ std::string UninitChecker::classifySourceKind(const SVFGNode* source) const
         {
             if (isTrackableScalarStackObject(const_cast<StackObjVar*>(stackObj), getPAG()))
                 return "stack_scalar";
+            if (isSmallScalarStackObject(stackObj))
+                return "stack_scalar_local";
             if (isCompositeMemoryObject(stackObj))
                 return "stack_composite";
         }
@@ -2661,83 +2758,4 @@ std::string UninitChecker::classifyAllocator(const SVFGNode* source) const
             return fun->getName();
     }
     return "unknown";
-}
-
-void UninitChecker::finalize()
-{
-    flushPendingReports();
-    LeakChecker::finalize();
-}
-
-void UninitChecker::flushPendingReports()
-{
-    for (const PendingUninitReport& pending : pendingReports)
-        llmTriage.addSlice(pending.slice);
-
-    std::map<std::string, UninitLLMVerdict> verdicts;
-    bool slicesWritten = false;
-    if (!llmTriage.empty())
-        slicesWritten = llmTriage.writeSlices();
-
-    const bool haveVerdicts =
-        slicesWritten && llmTriage.config().hasApi() && llmTriage.runSidecarAndLoad(verdicts);
-
-    if (slicesWritten && !haveVerdicts)
-    {
-        SVFUtil::outs() << "[UninitLLMTriage] exported " << llmTriage.size()
-                        << " slice(s) to " << llmTriage.config().sliceOutPath << "\n";
-    }
-
-    const double fpThr = llmTriage.config().thresholdFp;
-    const double confirmThr = llmTriage.config().thresholdConfirm;
-
-    u32_t emitted = 0;
-    for (const PendingUninitReport& pending : pendingReports)
-    {
-        bool suppress = false;
-
-        if (haveVerdicts)
-        {
-            auto it = verdicts.find(pending.slice.id);
-            if (it != verdicts.end())
-            {
-                const UninitLLMVerdict& v = it->second;
-                if (llmTriage.config().suppressFp && v.verdict == "LIKELY_FP" &&
-                        v.confidence >= fpThr &&
-                        !UninitLLMTriage::isWhitelistedTruePositive(pending.slice.useFile,
-                                                                    pending.slice.useLine))
-                {
-                    suppress = true;
-                    ++llmSuppressedReports;
-                    SVFUtil::outs() << "[UninitLLMTriage] SUPPRESSED (LIKELY_FP, conf="
-                                    << v.confidence << ") " << pending.slice.id
-                                    << " rationale: " << v.rationale << "\n";
-                }
-                else if (llmTriage.config().upgradeConfirm && v.verdict == "TRUE_UNINIT" &&
-                         v.confidence >= confirmThr)
-                {
-                    SVFUtil::outs() << "[UninitLLMTriage] LLM_CONFIRMED (conf="
-                                    << v.confidence << ") " << pending.slice.id << "\n";
-                }
-            }
-        }
-
-        if (suppress)
-            continue;
-
-        report.addSaberBug(GenericBug::UNINIT, pending.eventStack);
-        ++emitted;
-    }
-
-    emittedUninitReports = emitted;
-
-    if (Options::UninitCheck())
-    {
-        outs() << "[UNINIT][flush-done] pending=" << pendingReports.size()
-               << " emitted=" << emitted
-               << " dedupSkipped=" << dedupSkippedReports
-               << " headerSkipped=" << headerSkippedReports
-               << " llmSuppressed=" << llmSuppressedReports << "\n";
-        outs().flush();
-    }
 }

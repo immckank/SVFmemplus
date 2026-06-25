@@ -2,6 +2,7 @@
 #include "SABER/SaberCondAllocator.h"
 #include "SVF-LLVM/LLVMUtil.h"
 #include "SVF-LLVM/LLVMModule.h"
+#include "SVF-LLVM/ObjTypeInference.h"
 #include "SVFIR/SVFIR.h"
 #include "Graphs/SVFG.h"
 #include "Graphs/SVFGNode.h"
@@ -1762,17 +1763,26 @@ llvm::json::Object analyzeStoreLValue(SVFG* svfg, ICFG* icfg, SVFIR* pag, const 
                 hasOffset = true;
             }
         }
-    } else if (pointerOperand) {
+    } else if (pointerOperand && pointerOperand->getType()->isPointerTy()) {
+        const llvm::Type* elementType = nullptr;
+#if LLVM_VERSION_MAJOR >= 17
+        elementType = LLVMModuleSet::getLLVMModuleSet()
+                        ->getTypeInference()->inferObjType(pointerOperand);
+#else
         if (const auto* ptrTy = llvm::dyn_cast<llvm::PointerType>(pointerOperand->getType())) {
-            if (!ptrTy->isOpaquePointerTy()) {
-                const llvm::Type* elementType = ptrTy->getNonOpaquePointerElementType();
-                if (elementType && elementType->isStructTy()) {
-                    isStructLValue = true;
-                    if (const auto* structTy = llvm::cast<llvm::StructType>(elementType)) {
-                        if (structTy->hasName()) {
-                            structName = structTy->getName().str();
-                        }
-                    }
+            if (!ptrTy->isOpaque()) {
+                elementType = ptrTy->getNonOpaquePointerElementType();
+            } else {
+                elementType = LLVMModuleSet::getLLVMModuleSet()
+                                ->getTypeInference()->inferObjType(pointerOperand);
+            }
+        }
+#endif
+        if (elementType && elementType->isStructTy()) {
+            isStructLValue = true;
+            if (const auto* structTy = llvm::cast<llvm::StructType>(elementType)) {
+                if (structTy->hasName()) {
+                    structName = structTy->getName().str();
                 }
             }
         }

@@ -35,6 +35,83 @@
 using namespace SVF;
 using namespace SVFUtil;
 
+std::string LeakChecker::s_sliceOutPath_;
+bool LeakChecker::s_sliceExportConfigured_ = false;
+
+void LeakChecker::setSliceExportPath(const std::string& path)
+{
+    s_sliceOutPath_ = path;
+    s_sliceExportConfigured_ = true;
+}
+
+bool LeakChecker::sliceExportEnabled() const
+{
+    return s_sliceExportConfigured_;
+}
+
+void LeakChecker::prepareSliceCollector()
+{
+    if (!sliceExportEnabled())
+        return;
+    sliceCollector_.setSliceOutPath(s_sliceOutPath_);
+}
+
+const char* LeakChecker::sliceExportGeneratedBy() const
+{
+    return "SVFmemplus-LeakChecker";
+}
+
+void LeakChecker::collectSliceForPending(const SaberPendingReport& pending)
+{
+    if (!sliceExportEnabled())
+        return;
+
+    prepareSliceCollector();
+    SaberSlice slice;
+    if (sliceCollector_.collectSliceForPending(pending, slice))
+        sliceCollector_.addSlice(slice);
+}
+
+void LeakChecker::clearPendingReports()
+{
+    pendingReports_.clear();
+    pendingReportKeys_.clear();
+}
+
+bool LeakChecker::queuePendingReport(SaberPendingReport&& report, const std::string& dedupKey)
+{
+    if (!dedupKey.empty() && !pendingReportKeys_.insert(dedupKey).second)
+        return false;
+    pendingReports_.push_back(std::move(report));
+    return true;
+}
+
+void LeakChecker::flushPendingReports()
+{
+    const u32_t pendingCount = pendingReports_.size();
+    u32_t emitted = 0;
+    for (const SaberPendingReport& pending : pendingReports_)
+    {
+        report.addSaberBug(pending.bugType, pending.eventStack);
+        collectSliceForPending(pending);
+        ++emitted;
+    }
+    clearPendingReports();
+    onPendingReportsFlushed(pendingCount, emitted);
+}
+
+void LeakChecker::finalize()
+{
+    flushPendingReports();
+    if (sliceExportEnabled() && !sliceCollector_.empty())
+    {
+        sliceCollector_.writeSlices(sliceExportGeneratedBy());
+        SVFUtil::outs() << "[SaberSliceExport] exported " << sliceCollector_.size()
+                        << " slice(s) to " << sliceCollector_.sliceOutPathRef() << "\n";
+    }
+    SrcSnkDDA::finalize();
+}
+
 
 /*!
  * Initialize sources
@@ -50,7 +127,7 @@ void LeakChecker::initSrcs()
         /// if this callsite return reside in a dead function then we do not care about its leaks
         /// for example instruction `int* p = malloc(size)` is in a dead function, then program won't allocate this memory
         /// for example a customized malloc `int p = malloc()` returns an integer value, then program treat it as a system malloc
-        if((!Options::RunUncallFuncs() && cs->getFun()->isUncalledFunction()) || !cs->getType()->isPointerTy())
+        if((!includeUncalledAllocSources() && cs->getFun()->isUncalledFunction()) || !cs->getType()->isPointerTy())
             continue;
 
         CallGraph::FunctionSet callees;
@@ -88,7 +165,8 @@ void LeakChecker::initSrcs()
                     else
                     {
                         // exclude sources in dead functions or sources in functions that have summary
-                        if ((Options::RunUncallFuncs() || !cs->getFun()->isUncalledFunction()) &&                                !isExtCall(cs->getBB()->getParent()))
+                        if ((includeUncalledAllocSources() || !cs->getFun()->isUncalledFunction()) &&
+                                !isExtCall(cs->getBB()->getParent()))
                         {
                             addToSources(node);
                             addSrcToCSID(node, cs);
@@ -181,6 +259,20 @@ bool LeakChecker::isOwnershipTransferBarrier(const ICFGNode* node) const
            funName == "wake_up_process";
 }
 
+static u32_t getICFGSourceLine(const ICFGNode* node)
+{
+    if (node == nullptr)
+        return UINT32_MAX;
+    const std::string& sloc = node->getSourceLoc();
+    const size_t brace = sloc.find('{');
+    const std::string json = (brace != std::string::npos) ? sloc.substr(brace) : sloc;
+    std::string file;
+    u32_t line = 0;
+    if (!SaberSliceExportUtil::parseLocFileLine(json, file, line) || line == 0)
+        return UINT32_MAX;
+    return line;
+}
+
 bool LeakChecker::hasSinkBypassReturn(const ProgSlice* slice, const ICFGNode*& bypassRet) const
 {
     const CallICFGNode* srcCS = getSrcCSID(slice->getSource());
@@ -198,9 +290,16 @@ bool LeakChecker::hasSinkBypassReturn(const ProgSlice* slice, const ICFGNode*& b
     if (sinkNodes.empty())
         return false;
 
+    auto enqueueICFGNode = [&](FIFOWorkList<const ICFGNode*>& wl, const ICFGNode* icfgNode)
+    {
+        if (icfgNode != nullptr && icfgNode->getFun() == fun)
+            wl.push(icfgNode);
+    };
+
     FIFOWorkList<const ICFGNode*> worklist;
     Set<const ICFGNode*> visited;
-    worklist.push(srcCS->getRetICFGNode());
+    Set<const ICFGNode*> bypassReturns;
+    enqueueICFGNode(worklist, srcCS->getRetICFGNode());
 
     while (!worklist.empty())
     {
@@ -220,25 +319,62 @@ bool LeakChecker::hasSinkBypassReturn(const ProgSlice* slice, const ICFGNode*& b
         {
             if (intra->isRetInst())
             {
-                bypassRet = node;
-                return true;
+                bypassReturns.insert(node);
+                continue;
             }
         }
+
+        // Hop over intra-procedural calls (e.g. RPC helpers in DeleteFiles) so that
+        // early returns after nested calls are still visible to leak detection.
+        if (const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(node))
+            enqueueICFGNode(worklist, call->getRetICFGNode());
 
         for (ICFGNode::const_iterator it = node->OutEdgeBegin(), eit = node->OutEdgeEnd(); it != eit; ++it)
         {
             const ICFGEdge* edge = *it;
-            if (!SVFUtil::isa<IntraCFGEdge>(edge))
-                continue;
-            worklist.push(edge->getDstNode());
+            if (SVFUtil::isa<IntraCFGEdge>(edge))
+                enqueueICFGNode(worklist, edge->getDstNode());
+            else if (SVFUtil::isa<RetCFGEdge>(edge))
+                enqueueICFGNode(worklist, edge->getDstNode());
         }
     }
 
-    return false;
+    const SVFBasicBlock* allocBB = srcCS->getBB();
+    SaberCondAllocator* condAllocator = getSaberCondAllocator();
+
+    const ICFGNode* bestBypass = nullptr;
+    u32_t bestLine = UINT32_MAX;
+    for (const ICFGNode* retNode : bypassReturns)
+    {
+        const u32_t retLine = getICFGSourceLine(retNode);
+        const SVFBasicBlock* retBB = retNode->getBB();
+        // Success-path function exits that are not dominated by the allocation site
+        // (e.g. disk_cache Walk after a closedir-failure alloc) are not leak paths.
+        if (allocBB != nullptr && retBB != nullptr && condAllocator != nullptr &&
+                !condAllocator->dominate(allocBB, retBB))
+            continue;
+        if (retLine < bestLine)
+        {
+            bestLine = retLine;
+            bestBypass = retNode;
+        }
+    }
+
+    if (bestBypass == nullptr)
+        return false;
+
+    bypassRet = bestBypass;
+    return true;
 }
 
 void LeakChecker::reportBug(ProgSlice* slice)
 {
+    auto emitBug = [&](GenericBug::BugType bugType, GenericBug::EventStack eventStack) {
+        SaberPendingReport pending;
+        pending.bugType = bugType;
+        pending.eventStack = std::move(eventStack);
+        queuePendingReport(std::move(pending), "");
+    };
 
     if(isAllPathReachable() == false && isSomePathReachable() == false)
     {
@@ -247,7 +383,7 @@ void LeakChecker::reportBug(ProgSlice* slice)
         {
             SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource()))
         };
-        report.addSaberBug(GenericBug::NEVERFREE, eventStack);
+        emitBug(GenericBug::NEVERFREE, eventStack);
         // 仅在确认泄漏时输出 sink 点位置
         for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
         {
@@ -262,7 +398,7 @@ void LeakChecker::reportBug(ProgSlice* slice)
         slice->evalFinalCond2Event(eventStack);
         eventStack.push_back(
             SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource())));
-        report.addSaberBug(GenericBug::PARTIALLEAK, eventStack);
+        emitBug(GenericBug::PARTIALLEAK, eventStack);
         // 仅在确认泄漏时输出 sink 点位置
         for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
         {
@@ -279,7 +415,7 @@ void LeakChecker::reportBug(ProgSlice* slice)
             {
                 SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource()))
             };
-            report.addSaberBug(GenericBug::PARTIALLEAK, eventStack);
+            emitBug(GenericBug::PARTIALLEAK, eventStack);
             SVFUtil::errs() << "\t\t sink-bypass return at : ( "
                             << bypassRet->getSourceLoc() << " )\n";
             for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
