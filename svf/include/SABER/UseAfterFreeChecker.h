@@ -107,9 +107,16 @@ private:
             const SVFGNode* freeNode, const SVFGNode* useNode);
     bool isFeasibleFreeUsePair(ProgSlice* slice, const SVFGNode* freeNode,
                                const SVFGNode* useNode, ProgSlice::Condition& outGuard) const;
+    bool isOrderedValueFlowUAFPair(const SVFGNode* freeNode, const SVFGNode* useNode) const;
 
     void analyzeFreeAnchoredUAFPairs();
     void runSliceFromSource(const SVFGNode* source, bool freeAsSource);
+    void collectObjectCandidateUses(const SVFGNodeSet& candidateUseSet,
+                                    const SVFGNode* freeNode,
+                                    std::vector<const SVFGNode*>& outUses) const;
+    void collectObjectCandidateUses(const std::vector<const SVFGNode*>& candidateUseSet,
+                                    const SVFGNode* freeNode,
+                                    std::vector<const SVFGNode*>& outUses) const;
     bool isDuplicateUAFPair(const SVFGNode* freeNode, const SVFGNode* useNode) const;
     void markUAFPairReported(const SVFGNode* freeNode, const SVFGNode* useNode);
     static const CallICFGNode* getFreeCallICFGNode(const SVFGNode* freeNode);

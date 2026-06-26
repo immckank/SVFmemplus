@@ -2,6 +2,7 @@
 #include "SABER/UseAfterFreeChecker.h"
 #include "SABER/SaberSliceExport.h"
 #include "SABER/SaberCheckerAPI.h"
+#include "SABER/SaberScopeAPI.h"
 #include "SVFIR/SVFIR.h"
 #include "SVFIR/SVFVariables.h"
 #include "Util/SVFUtil.h"
@@ -98,6 +99,20 @@ void UseAfterFreeChecker::FWProcessCurNode(const DPIm& item)
 }
 
 /*!
+ * Whether an ICFG node lives in system/STL/generated code, so UAF should skip
+ * frees/uses anchored there (e.g. <stop_token>, <bits/invoke.h>). Delegates to the
+ * shared, queryable SaberScopeAPI table (dumpable via -saber-scope-dump). A raw
+ * substring search is used because CallICFGNode::getSourceLoc() carries a node-type
+ * prefix ("CallICFGNode: { ... }") that is not valid JSON.
+ */
+static bool uafIsSystemOrGeneratedCodeICFG(const ICFGNode* node)
+{
+    if (node == nullptr)
+        return false;
+    return SaberScopeAPI::getScopeAPI()->isOutOfScopePath(node->getSourceLoc());
+}
+
+/*!
  * Initialize sinks
  */
 void UseAfterFreeChecker::initSnks()
@@ -113,6 +128,9 @@ void UseAfterFreeChecker::initSnks()
         {
             const FunObjVar* fun = *cit;
             if(!SaberCheckerAPI::getCheckerAPI()->isMemDealloc(fun))
+                continue;
+            // Skip frees anchored in system/STL/generated code (noise-only pairs)
+            if(uafIsSystemOrGeneratedCodeICFG(it->first))
                 continue;
             SVFIR::SVFVarList &arglist = it->second;
             for (const PAGNode* pagNode : arglist)
@@ -135,23 +153,34 @@ void UseAfterFreeChecker::initSnks()
             continue;
 
         for(const SVFStmt* ld : var->getOutgoingEdges(SVFStmt::Load))
-        {   
+        {
             if(getSVFG()->hasStmtVFGNode(ld)){
-                addToSinks(getSVFG()->getStmtVFGNode(ld));
-                addToUseNodes(getSVFG()->getStmtVFGNode(ld));
+                const SVFGNode* useNode = getSVFG()->getStmtVFGNode(ld);
+                // Skip uses anchored in system/STL/generated code (noise-only pairs)
+                if(uafIsSystemOrGeneratedCodeICFG(useNode->getICFGNode()))
+                    continue;
+                addToSinks(useNode);
+                addToUseNodes(useNode);
             }
         }
         for(const SVFStmt* st : var->getIncomingEdges(SVFStmt::Store))
         {
             if(getSVFG()->hasStmtVFGNode(st)){
-                addToSinks(getSVFG()->getStmtVFGNode(st));
-                addToUseNodes(getSVFG()->getStmtVFGNode(st));
+                const SVFGNode* useNode = getSVFG()->getStmtVFGNode(st);
+                if(uafIsSystemOrGeneratedCodeICFG(useNode->getICFGNode()))
+                    continue;
+                addToSinks(useNode);
+                addToUseNodes(useNode);
             }
         }
     }
 }
 
 static bool icfgReachable(const ICFGNode* start, const ICFGNode* target);
+static bool isBackEdge(const ICFGEdge* edge);
+static bool sameFunctionAcyclicReachable(const ICFGNode* start, const ICFGNode* target);
+static bool sameFunctionFreeOrdersUse(const ICFGNode* freeICFG, const ICFGNode* useICFG);
+static bool isLaterSourceLineInSameFile(const ICFGNode* freeICFG, const ICFGNode* useICFG);
 
 static const SVFVar* getGepBaseValVar(const SVFVar* var)
 {
@@ -217,6 +246,386 @@ const SVFVar* UseAfterFreeChecker::getUsePointerVar(const SVFGNode* useNode)
     return nullptr;
 }
 
+static const SVFVar* getUseDerefPointerVar(const SVFGNode* useNode)
+{
+    if (const LoadVFGNode* ld = SVFUtil::dyn_cast<LoadVFGNode>(useNode))
+        return ld->getPAGSrcNode();
+    if (const StoreVFGNode* st = SVFUtil::dyn_cast<StoreVFGNode>(useNode))
+        return st->getPAGDstNode();
+    return nullptr;
+}
+
+static bool collectAliasPtsForVar(PointerAnalysis* pta, const SVFVar* var, PointsTo& pts)
+{
+    if (pta == nullptr || var == nullptr)
+        return false;
+
+    bool hasPrecisePts = false;
+    const PointsTo& directPts = pta->getPts(var->getId());
+    if (!directPts.empty())
+    {
+        pts |= directPts;
+        hasPrecisePts = true;
+    }
+
+    const SVFVar* base = getGepBaseValVar(var);
+    if (base != nullptr && base != var)
+    {
+        const PointsTo& basePts = pta->getPts(base->getId());
+        if (!basePts.empty())
+        {
+            pts |= basePts;
+            hasPrecisePts = true;
+        }
+    }
+
+    return hasPrecisePts;
+}
+
+static bool collectAliasPtsForUseNode(PointerAnalysis* pta, const SVFGNode* useNode, PointsTo& pts)
+{
+    if (useNode == nullptr)
+        return false;
+
+    bool hasPrecisePts = false;
+    if (const LoadVFGNode* ld = SVFUtil::dyn_cast<LoadVFGNode>(useNode))
+    {
+        hasPrecisePts |= collectAliasPtsForVar(pta, ld->getPAGSrcNode(), pts);
+        const SVFVar* dst = ld->getPAGDstNode();
+        if (dst != nullptr && dst->isPointer())
+            hasPrecisePts |= collectAliasPtsForVar(pta, dst, pts);
+        return hasPrecisePts;
+    }
+    if (const StoreVFGNode* st = SVFUtil::dyn_cast<StoreVFGNode>(useNode))
+        return collectAliasPtsForVar(pta, st->getPAGDstNode(), pts);
+
+    return collectAliasPtsForVar(pta, getUseDerefPointerVar(useNode), pts);
+}
+
+static const ArgValVar* getBaseArgValVar(const SVFVar* var)
+{
+    const SVFVar* base = getGepBaseValVar(var);
+    return base == nullptr ? nullptr : SVFUtil::dyn_cast<ArgValVar>(base);
+}
+
+static bool actualArgMatchesFunctionArg(PointerAnalysis* pta,
+                                        const SVFVar* actualArg,
+                                        const SVFVar* calleeVar,
+                                        u32_t actualArgIndex,
+                                        const FunObjVar* calleeFun)
+{
+    if (actualArg == nullptr || calleeVar == nullptr)
+        return false;
+
+    if (pointerVarsMayAlias(pta, actualArg, calleeVar))
+        return true;
+
+    const ArgValVar* formalArg = getBaseArgValVar(calleeVar);
+    return formalArg != nullptr && formalArg->getFunction() == calleeFun &&
+           formalArg->getArgNo() == actualArgIndex;
+}
+
+static bool actualArgMatchesUse(PointerAnalysis* pta,
+                                const SVFVar* actualArg,
+                                const SVFGNode* useNode,
+                                u32_t actualArgIndex,
+                                const FunObjVar* useFun)
+{
+    if (actualArg == nullptr || useNode == nullptr)
+        return false;
+
+    const SVFVar* derefPtr = getUseDerefPointerVar(useNode);
+    if (actualArgMatchesFunctionArg(pta, actualArg, derefPtr, actualArgIndex, useFun))
+        return true;
+
+    if (const LoadVFGNode* ld = SVFUtil::dyn_cast<LoadVFGNode>(useNode))
+    {
+        const SVFVar* dst = ld->getPAGDstNode();
+        if (dst != nullptr && dst->isPointer() &&
+                actualArgMatchesFunctionArg(pta, actualArg, dst, actualArgIndex, useFun))
+            return true;
+    }
+
+    return false;
+}
+
+struct UAFUsePtsIndex
+{
+    std::unordered_map<NodeID, std::vector<const SVFGNode*>> usesByObject;
+    std::vector<const SVFGNode*> impreciseUses;
+};
+
+struct UAFIndexedCallArg
+{
+    const SVFVar* var;
+    u32_t index;
+};
+
+struct UAFDirectCallSiteInfo
+{
+    const CallICFGNode* cs;
+    std::vector<UAFIndexedCallArg> pointerArgs;
+};
+
+struct UAFCallPairHash
+{
+    size_t operator()(const std::pair<const FunObjVar*, const FunObjVar*>& p) const
+    {
+        return (reinterpret_cast<size_t>(p.first) >> 4) ^
+               (reinterpret_cast<size_t>(p.second) << 3);
+    }
+};
+
+struct UAFDirectCallIndex
+{
+    const SVFIR* pag = nullptr;
+    std::unordered_map<std::pair<const FunObjVar*, const FunObjVar*>,
+                       std::vector<UAFDirectCallSiteInfo>, UAFCallPairHash> calls;
+};
+
+static const std::vector<UAFDirectCallSiteInfo>* lookupDirectCalls(SVFIR* pag,
+        CallGraph* callgraph,
+        const FunObjVar* caller,
+        const FunObjVar* callee)
+{
+    static UAFDirectCallIndex index;
+    if (pag == nullptr || callgraph == nullptr || caller == nullptr || callee == nullptr)
+        return nullptr;
+
+    if (index.pag != pag)
+    {
+        index.pag = pag;
+        index.calls.clear();
+        for (SVFIR::CSToArgsListMap::iterator it = pag->getCallSiteArgsMap().begin(),
+                eit = pag->getCallSiteArgsMap().end(); it != eit; ++it)
+        {
+            const CallICFGNode* cs = it->first;
+            if (cs == nullptr || cs->getFun() == nullptr)
+                continue;
+
+            UAFDirectCallSiteInfo info;
+            info.cs = cs;
+            u32_t argIndex = 0;
+            for (const PAGNode* pagNode : it->second)
+            {
+                if (pagNode->isPointer())
+                    info.pointerArgs.push_back(
+                        {SVFUtil::cast<SVFVar>(pagNode), argIndex});
+                ++argIndex;
+            }
+
+            CallGraph::FunctionSet callees;
+            callgraph->getCallees(cs, callees);
+            for (const FunObjVar* dstFun : callees)
+                index.calls[std::make_pair(cs->getFun(), dstFun)].push_back(info);
+        }
+    }
+
+    auto found = index.calls.find(std::make_pair(caller, callee));
+    return found == index.calls.end() ? nullptr : &found->second;
+}
+
+static void buildUAFUsePtsIndex(const SrcSnkDDA::SVFGNodeSet& useSet, PointerAnalysis* pta,
+                                UAFUsePtsIndex& index)
+{
+    index.usesByObject.clear();
+    index.impreciseUses.clear();
+    index.usesByObject.reserve(useSet.size());
+
+    for (auto uit = useSet.begin(), euit = useSet.end(); uit != euit; ++uit)
+    {
+        const SVFGNode* useNode = *uit;
+        PointsTo usePts;
+        if (pta == nullptr || !collectAliasPtsForUseNode(pta, useNode, usePts) || usePts.empty())
+        {
+            index.impreciseUses.push_back(useNode);
+            continue;
+        }
+
+        for (PointsTo::iterator pit = usePts.begin(), epit = usePts.end(); pit != epit; ++pit)
+            index.usesByObject[*pit].push_back(useNode);
+    }
+}
+
+static void collectObjectCandidateUsesFromIndex(const UAFUsePtsIndex& index,
+                                                PointerAnalysis* pta,
+                                                const SVFVar* freed,
+                                                const SrcSnkDDA::SVFGNodeSet& fallbackUseSet,
+                                                std::vector<const SVFGNode*>& outUses)
+{
+    outUses.clear();
+    if (pta == nullptr || freed == nullptr)
+    {
+        outUses.insert(outUses.end(), fallbackUseSet.begin(), fallbackUseSet.end());
+        return;
+    }
+
+    PointsTo freePts;
+    if (!collectAliasPtsForVar(pta, freed, freePts) || freePts.empty())
+    {
+        outUses.insert(outUses.end(), fallbackUseSet.begin(), fallbackUseSet.end());
+        return;
+    }
+
+    std::unordered_set<NodeID> inserted;
+    for (PointsTo::iterator pit = freePts.begin(), epit = freePts.end(); pit != epit; ++pit)
+    {
+        auto it = index.usesByObject.find(*pit);
+        if (it == index.usesByObject.end())
+            continue;
+        for (const SVFGNode* useNode : it->second)
+        {
+            if (useNode != nullptr && inserted.insert(useNode->getId()).second)
+                outUses.push_back(useNode);
+        }
+    }
+
+    for (const SVFGNode* useNode : index.impreciseUses)
+    {
+        if (useNode != nullptr && inserted.insert(useNode->getId()).second)
+            outUses.push_back(useNode);
+    }
+}
+
+static bool mrNodeIntersectsPts(const SVFGNode* node, const PointsTo& pts)
+{
+    if (node == nullptr || pts.empty())
+        return false;
+
+    const MRSVFGNode* mrNode = SVFUtil::dyn_cast<MRSVFGNode>(node);
+    if (mrNode == nullptr)
+        return false;
+
+    PointsTo mrPts;
+    mrPts |= mrNode->getPointsTo();
+    return !mrPts.empty() && mrPts.intersects(pts);
+}
+
+static bool shouldPruneReturnWithoutFreedMemoryOut(const SVFGEdge* edge,
+                                                   const PointsTo& freedPts)
+{
+    if (edge == nullptr || !edge->isRetIndirectVFGEdge() || freedPts.empty())
+        return false;
+
+    return !mrNodeIntersectsPts(edge->getSrcNode(), freedPts) &&
+           !mrNodeIntersectsPts(edge->getDstNode(), freedPts);
+}
+
+static void collectReturnPrunedValueFlowUses(
+    const SVFGNode* freeNode,
+    const SrcSnkDDA::SVFGNodeSet& useNodes,
+    const PointsTo& freedPts,
+    u32_t backwardBudget,
+    u32_t forwardBudget,
+    std::vector<const SVFGNode*>& outUses)
+{
+    outUses.clear();
+    if (freeNode == nullptr)
+        return;
+
+    std::deque<const SVFGNode*> worklist;
+    std::unordered_set<NodeID> backwardVisited;
+    std::vector<const SVFGNode*> backwardNodes;
+
+    worklist.push_back(freeNode);
+    while (!worklist.empty() && backwardVisited.size() < backwardBudget)
+    {
+        const SVFGNode* node = worklist.front();
+        worklist.pop_front();
+        if (node == nullptr || !backwardVisited.insert(node->getId()).second)
+            continue;
+        backwardNodes.push_back(node);
+
+        for (auto edge : node->getInEdges())
+        {
+            if (shouldPruneReturnWithoutFreedMemoryOut(edge, freedPts))
+                continue;
+            worklist.push_back(edge->getSrcNode());
+        }
+    }
+
+    std::unordered_set<NodeID> forwardVisited;
+    std::unordered_set<NodeID> insertedUses;
+    for (const SVFGNode* seed : backwardNodes)
+        worklist.push_back(seed);
+
+    while (!worklist.empty() && forwardVisited.size() < forwardBudget)
+    {
+        const SVFGNode* node = worklist.front();
+        worklist.pop_front();
+        if (node == nullptr || !forwardVisited.insert(node->getId()).second)
+            continue;
+
+        if (node != freeNode && backwardVisited.find(node->getId()) == backwardVisited.end() &&
+                useNodes.find(node) != useNodes.end() &&
+                insertedUses.insert(node->getId()).second)
+            outUses.push_back(node);
+
+        for (auto edge : node->getOutEdges())
+        {
+            if (shouldPruneReturnWithoutFreedMemoryOut(edge, freedPts))
+                continue;
+            worklist.push_back(edge->getDstNode());
+        }
+    }
+}
+
+template <typename UseRange>
+static void collectObjectCandidateUsesImpl(const UseRange& candidateUseSet,
+                                           PointerAnalysis* pta,
+                                           const SVFVar* freed,
+                                           std::vector<const SVFGNode*>& outUses)
+{
+    outUses.clear();
+    if (pta == nullptr || freed == nullptr)
+    {
+        outUses.insert(outUses.end(), candidateUseSet.begin(), candidateUseSet.end());
+        return;
+    }
+
+    PointsTo freePts;
+    if (!collectAliasPtsForVar(pta, freed, freePts) || freePts.empty())
+    {
+        outUses.insert(outUses.end(), candidateUseSet.begin(), candidateUseSet.end());
+        return;
+    }
+
+    std::unordered_set<NodeID> inserted;
+    for (const SVFGNode* useNode : candidateUseSet)
+    {
+        PointsTo usePts;
+        if (!collectAliasPtsForUseNode(pta, useNode, usePts) || usePts.empty())
+        {
+            if (useNode != nullptr && inserted.insert(useNode->getId()).second)
+                outUses.push_back(useNode);
+            continue;
+        }
+
+        if (freePts.intersects(usePts) &&
+                useNode != nullptr && inserted.insert(useNode->getId()).second)
+            outUses.push_back(useNode);
+    }
+}
+
+void UseAfterFreeChecker::collectObjectCandidateUses(const SVFGNodeSet& candidateUseSet,
+                                                     const SVFGNode* freeNode,
+                                                     std::vector<const SVFGNode*>& outUses) const
+{
+    const SVFVar* freed = getFreedPointerVar(freeNode);
+    PointerAnalysis* pta = getSVFG() == nullptr ? nullptr : getSVFG()->getPTA();
+    collectObjectCandidateUsesImpl(candidateUseSet, pta, freed, outUses);
+}
+
+void UseAfterFreeChecker::collectObjectCandidateUses(
+    const std::vector<const SVFGNode*>& candidateUseSet,
+    const SVFGNode* freeNode,
+    std::vector<const SVFGNode*>& outUses) const
+{
+    const SVFVar* freed = getFreedPointerVar(freeNode);
+    PointerAnalysis* pta = getSVFG() == nullptr ? nullptr : getSVFG()->getPTA();
+    collectObjectCandidateUsesImpl(candidateUseSet, pta, freed, outUses);
+}
+
 bool UseAfterFreeChecker::maySameFreedObject(const SVFGNode* freeNode,
                                const SVFGNode* useNode) const
 {
@@ -255,26 +664,31 @@ bool UseAfterFreeChecker::maySameFreedObject(const SVFGNode* freeNode,
         useBase = used;
 
     SVFIR* pag = getPAG();
-    for (SVFIR::CSToArgsListMap::iterator it = pag->getCallSiteArgsMap().begin(),
-            eit = pag->getCallSiteArgsMap().end(); it != eit; ++it)
+    if (const std::vector<UAFDirectCallSiteInfo>* callsites =
+                lookupDirectCalls(pag, getCallgraph(), useFun, freeFun))
     {
-        const CallICFGNode* cs = it->first;
-        if (cs->getFun() != useFun)
-            continue;
-
-        CallGraph::FunctionSet callees;
-        getCallgraph()->getCallees(cs, callees);
-        if (callees.find(freeFun) == callees.end())
-            continue;
-
-        for (const PAGNode* pagNode : it->second)
+        for (const UAFDirectCallSiteInfo& info : *callsites)
         {
-            if (!pagNode->isPointer())
-                continue;
-            const SVFVar* actualArg = SVFUtil::cast<SVFVar>(pagNode);
-            if (pointerVarsMayAlias(pta, actualArg, useBase))
-                return true;
-            break;
+            for (const UAFIndexedCallArg& arg : info.pointerArgs)
+            {
+                if (actualArgMatchesFunctionArg(pta, arg.var, freed, arg.index, freeFun) &&
+                        pointerVarsMayAlias(pta, arg.var, useBase))
+                    return true;
+            }
+        }
+    }
+
+    if (const std::vector<UAFDirectCallSiteInfo>* callsites =
+                lookupDirectCalls(pag, getCallgraph(), freeFun, useFun))
+    {
+        for (const UAFDirectCallSiteInfo& info : *callsites)
+        {
+            for (const UAFIndexedCallArg& arg : info.pointerArgs)
+            {
+                if (pointerVarsMayAlias(pta, arg.var, freed) &&
+                        actualArgMatchesUse(pta, arg.var, useNode, arg.index, useFun))
+                    return true;
+            }
         }
     }
 
@@ -353,6 +767,102 @@ static bool icfgReachable(const ICFGNode* start, const ICFGNode* target) {
     return false;
 }
 
+static bool sameFunctionAcyclicReachable(const ICFGNode* start, const ICFGNode* target)
+{
+    if (start == nullptr || target == nullptr)
+        return false;
+
+    const FunObjVar* fun = start->getFun();
+    if (fun == nullptr || fun != target->getFun())
+        return false;
+
+    std::unordered_set<const ICFGNode*> visited;
+    std::deque<const ICFGNode*> worklist;
+    worklist.push_back(start);
+
+    const size_t maxVisitedNodes = Options::SaberUAFReachMaxNodes();
+    while (!worklist.empty())
+    {
+        const ICFGNode* node = worklist.front();
+        worklist.pop_front();
+
+        if (node == target)
+            return true;
+        if (!visited.insert(node).second)
+            continue;
+        if (visited.size() >= maxVisitedNodes)
+            return false;
+
+        if (const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(node))
+        {
+            const ICFGNode* ret = call->getRetICFGNode();
+            if (ret != nullptr && ret->getFun() == fun)
+                worklist.push_back(ret);
+        }
+
+        for (const ICFGEdge* edge : node->getOutEdges())
+        {
+            const ICFGNode* succ = edge->getDstNode();
+            if (succ == nullptr || succ->getFun() != fun || isBackEdge(edge))
+                continue;
+            worklist.push_back(succ);
+        }
+    }
+
+    return false;
+}
+
+static bool sameFunctionFreeOrdersUse(const ICFGNode* freeICFG, const ICFGNode* useICFG)
+{
+    if (freeICFG == nullptr || useICFG == nullptr || freeICFG == useICFG)
+        return false;
+
+    const FunObjVar* fun = freeICFG->getFun();
+    if (fun == nullptr || fun != useICFG->getFun())
+        return false;
+
+    const SVFBasicBlock* freeBB = freeICFG->getBB();
+    const SVFBasicBlock* useBB = useICFG->getBB();
+    if (freeBB == nullptr || useBB == nullptr)
+        return sameFunctionAcyclicReachable(freeICFG, useICFG);
+
+    if (freeBB == useBB)
+        return sameFunctionAcyclicReachable(freeICFG, useICFG);
+
+    return fun->getLoopAndDomInfo() != nullptr &&
+           fun->getLoopAndDomInfo()->dominate(freeBB, useBB) &&
+           sameFunctionAcyclicReachable(freeICFG, useICFG);
+}
+
+static bool getICFGSourceFileLine(const ICFGNode* node, std::string& file, u32_t& line)
+{
+    file.clear();
+    line = 0;
+    if (node == nullptr)
+        return false;
+    const std::string& loc = node->getSourceLoc();
+    const size_t brace = loc.find('{');
+    const std::string json = (brace == std::string::npos) ? loc : loc.substr(brace);
+    SaberSliceExportUtil::parseLocFileLine(json, file, line);
+    return !file.empty() && line != 0;
+}
+
+static bool isLaterSourceLineInSameFile(const ICFGNode* freeICFG, const ICFGNode* useICFG)
+{
+    if (freeICFG == nullptr || useICFG == nullptr ||
+            freeICFG->getFun() == nullptr || freeICFG->getFun() != useICFG->getFun())
+        return false;
+
+    std::string freeFile;
+    std::string useFile;
+    u32_t freeLine = 0;
+    u32_t useLine = 0;
+    if (!getICFGSourceFileLine(freeICFG, freeFile, freeLine) ||
+            !getICFGSourceFileLine(useICFG, useFile, useLine))
+        return false;
+    return freeFile == useFile && useLine > freeLine;
+}
+
 static void collectReachableUsesFromFree(
     const ICFGNode* start,
     const std::unordered_map<const ICFGNode*, std::vector<const SVFGNode*>>& usesByICFGNode,
@@ -394,7 +904,7 @@ static void collectReachableUsesFromFree(
     }
 }
 
-bool isBackEdge(const ICFGEdge* edge) {
+static bool isBackEdge(const ICFGEdge* edge) {
     auto src = edge->getSrcNode();
     auto dst = edge->getDstNode();
 
@@ -517,11 +1027,9 @@ void UseAfterFreeChecker::analyze()
     const bool progress = Options::UAFCheck();
     const bool timeStat = Options::SaberTimeStat();
     double totalStart = 0;
-    double nextProgressTime = 0;
     if (progress || timeStat)
     {
         totalStart = SVFStat::getClk(true);
-        nextProgressTime = totalStart + 5 * TIMEINTERVAL;
     }
 
     initialize();
@@ -547,30 +1055,6 @@ void UseAfterFreeChecker::analyze()
                << " useNodes=" << useNodes.size()
                << " allSinks=" << getSinks().size() << "\n";
         outs().flush();
-    }
-
-    u32_t sourceIndex = 0;
-    for (SVFGNodeSetIter iter = sourcesBegin(), eiter = sourcesEnd();
-            iter != eiter; ++iter)
-    {
-        ++sourceIndex;
-        runSliceFromSource(*iter, false);
-
-        if (progress)
-        {
-            const double now = SVFStat::getClk(true);
-            if (now >= nextProgressTime || sourceIndex == numSrcs)
-            {
-                outs() << "[UAF][source-progress] index=" << sourceIndex
-                       << "/" << numSrcs
-                       << " elapsed=" << (now - totalStart) / TIMEINTERVAL
-                       << " withSinks=" << saberTimeStat.uafSourcesWithSinks
-                       << " reported=" << saberTimeStat.uafReportedSources
-                       << "\n";
-                outs().flush();
-                nextProgressTime = now + 5 * TIMEINTERVAL;
-            }
-        }
     }
 
     analyzeFreeAnchoredUAFPairs();
@@ -614,12 +1098,18 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, Gene
 
     if (useBBGuardPair)
     {
-        for (SVFGNodeSetIter uit = useSet->begin(), euit = useSet->end(); uit != euit; ++uit)
+        UAFUsePtsIndex useIndex;
+        PointerAnalysis* pta = getSVFG() == nullptr ? nullptr : getSVFG()->getPTA();
+        buildUAFUsePtsIndex(*useSet, pta, useIndex);
+
+        for (SVFGNodeSetIter fit = freeSet->begin(), efit = freeSet->end(); fit != efit; ++fit)
         {
-            const SVFGNode* useNode = *uit;
-            for (SVFGNodeSetIter fit = freeSet->begin(), efit = freeSet->end(); fit != efit; ++fit)
+            const SVFGNode* freeNode = *fit;
+            std::vector<const SVFGNode*> candidateUses;
+            collectObjectCandidateUsesFromIndex(useIndex, pta, getFreedPointerVar(freeNode),
+                                                *useSet, candidateUses);
+            for (const SVFGNode* useNode : candidateUses)
             {
-                const SVFGNode* freeNode = *fit;
                 ++pairChecks;
                 ProgSlice::Condition guard;
                 if (!isFeasibleFreeUsePair(slice, freeNode, useNode, guard))
@@ -671,7 +1161,9 @@ bool UseAfterFreeChecker::isSatisfiableForFreeAndUsePairs(ProgSlice* slice, Gene
             const size_t maxVisitedNodes = Options::SaberUAFReachMaxNodes();
             collectReachableUsesFromFree(ficfg, usesByICFGNode, totalIndexedUses, maxVisitedNodes, reachableUses);
 
-            for (const SVFGNode* useNode : reachableUses)
+            std::vector<const SVFGNode*> candidateUses;
+            collectObjectCandidateUses(reachableUses, *fit, candidateUses);
+            for (const SVFGNode* useNode : candidateUses)
             {
                 ++pairChecks;
                 if (isDuplicateUAFPair(*fit, useNode))
@@ -860,6 +1352,69 @@ bool UseAfterFreeChecker::isUseAfterFreeCallInCaller(const SVFGNode* freeNode,
     return icfgReachable(freeICFG, useICFG);
 }
 
+bool UseAfterFreeChecker::isOrderedValueFlowUAFPair(const SVFGNode* freeNode,
+        const SVFGNode* useNode) const
+{
+    const ICFGNode* freeICFG = freeNode == nullptr ? nullptr : freeNode->getICFGNode();
+    const ICFGNode* useICFG = useNode == nullptr ? nullptr : useNode->getICFGNode();
+    if (freeICFG == nullptr || useICFG == nullptr)
+        return false;
+
+    const FunObjVar* freeFun = freeICFG->getFun();
+    const FunObjVar* useFun = useICFG->getFun();
+    if (freeFun == nullptr || useFun == nullptr)
+        return false;
+
+    if (freeFun == useFun)
+        return sameFunctionFreeOrdersUse(freeICFG, useICFG);
+
+    PointerAnalysis* pta = getSVFG() == nullptr ? nullptr : getSVFG()->getPTA();
+    if (pta == nullptr)
+        return false;
+
+    const SVFVar* freed = getFreedPointerVar(freeNode);
+    if (freed == nullptr)
+        return false;
+
+    SVFIR* pag = getPAG();
+    if (const std::vector<UAFDirectCallSiteInfo>* callsites =
+                lookupDirectCalls(pag, getCallgraph(), useFun, freeFun))
+    {
+        for (const UAFDirectCallSiteInfo& info : *callsites)
+        {
+            const ICFGNode* retICFG = info.cs->getRetICFGNode();
+            if (!sameFunctionAcyclicReachable(retICFG, useICFG))
+                continue;
+
+            for (const UAFIndexedCallArg& arg : info.pointerArgs)
+            {
+                if (actualArgMatchesFunctionArg(pta, arg.var, freed, arg.index, freeFun) &&
+                        actualArgMatchesUse(pta, arg.var, useNode, arg.index, useFun))
+                    return true;
+            }
+        }
+    }
+
+    if (const std::vector<UAFDirectCallSiteInfo>* callsites =
+                lookupDirectCalls(pag, getCallgraph(), freeFun, useFun))
+    {
+        for (const UAFDirectCallSiteInfo& info : *callsites)
+        {
+            if (!sameFunctionAcyclicReachable(freeICFG, info.cs))
+                continue;
+
+            for (const UAFIndexedCallArg& arg : info.pointerArgs)
+            {
+                if (pointerVarsMayAlias(pta, arg.var, freed) &&
+                        actualArgMatchesUse(pta, arg.var, useNode, arg.index, useFun))
+                    return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 bool UseAfterFreeChecker::isFieldLoadUseOfFreedBase(const SVFGNode* freeNode,
         const SVFGNode* useNode) const
 {
@@ -1020,93 +1575,122 @@ std::vector<const SVFGNode*> UseAfterFreeChecker::getCallerActualParmAnchors(
 
 void UseAfterFreeChecker::analyzeFreeAnchoredUAFPairs()
 {
-    std::unordered_map<const ICFGNode*, std::vector<const SVFGNode*>> usesByICFGNode;
-    size_t totalIndexedUses = 0;
-    usesByICFGNode.reserve(useNodes.size());
-    for (SVFGNodeSetIter uit = useNodes.begin(), euit = useNodes.end(); uit != euit; ++uit)
-    {
-        const ICFGNode* uicfg = (*uit)->getICFGNode();
-        if (uicfg == nullptr)
-            continue;
-        usesByICFGNode[uicfg].push_back(*uit);
-        ++totalIndexedUses;
-    }
+    UAFUsePtsIndex useIndex;
+    PointerAnalysis* pta = getSVFG() == nullptr ? nullptr : getSVFG()->getPTA();
+    buildUAFUsePtsIndex(useNodes, pta, useIndex);
 
-    const size_t maxVisitedNodes = Options::SaberUAFReachMaxNodes();
+    u64_t localCandidates = 0;
+    u64_t localOrderMatches = 0;
+    u64_t localAliasMatches = 0;
+    u64_t localGuardMatches = 0;
+    u64_t vfCandidates = 0;
+    u64_t vfAliasMatches = 0;
+    u64_t vfGuardMatches = 0;
     for (SVFGNodeSetIter fit = freeNodes.begin(), efit = freeNodes.end(); fit != efit; ++fit)
     {
         const SVFGNode* freeNode = *fit;
         const ICFGNode* ficfg = freeNode->getICFGNode();
         if (ficfg == nullptr)
             continue;
-
-        std::vector<const SVFGNode*> reachableUses;
-        collectReachableUsesFromFree(ficfg, usesByICFGNode, totalIndexedUses,
-                                     maxVisitedNodes, reachableUses);
-        if (reachableUses.empty())
+        const FunObjVar* freeFun = ficfg->getFun();
+        if (freeFun == nullptr)
             continue;
 
-        bool hasNewPair = false;
-        for (const SVFGNode* useNode : reachableUses)
+        PointsTo freedPts;
+        collectAliasPtsForVar(pta, getFreedPointerVar(freeNode), freedPts);
+
+        std::vector<const SVFGNode*> valueFlowUses;
+        if (!freedPts.empty())
+            collectReturnPrunedValueFlowUses(freeNode, useNodes, freedPts, 5000,
+                                             Options::SaberUAFReachMaxNodes(), valueFlowUses);
+        for (const SVFGNode* useNode : valueFlowUses)
         {
+            ++vfCandidates;
             if (isDuplicateUAFPair(freeNode, useNode))
                 continue;
             if (!maySameFreedObject(freeNode, useNode))
                 continue;
-            hasNewPair = true;
-            break;
-        }
 
-        const FunObjVar* freeFun = ficfg->getFun();
-        if (!hasNewPair && freeFun != nullptr)
-        {
-            const std::vector<const SVFGNode*> callerAnchors =
-                getCallerActualParmAnchors(freeNode);
-            if (!callerAnchors.empty())
-            {
-                for (const SVFGNode* useNode : reachableUses)
-                {
-                    if (isDuplicateUAFPair(freeNode, useNode))
-                        continue;
-                    const ICFGNode* uicfg = useNode->getICFGNode();
-                    if (uicfg != nullptr && uicfg->getFun() != freeFun)
-                    {
-                        hasNewPair = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (!hasNewPair)
-            continue;
-
-        bool hasCrossFunctionUse = false;
-        for (const SVFGNode* useNode : reachableUses)
-        {
             const ICFGNode* uicfg = useNode->getICFGNode();
             if (uicfg == nullptr)
                 continue;
-            if (uicfg->getFun() != freeFun)
-            {
-                hasCrossFunctionUse = true;
-                break;
-            }
+            if (!isOrderedValueFlowUAFPair(freeNode, useNode) &&
+                    !isLaterSourceLineInSameFile(ficfg, uicfg))
+                continue;
+            ++vfAliasMatches;
+
+            ProgSlice guardSlice(freeNode, getSaberCondAllocator(), getSVFG());
+            ProgSlice::Condition orderCond =
+                computeControlOrderGuard(&guardSlice, freeNode, useNode);
+            if (guardSlice.isEquivalentBranchCond(orderCond, guardSlice.getFalseCond()))
+                continue;
+            ++vfGuardMatches;
+
+            const CallICFGNode* srcCS = getFreeCallICFGNode(freeNode);
+            if (srcCS == nullptr)
+                continue;
+
+            GenericBug::EventStack eventStack;
+            eventStack.push_back(SVFBugEvent(SVFBugEvent::Free, ficfg));
+            eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, uicfg));
+            eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, srcCS));
+            queueUAFReport(std::move(eventStack), "return_pruned_vfg");
+            markUAFPairReported(freeNode, useNode);
         }
 
-        if (hasCrossFunctionUse)
+        std::vector<const SVFGNode*> candidateUses;
+        collectObjectCandidateUsesFromIndex(useIndex, pta, getFreedPointerVar(freeNode),
+                                            useNodes, candidateUses);
+        if (candidateUses.empty())
+            candidateUses.insert(candidateUses.end(), useNodes.begin(), useNodes.end());
+
+        for (const SVFGNode* useNode : candidateUses)
         {
-            for (const SVFGNode* useNode : reachableUses)
-            {
-                const ICFGNode* uicfg = useNode->getICFGNode();
-                if (uicfg == nullptr || uicfg->getFun() == freeFun)
-                    continue;
-                tryReportCrossFunctionUAF(freeNode, useNode);
-            }
-            continue;
-        }
+            ++localCandidates;
+            if (isDuplicateUAFPair(freeNode, useNode))
+                continue;
 
-        runSliceFromSource(freeNode, true);
+            const ICFGNode* uicfg = useNode->getICFGNode();
+            if (uicfg == nullptr)
+                continue;
+
+            if (!maySameFreedObject(freeNode, useNode))
+                continue;
+            ++localAliasMatches;
+            if (!isOrderedValueFlowUAFPair(freeNode, useNode))
+                continue;
+            ++localOrderMatches;
+
+            ProgSlice guardSlice(freeNode, getSaberCondAllocator(), getSVFG());
+            ProgSlice::Condition orderCond =
+                computeControlOrderGuard(&guardSlice, freeNode, useNode);
+            if (guardSlice.isEquivalentBranchCond(orderCond, guardSlice.getFalseCond()))
+                continue;
+            ++localGuardMatches;
+
+            const CallICFGNode* srcCS = getFreeCallICFGNode(freeNode);
+            if (srcCS == nullptr)
+                continue;
+
+            GenericBug::EventStack eventStack;
+            eventStack.push_back(SVFBugEvent(SVFBugEvent::Free, ficfg));
+            eventStack.push_back(SVFBugEvent(SVFBugEvent::Use, uicfg));
+            eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, srcCS));
+            queueUAFReport(std::move(eventStack), "local_ordered");
+            markUAFPairReported(freeNode, useNode);
+        }
+    }
+    if (Options::UAFCheck())
+    {
+        outs() << "[UAF][local-fastpath] candidates=" << localCandidates
+               << " orderMatches=" << localOrderMatches
+               << " aliasMatches=" << localAliasMatches
+               << " guardMatches=" << localGuardMatches
+               << " vfCandidates=" << vfCandidates
+               << " vfAliasMatches=" << vfAliasMatches
+               << " vfGuardMatches=" << vfGuardMatches
+               << "\n";
+        outs().flush();
     }
 }
 
@@ -1122,6 +1706,15 @@ void UseAfterFreeChecker::queueUAFReport(GenericBug::EventStack eventStack,
         else if (ev.getEventType() == SVFBugEvent::Use)
             useICFG = ev.getEventInst();
     }
+
+    // Authoritative system/STL/generated-code filter: drop any UAF report whose
+    // free or use anchor lands in system headers (e.g. <stop_token>, <bits/invoke.h>),
+    // libstdc++/libc, or generated code. This is the single choke point shared by all
+    // report kinds (return_pruned_vfg / local_ordered / cross_function / alloc_source),
+    // so it catches frees whose location is attributed to inlined STL code.
+    if (uafIsSystemOrGeneratedCodeICFG(freeICFG) ||
+            uafIsSystemOrGeneratedCodeICFG(useICFG))
+        return;
 
     SaberPendingReport pending;
     pending.bugType = GenericBug::USEAFTERFREE;

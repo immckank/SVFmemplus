@@ -181,11 +181,15 @@ private:
     mutable std::unordered_map<const SVFGNode*, bool> ignorePtrStoreForLoadCache;
     mutable u32_t uninitDebugLinesPrinted = 0;
     u32_t smallInitSkippedSources = 0;
+    u32_t scopeSkippedSources = 0;
     u32_t dedupSkippedReports = 0;
     u32_t headerSkippedReports = 0;
     u32_t emittedUninitReports = 0;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToBoundaries;
+    /// Per-function index of registered-initializer call sites: function -> [(callsite, initArgIdx)].
+    /// Built once from SaberInitAPI; empty (and thus a no-op) until the table is populated.
+    Map<const FunObjVar*, std::vector<std::pair<const CallICFGNode*, int>>> registeredInitCallsByFun;
 
     bool isPtrStoreNode(const SVFGNode* node) const;
     bool isPtrLoadNode(const SVFGNode* node) const;
@@ -214,6 +218,12 @@ private:
     bool sameBasicBlockReachableBefore(const ICFGNode* beforeNode, const ICFGNode* afterNode) const;
     bool sameFunctionDominates(const ICFGNode* domNode, const ICFGNode* useNode) const;
     bool hasDominatingInitBlocker(ProgSlice* slice, const SVFGNode* load) const;
+    /// Mode-b init kill: whether a registered SaberInitAPI initializer call
+    /// dominates `load` (same function) and initializes an object the load reads.
+    /// Catches OPAQUE initializers (no value-flow store node) that the store-based
+    /// hasDominatingInitBlocker cannot see. No-op until the init-API table is populated.
+    bool hasDominatingRegisteredInitCall(const SVFGNode* load) const;
+    void buildRegisteredInitCallIndex();
     bool inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const;
     RegionKey makeWholeRegion(NodeID obj) const;
     RegionKey makeFieldRegion(NodeID obj, APOffset field) const;
@@ -263,6 +273,10 @@ private:
     bool isReturnAnchoredICFGNode(const ICFGNode* node) const;
     bool isSystemOrGeneratedCodePath(const std::string& file) const;
     bool isSystemOrGeneratedCodeICFG(const ICFGNode* node) const;
+    /// Whether a function is out-of-analysis-scope (system/STL/generated), so its
+    /// stack/heap objects should not seed uninitialized-use sources. Delegates to the
+    /// queryable SaberScopeAPI table (path + STL/ABI mangled-name rules).
+    bool isOutOfScopeSourceFunction(const FunObjVar* fun) const;
     bool isHeapUninitSource(const SVFGNode* source) const;
     bool isAllocatorInSystemLibrary(const FunObjVar* fun) const;
     bool backwardValueFlowReachesSource(ProgSlice* slice, const SVFGNode* start,

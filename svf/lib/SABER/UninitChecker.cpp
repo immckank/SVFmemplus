@@ -3,6 +3,8 @@
 #include "SABER/SaberSliceExport.h"
 #include "SABER/SaberCheckerAPI.h"
 #include "SABER/SaberMemTransferAPI.h"
+#include "SABER/SaberScopeAPI.h"
+#include "SABER/SaberInitAPI.h"
 #include "SVFIR/SVFIR.h"
 #include "SVFIR/SVFType.h"
 #include "Util/SVFStat.h"
@@ -13,6 +15,7 @@
 #include "SVFIR/SVFValue.h"
 #include "Graphs/ICFG.h"
 #include <deque>
+#include <sstream>
 #include <queue>
 #include <unordered_set>
 #include <string>
@@ -282,10 +285,15 @@ void UninitChecker::analyze()
     const u32_t numSrcs = getSources().size();
     if (progress)
     {
+        std::ostringstream scopeOss;
+        SaberScopeAPI::getScopeAPI()->dump(scopeOss);
+        SaberInitAPI::getInitAPI()->dump(scopeOss);
+        outs() << scopeOss.str();
         outs() << "[UNINIT][analyze-begin] sources=" << numSrcs
                << " criticalSinks=" << criticalSinkNodes.size()
                << " allLoads=" << loadNodes.size()
-               << " smallInitSkipped=" << smallInitSkippedSources << "\n";
+               << " smallInitSkipped=" << smallInitSkippedSources
+               << " scopeSkipped=" << scopeSkippedSources << "\n";
         outs().flush();
     }
 
@@ -439,22 +447,9 @@ bool UninitChecker::isReturnAnchoredICFGNode(const ICFGNode* node) const
 
 bool UninitChecker::isSystemOrGeneratedCodePath(const std::string& file) const
 {
-    if (file.empty())
-        return false;
-
-    if (file.find("/include/c++/") != std::string::npos ||
-        file.find("/usr/lib/gcc/") != std::string::npos ||
-        file.find("/usr/local/include/") != std::string::npos ||
-        file.find("/usr/include/") != std::string::npos)
-        return true;
-
-    if (file.find(".pb.cc") != std::string::npos ||
-        file.find("_generated.h") != std::string::npos ||
-        file.find("/google/protobuf/") != std::string::npos ||
-        file.find("/protobuf/") != std::string::npos)
-        return true;
-
-    return false;
+    // Single source of truth: the queryable SaberScopeAPI path rules (dumpable via
+    // -saber-scope-dump). Kept as a thin wrapper so existing call sites are unchanged.
+    return SaberScopeAPI::getScopeAPI()->isOutOfScopePath(file);
 }
 
 bool UninitChecker::isSystemOrGeneratedCodeICFG(const ICFGNode* node) const
@@ -462,11 +457,15 @@ bool UninitChecker::isSystemOrGeneratedCodeICFG(const ICFGNode* node) const
     if (node == nullptr)
         return false;
 
-    std::string file;
-    u32_t line = 0;
-    if (!SaberSliceExportUtil::parseLocFileLine(node->getSourceLoc(), file, line))
-        return false;
-    return isSystemOrGeneratedCodePath(file);
+    // Search the raw source-location string directly. ICFG call nodes prefix their
+    // location with a type label (e.g. "CallICFGNode: { ... }"), which is not valid
+    // JSON; a cJSON-based parse silently fails and lets system code slip through.
+    return SaberScopeAPI::getScopeAPI()->isOutOfScopePath(node->getSourceLoc());
+}
+
+bool UninitChecker::isOutOfScopeSourceFunction(const FunObjVar* fun) const
+{
+    return SaberScopeAPI::getScopeAPI()->isOutOfScopeFunction(fun);
 }
 
 bool UninitChecker::isHeapUninitSource(const SVFGNode* source) const
@@ -1140,6 +1139,11 @@ bool UninitChecker::isMemsetLikeInitializingStore(const SVFGNode* store) const
             if (ExtAPI::getExtAPI()->is_memset(fun) || n == "bzero" || n == "memzero_explicit" ||
                 n.find("memset") != std::string::npos)
                 return true;
+            // Registered initializers (SaberInitAPI, e.g. LLM-classified project
+            // functions that fully initialize a pointer argument) kill the region
+            // just like memset wherever the call is modelled as a store.
+            if (SaberInitAPI::getInitAPI()->isInitializer(fun))
+                return true;
         }
     }
 
@@ -1352,6 +1356,7 @@ void UninitChecker::initSrcs()
     loadReadRegionCache.clear();
     storeWriteRegionCache.clear();
     smallInitSkippedSources = 0;
+    scopeSkippedSources = 0;
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
@@ -1365,6 +1370,15 @@ void UninitChecker::initSrcs()
                 SVFVar* obj = const_cast<SVFVar*>(ld->getSrcNode());
                 if (StackObjVar* stackObj = SVFUtil::dyn_cast<StackObjVar>(obj))
                 {
+                    // Scope filter: skip stack objects declared in system/STL/generated
+                    // functions (queryable via SaberScopeAPI). Applies to composite
+                    // objects too — STL container internals are out of analysis scope and
+                    // dominate both runtime and false positives.
+                    if (isOutOfScopeSourceFunction(stackObj->getICFGNode()->getFun()))
+                    {
+                        ++scopeSkippedSources;
+                        continue;
+                    }
                     const bool composite = isCompositeMemoryObject(stackObj);
                     const bool smallScalar = isSmallScalarStackObject(stackObj);
                     const bool scalarOutParam = isTrackableScalarStackObject(stackObj, pag);
@@ -1451,8 +1465,11 @@ void UninitChecker::initSrcs()
                 else if ((Options::RunUncallFuncs() || !cs->getFun()->isUncalledFunction()) &&
                          !isExtCall(cs->getBB()->getParent()))
                 {
-                    if (isSystemOrGeneratedCodeICFG(cs))
+                    if (isSystemOrGeneratedCodeICFG(cs) || isOutOfScopeSourceFunction(cs->getFun()))
+                    {
+                        ++scopeSkippedSources;
                         continue;
+                    }
                     if (!pointeeIncludesCompositeObject(pagNode->getId()))
                         continue;
                     RegionSet initialRegions;
@@ -1464,6 +1481,8 @@ void UninitChecker::initSrcs()
             }
         }
     }
+
+    buildRegisteredInitCallIndex();
 }
 
 /*!
@@ -1969,6 +1988,79 @@ bool UninitChecker::hasDominatingInitBlocker(ProgSlice* slice, const SVFGNode* l
     return false;
 }
 
+void UninitChecker::buildRegisteredInitCallIndex()
+{
+    registeredInitCallsByFun.clear();
+    SaberInitAPI* initAPI = SaberInitAPI::getInitAPI();
+    if (initAPI->getRules().empty())
+        return; // nothing registered -> mode-b is a no-op, skip the scan entirely
+
+    SVFIR* pag = getPAG();
+    for (SVFIR::CSToArgsListMap::iterator it = pag->getCallSiteArgsMap().begin(),
+            eit = pag->getCallSiteArgsMap().end(); it != eit; ++it)
+    {
+        const CallICFGNode* cs = it->first;
+        const FunObjVar* inFun = cs->getFun();
+        if (inFun == nullptr)
+            continue;
+        CallGraph::FunctionSet callees;
+        getCallgraph()->getCallees(cs, callees);
+        for (const FunObjVar* callee : callees)
+        {
+            int argIdx = SaberInitAPI::ANY_ARG;
+            if (initAPI->isInitializer(callee, &argIdx))
+            {
+                registeredInitCallsByFun[inFun].emplace_back(cs, argIdx);
+                break;
+            }
+        }
+    }
+}
+
+bool UninitChecker::hasDominatingRegisteredInitCall(const SVFGNode* load) const
+{
+    if (registeredInitCallsByFun.empty())
+        return false;
+    const LoadSVFGNode* ld = SVFUtil::dyn_cast<LoadSVFGNode>(load);
+    if (ld == nullptr)
+        return false;
+    const ICFGNode* loadICFG = load->getICFGNode();
+    if (loadICFG == nullptr)
+        return false;
+    const FunObjVar* fun = loadICFG->getFun();
+    auto fit = registeredInitCallsByFun.find(fun);
+    if (fit == registeredInitCallsByFun.end())
+        return false;
+    PointerAnalysis* pta = getSVFG()->getPTA();
+    if (pta == nullptr)
+        return false;
+
+    const PointsTo& loadPts = pta->getPts(ld->getPAGSrcNodeID());
+    if (loadPts.empty())
+        return false;
+
+    for (const std::pair<const CallICFGNode*, int>& entry : fit->second)
+    {
+        const CallICFGNode* cs = entry.first;
+        const int argIdx = entry.second;
+        if (!sameFunctionDominates(cs, loadICFG))
+            continue;
+        // Check the registered init argument (or any pointer arg) aliases the loaded object.
+        const u32_t n = cs->arg_size();
+        for (u32_t a = 0; a < n; ++a)
+        {
+            if (argIdx != SaberInitAPI::ANY_ARG && static_cast<int>(a) != argIdx)
+                continue;
+            const ValVar* arg = cs->getArgument(a);
+            if (arg == nullptr || !arg->isPointer())
+                continue;
+            if (pta->getPts(arg->getId()).intersects(loadPts))
+                return true;
+        }
+    }
+    return false;
+}
+
 bool UninitChecker::shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const
 {
     if (storeNodes.find(node) == storeNodes.end())
@@ -2329,6 +2421,10 @@ void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& c
         if (!regionStates.empty() && !loadMayReadUninitRegion(load, regionStates))
             continue;
         if (hasDominatingInitBlocker(slice, load))
+            continue;
+        // Mode-b: an opaque registered initializer (SaberInitAPI) dominating the load
+        // and aliasing the read object kills the uninit candidate. No-op until populated.
+        if (hasDominatingRegisteredInitCall(load))
             continue;
 
         BackwardWorkList worklist;
