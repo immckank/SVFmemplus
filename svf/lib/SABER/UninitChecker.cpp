@@ -2017,20 +2017,22 @@ void UninitChecker::buildRegisteredInitCallIndex()
     }
 }
 
-bool UninitChecker::hasDominatingRegisteredInitCall(const SVFGNode* load) const
+bool UninitChecker::hasDominatingRegisteredInitCallInFunction(const SVFGNode* load,
+                                                              const FunObjVar* fun) const
 {
-    if (registeredInitCallsByFun.empty())
+    if (fun == nullptr)
         return false;
+    auto fit = registeredInitCallsByFun.find(fun);
+    if (fit == registeredInitCallsByFun.end())
+        return false;
+
     const LoadSVFGNode* ld = SVFUtil::dyn_cast<LoadSVFGNode>(load);
     if (ld == nullptr)
         return false;
     const ICFGNode* loadICFG = load->getICFGNode();
     if (loadICFG == nullptr)
         return false;
-    const FunObjVar* fun = loadICFG->getFun();
-    auto fit = registeredInitCallsByFun.find(fun);
-    if (fit == registeredInitCallsByFun.end())
-        return false;
+
     PointerAnalysis* pta = getSVFG()->getPTA();
     if (pta == nullptr)
         return false;
@@ -2045,7 +2047,6 @@ bool UninitChecker::hasDominatingRegisteredInitCall(const SVFGNode* load) const
         const int argIdx = entry.second;
         if (!sameFunctionDominates(cs, loadICFG))
             continue;
-        // Check the registered init argument (or any pointer arg) aliases the loaded object.
         const u32_t n = cs->arg_size();
         for (u32_t a = 0; a < n; ++a)
         {
@@ -2059,6 +2060,81 @@ bool UninitChecker::hasDominatingRegisteredInitCall(const SVFGNode* load) const
         }
     }
     return false;
+}
+
+bool UninitChecker::hasDominatingRegisteredInitCallViaCallers(const SVFGNode* load,
+                                                              const FunObjVar* calleeFun) const
+{
+    const LoadSVFGNode* ld = SVFUtil::dyn_cast<LoadSVFGNode>(load);
+    if (ld == nullptr || calleeFun == nullptr)
+        return false;
+
+    PointerAnalysis* pta = getSVFG()->getPTA();
+    if (pta == nullptr)
+        return false;
+
+    const PointsTo& loadPts = pta->getPts(ld->getPAGSrcNodeID());
+    if (loadPts.empty())
+        return false;
+
+    CallGraphEdge::CallInstSet callSites;
+    getCallgraph()->getAllCallSitesInvokingCallee(calleeFun, callSites);
+    for (const CallICFGNode* cs : callSites)
+    {
+        const FunObjVar* caller = cs->getCaller();
+        if (caller == nullptr)
+            continue;
+        auto fit = registeredInitCallsByFun.find(caller);
+        if (fit == registeredInitCallsByFun.end())
+            continue;
+
+        for (const std::pair<const CallICFGNode*, int>& initEntry : fit->second)
+        {
+            const CallICFGNode* initCs = initEntry.first;
+            const int initArgIdx = initEntry.second;
+            if (!sameFunctionDominates(initCs, cs))
+                continue;
+
+            const u32_t actualCount = cs->arg_size();
+            for (u32_t a = 0; a < actualCount; ++a)
+            {
+                const ValVar* actual = cs->getArgument(a);
+                if (actual == nullptr || !actual->isPointer())
+                    continue;
+                const PointsTo& actualPts = pta->getPts(actual->getId());
+                if (!actualPts.intersects(loadPts))
+                    continue;
+
+                const u32_t initArgCount = initCs->arg_size();
+                for (u32_t ia = 0; ia < initArgCount; ++ia)
+                {
+                    if (initArgIdx != SaberInitAPI::ANY_ARG && static_cast<int>(ia) != initArgIdx)
+                        continue;
+                    const ValVar* initArg = initCs->getArgument(ia);
+                    if (initArg == nullptr || !initArg->isPointer())
+                        continue;
+                    if (pta->getPts(initArg->getId()).intersects(actualPts))
+                        return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool UninitChecker::hasDominatingRegisteredInitCall(const SVFGNode* load) const
+{
+    if (registeredInitCallsByFun.empty())
+        return false;
+    const ICFGNode* loadICFG = load == nullptr ? nullptr : load->getICFGNode();
+    if (loadICFG == nullptr)
+        return false;
+    const FunObjVar* fun = loadICFG->getFun();
+    if (fun == nullptr)
+        return false;
+    if (hasDominatingRegisteredInitCallInFunction(load, fun))
+        return true;
+    return hasDominatingRegisteredInitCallViaCallers(load, fun);
 }
 
 bool UninitChecker::shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const

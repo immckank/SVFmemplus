@@ -223,6 +223,8 @@ private:
     /// Catches OPAQUE initializers (no value-flow store node) that the store-based
     /// hasDominatingInitBlocker cannot see. No-op until the init-API table is populated.
     bool hasDominatingRegisteredInitCall(const SVFGNode* load) const;
+    bool hasDominatingRegisteredInitCallInFunction(const SVFGNode* load, const FunObjVar* fun) const;
+    bool hasDominatingRegisteredInitCallViaCallers(const SVFGNode* load, const FunObjVar* calleeFun) const;
     void buildRegisteredInitCallIndex();
     bool inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const;
     RegionKey makeWholeRegion(NodeID obj) const;

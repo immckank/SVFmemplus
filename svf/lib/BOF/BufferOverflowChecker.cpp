@@ -48,11 +48,171 @@
 #include "Util/SVFUtil.h"
 
 #include <algorithm>
+#include <deque>
+#include <set>
 
 using namespace SVF;
 
 namespace
 {
+/// Forward CFG reachability within @p maxHops (used to tie strlen guards to strcpy).
+bool bbReachableWithin(const SVFBasicBlock* from, const SVFBasicBlock* to, int maxHops)
+{
+    if (!from || !to)
+        return false;
+    if (from == to)
+        return true;
+
+    std::deque<std::pair<const SVFBasicBlock*, int>> work;
+    std::set<const SVFBasicBlock*> seen;
+    work.emplace_back(from, 0);
+    seen.insert(from);
+
+    while (!work.empty())
+    {
+        const SVFBasicBlock* bb = work.front().first;
+        const int depth = work.front().second;
+        work.pop_front();
+        if (bb == to)
+            return true;
+        if (depth >= maxHops)
+            continue;
+        for (const SVFBasicBlock* succ : bb->succBBs)
+        {
+            if (seen.insert(succ).second)
+                work.emplace_back(succ, depth + 1);
+        }
+    }
+    return false;
+}
+
+/// Walk backwards through Copy / Load / Gep to collect pointer-equivalence
+/// candidates for strcpy src/d_name style aliasing.
+void collectPtrBack(const SVFVar* v, std::set<const SVFVar*>& out, int depth)
+{
+    if (!v || depth > 12)
+        return;
+    if (!out.insert(v).second)
+        return;
+
+    if (v->hasIncomingEdges(SVFStmt::PEDGEK::Copy))
+    {
+        for (auto it = v->getIncomingEdgesBegin(SVFStmt::PEDGEK::Copy);
+             it != v->getIncomingEdgesEnd(SVFStmt::PEDGEK::Copy); ++it)
+        {
+            if (const CopyStmt* cp = SVFUtil::dyn_cast<CopyStmt>(*it))
+                if (cp->getLHSVar() == v)
+                    collectPtrBack(cp->getRHSVar(), out, depth + 1);
+        }
+    }
+    if (v->hasIncomingEdges(SVFStmt::PEDGEK::Load))
+    {
+        for (auto it = v->getIncomingEdgesBegin(SVFStmt::PEDGEK::Load);
+             it != v->getIncomingEdgesEnd(SVFStmt::PEDGEK::Load); ++it)
+        {
+            if (const LoadStmt* ld = SVFUtil::dyn_cast<LoadStmt>(*it))
+                if (ld->getLHSVar() == v)
+                    collectPtrBack(ld->getRHSVar(), out, depth + 1);
+        }
+    }
+    if (v->hasIncomingEdges(SVFStmt::PEDGEK::Gep))
+    {
+        for (auto it = v->getIncomingEdgesBegin(SVFStmt::PEDGEK::Gep);
+             it != v->getIncomingEdgesEnd(SVFStmt::PEDGEK::Gep); ++it)
+        {
+            if (const GepStmt* gep = SVFUtil::dyn_cast<GepStmt>(*it))
+                if (gep->getLHSVar() == v)
+                    collectPtrBack(gep->getRHSVar(), out, depth + 1);
+        }
+    }
+}
+
+bool ptrMayAlias(const SVFVar* a, const SVFVar* b)
+{
+    if (a == b)
+        return true;
+    std::set<const SVFVar*> sa;
+    std::set<const SVFVar*> sb;
+    collectPtrBack(a, sa, 0);
+    collectPtrBack(b, sb, 0);
+    for (const SVFVar* x : sa)
+        if (sb.count(x))
+            return true;
+    return false;
+}
+
+/// Infer strlen(src) from strlen() calls in the same function whose argument
+/// may-alias @p src. When @p strcpyCall is set, only strlen sites on a CFG
+/// path leading to the strcpy are considered (guards like `strlen(p) > N`).
+Range inferStrlenRangeForPtr(SVFIR* pag, RangeAnalysis& ra, const SVFVar* src,
+                             const FunObjVar* scope,
+                             const CallICFGNode* strcpyCall = nullptr)
+{
+    if (!src || !scope)
+        return Range::BOTTOM;
+
+    Range merged = Range::BOTTOM;
+    ICFG* icfg = pag->getICFG();
+    for (auto it = icfg->begin(); it != icfg->end(); ++it)
+    {
+        const CallICFGNode* c = SVFUtil::dyn_cast<CallICFGNode>(it->second);
+        if (!c || c->getFun() != scope || c->arg_size() < 1)
+            continue;
+        const FunObjVar* callee = c->getCalledFunction();
+        if (!callee || callee->getName() != "strlen")
+            continue;
+        if (!ptrMayAlias(c->getArgument(0), src))
+            continue;
+        if (strcpyCall)
+        {
+            const SVFBasicBlock* dstBB = strcpyCall->getBB();
+            if (!dstBB || !bbReachableWithin(c->getBB(), dstBB, 12))
+                continue;
+        }
+
+        const RetICFGNode* retNode = c->getRetICFGNode();
+        if (!retNode || !pag->callsiteHasRet(retNode))
+            continue;
+        const SVFVar* lenRet = retNode->getActualRet();
+        if (!lenRet)
+            continue;
+
+        Range slen = ra.analyzeVarRange(lenRet);
+        if (slen.isBottom() || slen.isTop() || slen.getLower() < 0)
+            continue;
+        merged = Range::join(merged, slen);
+    }
+    return merged;
+}
+
+/// Whether a CFG-reachable strlen on a may-alias pointer exists (for a narrow
+/// fallback when numeric strlen range is unavailable).
+bool hasReachableStrlenOnAlias(SVFIR* pag, const SVFVar* src, const FunObjVar* scope,
+                               const CallICFGNode* strcpyCall)
+{
+    if (!src || !scope || !strcpyCall)
+        return false;
+    const SVFBasicBlock* dstBB = strcpyCall->getBB();
+    if (!dstBB)
+        return false;
+
+    ICFG* icfg = pag->getICFG();
+    for (auto it = icfg->begin(); it != icfg->end(); ++it)
+    {
+        const CallICFGNode* c = SVFUtil::dyn_cast<CallICFGNode>(it->second);
+        if (!c || c->getFun() != scope || c->arg_size() < 1)
+            continue;
+        const FunObjVar* callee = c->getCalledFunction();
+        if (!callee || callee->getName() != "strlen")
+            continue;
+        if (!ptrMayAlias(c->getArgument(0), src))
+            continue;
+        if (bbReachableWithin(c->getBB(), dstBB, 12))
+            return true;
+    }
+    return false;
+}
+
 /// Whether an index/offset range is *effectively* unbounded (degraded toward
 /// infinity), i.e. the loop-induction MAY scenario the LLM triage overlay
 /// targets. We cannot rely on the strict Range::isTop() here: arithmetic on the
@@ -810,20 +970,44 @@ void BufferOverflowChecker::checkMemoryOps(SVFIR* pag)
             Range lenBytes;
             if (strLike)
             {
-                // strcpy/strcat-like: copied length is bounded by the source
-                // string buffer's remaining capacity (including terminating nul).
+                // strcpy/strcat-like: bytes written = strlen(src) + 1 (NUL).
+                // Do not treat the whole source array as copied unless a CFG-
+                // reachable strlen on the same pointer proves string semantics.
                 const u32_t srcIdx = (u32_t)rule.bufArgIdx + 1;
                 if (srcIdx >= argn)
                     continue;
+                const SVFVar* srcArg = call->getArgument(srcIdx);
+
+                Range slen = inferStrlenRangeForPtr(pag, rangeAnalysis, srcArg,
+                                                    call->getFun(), call);
+                if (!slen.isBottom() && !slen.isTop() && slen.getLower() >= 0)
+                    lenBytes = Range(slen.getLower() + 1, slen.getUpper() + 1);
+
                 signed long long srcCap = 0;
                 Range srcOff;
                 bool srcHeap = false;
-                if (!getByteBuffer(call->getArgument(srcIdx), srcCap, srcOff, srcHeap))
-                    continue; // unknown source length -> stay silent (no noise)
-                const signed long long maxLen = srcCap - srcOff.getLower();
-                if (maxLen <= 0)
+                const bool srcBufKnown =
+                    getByteBuffer(srcArg, srcCap, srcOff, srcHeap);
+                if (!lenBytes.isBottom() && srcBufKnown)
+                {
+                    const signed long long maxReadable = srcCap - srcOff.getLower();
+                    if (maxReadable > 0)
+                        lenBytes = Range::meet(lenBytes, Range(1, maxReadable));
+                }
+
+                // Narrow fallback: reachable strlen guard + src span exceeds dest.
+                if (lenBytes.isBottom() && srcBufKnown && !srcHeap && !isHeap)
+                {
+                    const signed long long maxReadable = srcCap - srcOff.getLower();
+                    if (maxReadable > capacity &&
+                        hasReachableStrlenOnAlias(pag, srcArg, call->getFun(), call))
+                    {
+                        lenBytes = Range(capacity + 1, maxReadable);
+                    }
+                }
+
+                if (lenBytes.isBottom())
                     continue;
-                lenBytes = Range(1, maxLen);
             }
             else
             {

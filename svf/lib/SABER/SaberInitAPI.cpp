@@ -46,8 +46,23 @@ void SaberInitAPI::init()
     {
         // Example/common initializers. Project-specific entries are expected to be
         // appended offline. Each must FULLY initialize the referenced argument.
-        {"explicit_bzero", true, 0, "libc explicit_bzero(ptr,n): zero-initializes *arg0"},
-        {"__memset_chk",   true, 0, "fortified memset: initializes *arg0"},
+        {"explicit_bzero",      true, 0, "libc explicit_bzero(ptr,n): zero-initializes *arg0"},
+        {"__explicit_bzero_chk",true, 0, "fortified explicit_bzero: zero-initializes *arg0"},
+        {"__memset_chk",        true, 0, "fortified memset: initializes *arg0"},
+        {"memzero_explicit",    true, 0, "libc memzero_explicit(ptr,n): zero-initializes *arg0"},
+        {"bzero",               true, 0, "libc bzero(ptr,n): zero-initializes *arg0"},
+        {"__bzero",             true, 0, "libc __bzero(ptr,n): zero-initializes *arg0"},
+        {"memset",              true, 0, "libc memset(ptr,c,n) with c==0: zero-initializes *arg0"},
+        {"wmemset",             true, 0, "libc wmemset(ptr,c,n) with c==0: zero-initializes *arg0"},
+        // Huawei / openEuler SecureC (FalconFS): memset_s(dest,destMax,c,count) zeroes *arg0
+        {"memset_s",            true, 0, "SecureC memset_s(dest,destMax,c,count): zero-initializes *arg0"},
+        {"wmemset_s",           true, 0, "SecureC wmemset_s(dest,destMax,c,count): zero-initializes *arg0"},
+        // LLVM memset intrinsics (opaque call sites without a modeled store edge)
+        {"llvm_memset",             true, 0, "LLVM memset intrinsic: zero-initializes *arg0"},
+        {"llvm_memset_p0i8_i32",    true, 0, "LLVM memset intrinsic: zero-initializes *arg0"},
+        {"llvm_memset_p0i8_i64",    true, 0, "LLVM memset intrinsic: zero-initializes *arg0"},
+        {"llvm_memset_p0_i32",      true, 0, "LLVM memset intrinsic: zero-initializes *arg0"},
+        {"llvm_memset_p0_i64",      true, 0, "LLVM memset intrinsic: zero-initializes *arg0"},
         // --- Append LLM-classified project initializers below this line ---
     };
 
