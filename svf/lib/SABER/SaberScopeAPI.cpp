@@ -46,6 +46,12 @@ void SaberScopeAPI::init()
         {"/usr/local/include/",SM_PATH, "system",    "system-wide third-party include directory"},
         {"/usr/include/",      SM_PATH, "system",    "system C/C++ headers (libc, system libraries)"},
 
+        // --- Linux kernel headers (inlined macros/inline fns: list_*, spin_*, refcount, etc.) ---
+        // Uses/frees attributed to these are inlined kernel primitives, not driver-author code;
+        // the actionable site is the caller in drivers/*.c.
+        {"include/linux/",     SM_PATH, "system",    "Linux kernel public headers (inlined list/lock/sched primitives)"},
+        {"include/asm-generic/", SM_PATH, "system",  "Linux kernel asm-generic headers"},
+
         // --- machine-generated code (by source-location path) ---
         {".pb.cc",             SM_PATH, "generated", "protobuf-generated C++ translation unit"},
         {"_generated.h",       SM_PATH, "generated", "generated header (by-convention *_generated.h)"},

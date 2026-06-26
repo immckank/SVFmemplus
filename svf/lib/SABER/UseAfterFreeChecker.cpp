@@ -180,7 +180,6 @@ static bool icfgReachable(const ICFGNode* start, const ICFGNode* target);
 static bool isBackEdge(const ICFGEdge* edge);
 static bool sameFunctionAcyclicReachable(const ICFGNode* start, const ICFGNode* target);
 static bool sameFunctionFreeOrdersUse(const ICFGNode* freeICFG, const ICFGNode* useICFG);
-static bool isLaterSourceLineInSameFile(const ICFGNode* freeICFG, const ICFGNode* useICFG);
 
 static const SVFVar* getGepBaseValVar(const SVFVar* var)
 {
@@ -834,6 +833,46 @@ static bool sameFunctionFreeOrdersUse(const ICFGNode* freeICFG, const ICFGNode* 
            sameFunctionAcyclicReachable(freeICFG, useICFG);
 }
 
+// Redefinition ("free-then-reassign") kill. The freed pointer value is loaded from an
+// underlying variable slot `pAddr` (e.g. a local `p`). If `pAddr` is reassigned -- the
+// canonical `kfree(p); p = NULL;` defensive idiom, or `p = other;` -- on a store that the
+// free reaches and that dominates the use, then the use reads the NEW value, not the freed
+// object, so it is not a use-after-free. This is the dominant FP shape on kernel cleanup
+// code, where one free is followed by many later accesses after the pointer was cleared.
+// Conservative by construction (requires free->store->use dominance), so it never
+// suppresses a genuine use that precedes the reassignment (e.g. `kfree(p); p->f` before any
+// `p = NULL`).
+static bool freedPointerReassignedBeforeUse(const SVFVar* freedVal,
+                                            const ICFGNode* freeICFG,
+                                            const ICFGNode* useICFG)
+{
+    if (freedVal == nullptr || freeICFG == nullptr || useICFG == nullptr)
+        return false;
+    if (freeICFG->getFun() == nullptr || freeICFG->getFun() != useICFG->getFun())
+        return false;
+
+    SVFVar* mutFreed = const_cast<SVFVar*>(freedVal);
+    for (const SVFStmt* ldStmt : mutFreed->getIncomingEdges(SVFStmt::Load))
+    {
+        const LoadStmt* load = SVFUtil::dyn_cast<LoadStmt>(ldStmt);
+        if (load == nullptr)
+            continue;
+        SVFVar* pAddr = load->getRHSVar();
+        if (pAddr == nullptr)
+            continue;
+        for (const SVFStmt* stStmt : pAddr->getIncomingEdges(SVFStmt::Store))
+        {
+            const ICFGNode* storeICFG = stStmt->getICFGNode();
+            if (storeICFG == nullptr || storeICFG == freeICFG)
+                continue;
+            if (sameFunctionFreeOrdersUse(freeICFG, storeICFG) &&
+                    sameFunctionFreeOrdersUse(storeICFG, useICFG))
+                return true;
+        }
+    }
+    return false;
+}
+
 static bool getICFGSourceFileLine(const ICFGNode* node, std::string& file, u32_t& line)
 {
     file.clear();
@@ -845,22 +884,6 @@ static bool getICFGSourceFileLine(const ICFGNode* node, std::string& file, u32_t
     const std::string json = (brace == std::string::npos) ? loc : loc.substr(brace);
     SaberSliceExportUtil::parseLocFileLine(json, file, line);
     return !file.empty() && line != 0;
-}
-
-static bool isLaterSourceLineInSameFile(const ICFGNode* freeICFG, const ICFGNode* useICFG)
-{
-    if (freeICFG == nullptr || useICFG == nullptr ||
-            freeICFG->getFun() == nullptr || freeICFG->getFun() != useICFG->getFun())
-        return false;
-
-    std::string freeFile;
-    std::string useFile;
-    u32_t freeLine = 0;
-    u32_t useLine = 0;
-    if (!getICFGSourceFileLine(freeICFG, freeFile, freeLine) ||
-            !getICFGSourceFileLine(useICFG, useFile, useLine))
-        return false;
-    return freeFile == useFile && useLine > freeLine;
 }
 
 static void collectReachableUsesFromFree(
@@ -1614,8 +1637,15 @@ void UseAfterFreeChecker::analyzeFreeAnchoredUAFPairs()
             const ICFGNode* uicfg = useNode->getICFGNode();
             if (uicfg == nullptr)
                 continue;
+            // The free must actually be able to reach the use in the CFG. The old
+            // `isLaterSourceLineInSameFile` fallback only compared source line numbers,
+            // which admits free/use on MUTUALLY-EXCLUSIVE branches (e.g. kfree in the
+            // error path, use in the success path) -- a large FP source on kernel code.
+            // Require real intra-procedural reachability instead.
             if (!isOrderedValueFlowUAFPair(freeNode, useNode) &&
-                    !isLaterSourceLineInSameFile(ficfg, uicfg))
+                    !sameFunctionAcyclicReachable(ficfg, uicfg))
+                continue;
+            if (freedPointerReassignedBeforeUse(getFreedPointerVar(freeNode), ficfg, uicfg))
                 continue;
             ++vfAliasMatches;
 
@@ -1660,6 +1690,8 @@ void UseAfterFreeChecker::analyzeFreeAnchoredUAFPairs()
             if (!isOrderedValueFlowUAFPair(freeNode, useNode))
                 continue;
             ++localOrderMatches;
+            if (freedPointerReassignedBeforeUse(getFreedPointerVar(freeNode), ficfg, uicfg))
+                continue;
 
             ProgSlice guardSlice(freeNode, getSaberCondAllocator(), getSVFG());
             ProgSlice::Condition orderCond =
@@ -1715,6 +1747,15 @@ void UseAfterFreeChecker::queueUAFReport(GenericBug::EventStack eventStack,
     if (uafIsSystemOrGeneratedCodeICFG(freeICFG) ||
             uafIsSystemOrGeneratedCodeICFG(useICFG))
         return;
+
+    // Drop degenerate pairs whose USE has no source location (compiler-generated /
+    // synthetic nodes, printed as "use=()" / ":0"). A real use-after-free has a
+    // concrete use site; a locationless use is never actionable and is pure noise.
+    {
+        std::string uFile; u32_t uLine = 0;
+        if (!getICFGSourceFileLine(useICFG, uFile, uLine))
+            return;
+    }
 
     SaberPendingReport pending;
     pending.bugType = GenericBug::USEAFTERFREE;
