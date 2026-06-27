@@ -120,6 +120,10 @@ struct SaberPendingReport
     GenericBug::BugType bugType = GenericBug::NEVERFREE;
     GenericBug::EventStack eventStack;
 
+    /// Deferred terminal lines for leak/dfree sink sites (printed with the bug).
+    std::vector<std::string> sinkLocs;
+    std::string sinkBypassReturnLoc;
+
     std::string uafReportKind;
 
     const SVFGNode* uninitSource = nullptr;

@@ -130,6 +130,7 @@ protected:
     void clearPendingReports();
     bool queuePendingReport(SaberPendingReport&& report, const std::string& dedupKey);
     void flushPendingReports();
+    void printPendingSinkInfo(const SaberPendingReport& pending) const;
     virtual void onPendingReportsFlushed(u32_t pendingCount, u32_t emittedCount) {}
 
     /// Record a source to its callsite

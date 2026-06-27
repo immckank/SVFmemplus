@@ -46,14 +46,12 @@ void DoubleFreeChecker::reportBug(ProgSlice* slice)
         SaberPendingReport pending;
         pending.bugType = GenericBug::DOUBLEFREE;
         pending.eventStack = std::move(eventStack);
-        queuePendingReport(std::move(pending), "");
         if (slice->hasSatisfiableSinkPair())
         {
-            SVFUtil::errs() << "\t\t sink at : ( "
-                            << getSinkNodeLoc(slice->getFirstSatisfiableSink()) << " )\n";
-            SVFUtil::errs() << "\t\t sink at : ( "
-                            << getSinkNodeLoc(slice->getSecondSatisfiableSink()) << " )\n";
+            pending.sinkLocs.push_back(getSinkNodeLoc(slice->getFirstSatisfiableSink()));
+            pending.sinkLocs.push_back(getSinkNodeLoc(slice->getSecondSatisfiableSink()));
         }
+        queuePendingReport(std::move(pending), "");
     }
     if(Options::ValidateTests())
         testsValidation(slice);

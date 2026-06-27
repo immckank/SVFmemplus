@@ -86,6 +86,17 @@ bool LeakChecker::queuePendingReport(SaberPendingReport&& report, const std::str
     return true;
 }
 
+void LeakChecker::printPendingSinkInfo(const SaberPendingReport& pending) const
+{
+    if (!pending.sinkBypassReturnLoc.empty())
+    {
+        SVFUtil::errs() << "\t\t sink-bypass return at : ( "
+                        << pending.sinkBypassReturnLoc << " )\n";
+    }
+    for (const std::string& loc : pending.sinkLocs)
+        SVFUtil::errs() << "\t\t sink at : ( " << loc << " )\n";
+}
+
 void LeakChecker::flushPendingReports()
 {
     const u32_t pendingCount = pendingReports_.size();
@@ -93,6 +104,7 @@ void LeakChecker::flushPendingReports()
     for (const SaberPendingReport& pending : pendingReports_)
     {
         report.addSaberBug(pending.bugType, pending.eventStack);
+        printPendingSinkInfo(pending);
         collectSliceForPending(pending);
         ++emitted;
     }
@@ -369,10 +381,14 @@ bool LeakChecker::hasSinkBypassReturn(const ProgSlice* slice, const ICFGNode*& b
 
 void LeakChecker::reportBug(ProgSlice* slice)
 {
-    auto emitBug = [&](GenericBug::BugType bugType, GenericBug::EventStack eventStack) {
+    auto emitBug = [&](GenericBug::BugType bugType, GenericBug::EventStack eventStack,
+                       const std::vector<std::string>& sinkLocs = {},
+                       const std::string& bypassReturnLoc = {}) {
         SaberPendingReport pending;
         pending.bugType = bugType;
         pending.eventStack = std::move(eventStack);
+        pending.sinkLocs = sinkLocs;
+        pending.sinkBypassReturnLoc = bypassReturnLoc;
         queuePendingReport(std::move(pending), "");
     };
 
@@ -383,13 +399,10 @@ void LeakChecker::reportBug(ProgSlice* slice)
         {
             SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource()))
         };
-        emitBug(GenericBug::NEVERFREE, eventStack);
-        // 仅在确认泄漏时输出 sink 点位置
+        std::vector<std::string> sinkLocs;
         for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
-        {
-            const SVFGNode* snk = *it;
-            SVFUtil::errs() << "\t\t sink at : ( " << getSinkNodeLoc(snk) << " )\n";
-        }
+            sinkLocs.push_back(getSinkNodeLoc(*it));
+        emitBug(GenericBug::NEVERFREE, eventStack, sinkLocs);
     }
     else if (isAllPathReachable() == false && isSomePathReachable() == true)
     {
@@ -398,13 +411,10 @@ void LeakChecker::reportBug(ProgSlice* slice)
         slice->evalFinalCond2Event(eventStack);
         eventStack.push_back(
             SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource())));
-        emitBug(GenericBug::PARTIALLEAK, eventStack);
-        // 仅在确认泄漏时输出 sink 点位置
+        std::vector<std::string> sinkLocs;
         for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
-        {
-            const SVFGNode* snk = *it;
-            SVFUtil::errs() << "\t\t sink at : ( " << getSinkNodeLoc(snk) << " )\n";
-        }
+            sinkLocs.push_back(getSinkNodeLoc(*it));
+        emitBug(GenericBug::PARTIALLEAK, eventStack, sinkLocs);
     }
     else if (isAllPathReachable() == true && isSomePathReachable() == true)
     {
@@ -415,14 +425,10 @@ void LeakChecker::reportBug(ProgSlice* slice)
             {
                 SVFBugEvent(SVFBugEvent::SourceInst, getSrcCSID(slice->getSource()))
             };
-            emitBug(GenericBug::PARTIALLEAK, eventStack);
-            SVFUtil::errs() << "\t\t sink-bypass return at : ( "
-                            << bypassRet->getSourceLoc() << " )\n";
+            std::vector<std::string> sinkLocs;
             for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
-            {
-                const SVFGNode* snk = *it;
-                SVFUtil::errs() << "\t\t sink at : ( " << getSinkNodeLoc(snk) << " )\n";
-            }
+                sinkLocs.push_back(getSinkNodeLoc(*it));
+            emitBug(GenericBug::PARTIALLEAK, eventStack, sinkLocs, bypassRet->getSourceLoc());
         }
     }
 
