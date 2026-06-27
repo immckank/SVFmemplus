@@ -41,4 +41,6 @@ script/
 scripts/
 uaf_tests/
 *.json
+# local SABER analysis scratch artifacts (run logs, slice dumps, disassembly)
+scratch*
 

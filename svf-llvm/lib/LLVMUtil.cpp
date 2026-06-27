@@ -512,6 +512,13 @@ const std::string LLVMUtil::getSourceLoc(const Value* val )
                 {
                     llvm::DIVariable *DIVar = SVFUtil::cast<llvm::DIVariable>(DDI->getVariable());
                     rawstr << "\"ln\": " << DIVar->getLine() << ", \"fl\": \"" << DIVar->getFilename().str() << "\"";
+                    // Source-level variable name (e.g. "retryBudget"); LLVM strips it
+                    // from the SSA value but it survives in the debug-info DIVariable.
+                    // Downstream slice export uses this to make stack-object uninit
+                    // reports identifiable instead of an anonymous "%18".
+                    const std::string varName = DIVar->getName().str();
+                    if (!varName.empty())
+                        rawstr << ", \"nm\": \"" << varName << "\"";
                     break;
                 }
             }

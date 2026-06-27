@@ -226,6 +226,77 @@ inline bool effectivelyUnbounded(const Range& r)
     return r.getUpper() >= Range::INF - 1024 || r.getLower() <= Range::NINF + 1024;
 }
 
+/// Whether a buffer-overflow report at source-location string @p locStr is
+/// *out of scope* and should be suppressed because it does not belong to the
+/// analyzed application's own (first-party) source.
+///
+/// Rationale (false-positive reduction). On a real C++ codebase the vast
+/// majority of raw BOF candidates are not defects in the program under analysis
+/// but modeling artifacts of code that is merely *included* into it:
+///   * System / C++ standard-library headers (<format>, <optional>, libstdc++
+///     <bits/...>): SVF models their internal fixed-size buffers (SSO storage,
+///     std::variant/optional union storage, std::format scratch arrays) as
+///     plain arrays and then flags the library's own bounds-juggling as
+///     overflow. These are never actionable by the application developer.
+///   * Compiler-/codegen-generated serialization stubs (protobuf *.pb.cc /
+///     *.pb.h, flatbuffers *_generated.h): machine-generated accessor code whose
+///     pointer arithmetic SVF cannot relate to the real wire-format invariants.
+///   * Locations stripped of debug info (no "file" field): typically
+///     pointer-storage allocas / thunks that cannot be tied back to any user
+///     source line, so a report on them is unactionable noise.
+///
+/// This mirrors the system-header / generated-code suppression that production
+/// static analyzers (clang-tidy's --system-headers=0, Coverity) apply by
+/// default. It is a *display/emission* filter only: the sound MUST/MAY
+/// classification of the surviving (first-party) reports is unchanged.
+bool isOutOfScopeReport(const std::string& locStr)
+{
+    // Pull the file value out of the JSON-ish source-loc string. NB: the *raw*
+    // string returned by getSourceLoc() uses SVF core's terse key "fl" (only the
+    // terminal pretty-printer rewrites it to "file" via friendlyLoc), e.g.
+    //   CallICFGNode: { "ln": 98, "cl": 9, "fl": "falcon_client/..." }
+    static const std::string kFileKey = "\"fl\":";
+    const size_t kp = locStr.find(kFileKey);
+    if (kp == std::string::npos)
+        return true; // no debug location -> not attributable to user source
+    const size_t q1 = locStr.find('"', kp + kFileKey.size());
+    if (q1 == std::string::npos)
+        return true;
+    const size_t q2 = locStr.find('"', q1 + 1);
+    if (q2 == std::string::npos)
+        return true;
+    const std::string file = locStr.substr(q1 + 1, q2 - q1 - 1);
+    if (file.empty())
+        return true;
+
+    // System / third-party / standard-library path markers.
+    static const char* kDenySubstr[] = {
+        "/usr/",         // system + libstdc++ install prefix
+        "/include/c++/", // libstdc++ headers
+        "/lib/gcc/",     // gcc internal headers
+        "/bits/",        // libstdc++ detail headers
+        "/generated/",   // generated-code trees
+    };
+    for (const char* m : kDenySubstr)
+        if (file.find(m) != std::string::npos)
+            return true;
+
+    // Machine-generated serialization stubs (match on filename suffix).
+    static const char* kDenySuffix[] = {".pb.cc", ".pb.h", "_generated.h"};
+    for (const char* suf : kDenySuffix)
+    {
+        const std::string s = suf;
+        if (file.size() >= s.size() &&
+            file.compare(file.size() - s.size(), s.size(), s) == 0)
+            return true;
+    }
+    // A leading "generated/" prefix (relative path) is generated code too.
+    if (file.compare(0, 10, "generated/") == 0)
+        return true;
+
+    return false;
+}
+
 /// Make source-location strings friendlier for end users.
 ///
 /// SVF core (svf-llvm/LLVMUtil.cpp::getSourceLoc) serialises locations with the
@@ -521,7 +592,8 @@ void BufferOverflowChecker::propagate(SVFIR*)
             }
             else if (const auto* copyStmt = SVFUtil::dyn_cast<CopyStmt>(svfStmt))
             {
-                handleCopyLike(copyStmt->getLHSVar(), srcNode, copyStmt->getICFGNode());
+                handleCopyLike(copyStmt->getLHSVar(), srcNode, copyStmt->getICFGNode(),
+                               /*isPointerCopy*/ true);
             }
             else if (const auto* storeStmt = SVFUtil::dyn_cast<StoreStmt>(svfStmt))
             {
@@ -640,17 +712,74 @@ void BufferOverflowChecker::handleGep(const GepStmt* gepStmt, const RangeFlowNod
     Range accumulate_offset = Range::add(total_offset, srcNode.accumulate_offset);
     Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
-    checkAccess(dstVar, accumulate_offset, buffer_size, srcNode.isHeap, BofKind::GEP_OOB, loc,
-                srcNode.callContext, idxVar);
+    // False-positive reduction: a GEP that selects a *constant* member of a
+    // struct/class aggregate is in-bounds by LLVM IR construction -- the
+    // compiler only emits a constant aggregate-member index that is valid for
+    // the type's declared layout. When such an access is nonetheless flagged it
+    // is because the *parent object* was under-modeled (e.g. an opaque/external
+    // struct such as `struct stat` whose flattened size SVF computes as a single
+    // element), not because of a real defect. Suppress the whole-access report in
+    // exactly this case, gated to stay sound:
+    //   * every index operand is a constant (no variable / loop index);
+    //   * the GEP navigates at least one struct/class type and *no* array
+    //     dimension -- a constant array index CAN overflow (`int a[4]; a[5]`)
+    //     and must still be checked (handled by the per-dimension path above);
+    //   * the offset inherited from how we reached this pointer is itself
+    //     in-bounds, so a genuinely out-of-bounds base pointer feeding a field
+    //     access is not masked.
+    // Per-dimension array escapes and inherited-offset overflows are reported by
+    // their own paths, so this only drops the spurious "field offset exceeds a
+    // mis-sized aggregate" candidate.
+    bool allConstIdx = true, navStruct = false, navArray = false;
+    for (const auto& pr : idxOperandPairs)
+    {
+        if (!SVFUtil::isa<ConstIntValVar>(pr.first))
+            allConstIdx = false;
+        if (pr.second && SVFUtil::isa<SVFStructType>(pr.second))
+            navStruct = true;
+        if (pr.second && SVFUtil::isa<SVFArrayType>(pr.second))
+            navArray = true;
+    }
+    // Also stay field-safe when GEP-ing further off an already field-safe
+    // pointer, as long as no array dimension is introduced (an array index could
+    // overflow and must still be checked).
+    const bool baseFieldSafe = fieldSafeVars.count(srcNode.base) > 0;
+    const bool constStructFieldNav =
+        (allConstIdx && navStruct && !navArray &&
+         !buffer_size.isBottom() && !srcNode.accumulate_offset.isBottom() &&
+         srcNode.accumulate_offset.isSubset(buffer_size)) ||
+        (baseFieldSafe && !navArray);
+
+    if (constStructFieldNav)
+        fieldSafeVars.insert(dstVar);
+    else
+        checkAccess(dstVar, accumulate_offset, buffer_size, srcNode.isHeap, BofKind::GEP_OOB, loc,
+                    srcNode.callContext, idxVar);
     enqueue(dstVar, srcNode.parent, accumulate_offset, srcNode.isHeap, srcNode.callDepth,
             srcNode.callContext);
 }
 
 void BufferOverflowChecker::handleCopyLike(const SVFVar* dstVar, const RangeFlowNode& srcNode,
-                                           const ICFGNode* loc)
+                                           const ICFGNode* loc, bool isPointerCopy)
 {
     Range accumulate_offset = srcNode.accumulate_offset;
     Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
+
+    // Forwarding (copy / argument-pass / store-through / load) of a pointer that
+    // names a valid constant struct field is not itself a buffer access; checking
+    // its (field) offset against the under-modeled parent buffer would re-raise
+    // the same false positive already suppressed at the field GEP. Skip the
+    // redundant check. The field-safe taint is only carried forward through a
+    // pure pointer-aliasing copy (`q = p`): a Load yields the field's *value*,
+    // which may be an unrelated buffer pointer that must still be checked.
+    if (fieldSafeVars.count(srcNode.base))
+    {
+        if (isPointerCopy)
+            fieldSafeVars.insert(dstVar);
+        enqueue(dstVar, srcNode.parent, accumulate_offset, srcNode.isHeap, srcNode.callDepth,
+                srcNode.callContext);
+        return;
+    }
 
     checkAccess(dstVar, accumulate_offset, buffer_size, srcNode.isHeap, BofKind::GEP_OOB, loc,
                 srcNode.callContext);
@@ -1076,6 +1205,17 @@ void BufferOverflowChecker::reportBufferOverflowError(const SVFVar* base, const 
     // each per-context verdict is captured once. Final cross-context dedup
     // (suppressing a MAY when the same access point also yields a MUST) is
     // performed later in flushReports().
+    // Scope filter (false-positive reduction): drop candidates that fall in
+    // system / standard-library headers, machine-generated serialization stubs,
+    // or debug-info-less locations. These are dominated by modeling artifacts of
+    // transitively-included library internals rather than defects in the program
+    // under analysis, and are not actionable by the application developer. The
+    // first-party reports (e.g. the strcpy overflows in disk_cache.cpp /
+    // router.cpp) are unaffected. A report with no location at all is likewise
+    // unactionable noise.
+    if (!loc || isOutOfScopeReport(loc->getSourceLoc()))
+        return;
+
     if (loc)
     {
         std::string key = loc->getSourceLoc() + "#" + std::to_string((int)kind);

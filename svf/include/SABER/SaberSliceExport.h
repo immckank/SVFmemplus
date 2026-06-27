@@ -86,6 +86,20 @@ struct SaberSlice
     std::string sourceKind = "unknown";
     std::string allocator = "unknown";
     bool zeroing = false;
+    /// UNINIT: source-level identification recovered from debug info so that
+    /// reports funneled through a shared inlined sink (e.g. the streaming logger)
+    /// remain distinguishable. `variable` is the declared name (e.g. "retryBudget"),
+    /// `sourceFunc` the declaring function, `callerFile/Line` the project-code call
+    /// site that feeds the funnel when recoverable from the value-flow path.
+    std::string variable;
+    std::string sourceFunc;
+    std::string callerFile;
+    int callerLine = 0;
+    /// UNINIT: the abstract type of the uninit stack object (e.g. "FalconLog",
+    /// "std::string"). Acts as the "constructor / creation-site" key: many reports
+    /// share one object type funneled to one sink, so grouping by object type
+    /// collapses the logger funnel far more than per-function grouping.
+    std::string objectType;
 
     /// MEMORY_LEAK: NEVERFREE | PARTIALLEAK
     std::string leakKind;

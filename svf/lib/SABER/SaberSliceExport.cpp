@@ -12,6 +12,8 @@
 
 #include <fstream>
 #include <sstream>
+#include <map>
+#include <algorithm>
 
 using namespace SVF;
 
@@ -39,6 +41,43 @@ std::string jsonEscape(const std::string& s)
             }
             else
                 out += c;
+        }
+    }
+    return out;
+}
+
+// Reduce an SVF type repr to a stable, human-readable key for grouping, e.g.
+// "%class.FalconLog" / "class.FalconLog = { ... }" -> "FalconLog",
+// "%\"class.std::__cxx11::basic_string\"" -> "std::__cxx11::basic_string".
+std::string cleanTypeName(std::string s)
+{
+    // Drop anything after the first '=' or '{' (field expansions) and quotes.
+    for (char delim : {'=', '{'})
+    {
+        size_t p = s.find(delim);
+        if (p != std::string::npos)
+            s = s.substr(0, p);
+    }
+    std::string out;
+    for (char c : s)
+        if (c != '%' && c != '"' && c != '\'')
+            out += c;
+    // Trim whitespace.
+    size_t a = out.find_first_not_of(" \t\n");
+    size_t b = out.find_last_not_of(" \t\n");
+    if (a == std::string::npos)
+        return "";
+    out = out.substr(a, b - a + 1);
+    // Strip SVF kind tag ("S." for struct/aggregate reprs) then the C++ tag.
+    if (out.compare(0, 2, "S.") == 0)
+        out = out.substr(2);
+    for (const char* pfx : {"class.", "struct.", "union."})
+    {
+        size_t L = std::string(pfx).size();
+        if (out.compare(0, L, pfx) == 0)
+        {
+            out = out.substr(L);
+            break;
         }
     }
     return out;
@@ -83,6 +122,11 @@ std::string SaberSlice::toJson(const std::string& ind) const
     else if (kind == SaberSliceKind::UNINIT_USE)
     {
         os << i2 << "\"source_kind\": \"" << jsonEscape(sourceKind) << "\",\n";
+        os << i2 << "\"object_type\": \"" << jsonEscape(objectType) << "\",\n";
+        os << i2 << "\"variable\": \"" << jsonEscape(variable) << "\",\n";
+        os << i2 << "\"source_func\": \"" << jsonEscape(sourceFunc) << "\",\n";
+        os << i2 << "\"caller\": { \"file\": \"" << jsonEscape(callerFile) << "\", \"line\": "
+           << callerLine << " },\n";
         os << i2 << "\"use\": { \"file\": \"" << jsonEscape(useFile) << "\", \"line\": "
            << useLine << ", \"col\": " << useCol << " },\n";
         os << i2 << "\"allocator\": \"" << jsonEscape(allocator) << "\",\n";
@@ -321,9 +365,52 @@ bool SaberSliceCollector::collectUninitSlice(const SVFGNode* source,
     out.allocator = allocator;
     out.zeroing = zeroing;
 
-    if (source)
-        SaberSliceExportUtil::fillLocFromICFG(source->getICFGNode(), out.sourceFile,
-                                              out.sourceLine, out.sourceCol);
+    // The `SourceInst` event carries the best-effort declaration site that
+    // reportBug() resolved (e.g. the stack alloca at falcon_meta.cpp:508), which
+    // is far more identifiable than the raw AddrSVFGNode ICFG node (typically a
+    // location-less function/global anchor). Fall back to the raw source only if
+    // no SourceInst event is present.
+    const ICFGNode* sourceInstICFG = nullptr;
+    for (auto it = eventStack.rbegin(); it != eventStack.rend(); ++it)
+    {
+        if (it->getEventType() == SVFBugEvent::SourceInst)
+        {
+            sourceInstICFG = it->getEventInst();
+            break;
+        }
+    }
+    // The declaring function is reliably available from the source-creation node
+    // (a FunEntryICFGNode for stack objects), even though that node's own location
+    // string is the unparseable "function entry: ..." prefix.
+    if (sourceInstICFG != nullptr && sourceInstICFG->getFun() != nullptr)
+        out.sourceFunc = sourceInstICFG->getFun()->getName();
+
+    // The actual declaration site + variable name live on the source object itself
+    // (the alloca's debug info), not on its creation ICFGNode. Recover them from the
+    // AddrSVFGNode's PAG object so named locals like "retryBudget" are identifiable.
+    if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(source))
+    {
+        if (const SVFVar* objVar = SVFUtil::dyn_cast<SVFVar>(addr->getPAGSrcNode()))
+        {
+            const std::string& objLoc = objVar->getSourceLoc();
+            SaberSliceExportUtil::parseLocFileLine(objLoc, out.sourceFile, out.sourceLine);
+            int dummy = 0;
+            SaberSliceExportUtil::parseLocField(objLoc, "nm", out.variable, dummy);
+            if (const SVFType* ty = objVar->getType())
+                out.objectType = cleanTypeName(ty->toString());
+        }
+    }
+    if (std::getenv("SABER_SLICE_DEBUG"))
+    {
+        SVFUtil::errs() << "[slice-dbg] func=" << out.sourceFunc
+                        << " objType=" << out.objectType << "\n";
+        if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(source))
+            SVFUtil::errs() << "   pagSrc=" << addr->getPAGSrcNode()->toString().substr(0, 200)
+                            << "\n";
+    }
+    if (out.sourceFile.empty() && sourceInstICFG != nullptr)
+        SaberSliceExportUtil::fillLocFromICFG(sourceInstICFG, out.sourceFile, out.sourceLine,
+                                              out.sourceCol);
 
     const SVFBugEvent* useEvent = nullptr;
     for (auto it = eventStack.rbegin(); it != eventStack.rend(); ++it)
@@ -343,10 +430,41 @@ bool SaberSliceCollector::collectUninitSlice(const SVFGNode* source,
     if (out.useFile.empty() && out.useLine == 0)
         return false;
 
+    // Best-effort caller anchor: the project-code site in the declaring function
+    // where the value enters the (often shared/inlined) sink. Pick the latest path
+    // event that lives in the declaring function but is not the declaration itself.
+    if (!out.sourceFunc.empty())
+    {
+        for (auto it = eventStack.rbegin(); it != eventStack.rend(); ++it)
+        {
+            const ICFGNode* inst = it->getEventInst();
+            if (inst == nullptr || inst == sourceInstICFG)
+                continue;
+            const FunObjVar* fun = inst->getFun();
+            if (fun == nullptr || fun->getName() != out.sourceFunc)
+                continue;
+            std::string f;
+            int ln = 0;
+            SaberSliceExportUtil::parseLocFileLine(inst->getSourceLoc(), f, ln);
+            if (!f.empty() && ln != 0 && !(f == out.sourceFile && ln == out.sourceLine))
+            {
+                out.callerFile = f;
+                out.callerLine = ln;
+                break;
+            }
+        }
+    }
+
     SaberSliceExportUtil::collectPathConditions(eventStack, out.pathConditions);
 
-    out.id = "UNINIT@" + out.useFile + ":" + std::to_string(out.useLine) + ":" +
-             std::to_string(out.useCol);
+    // Identify by declaration site + variable so funnel-shared sinks stay distinct.
+    if (!out.sourceFile.empty())
+        out.id = "UNINIT@" + out.sourceFile + ":" + std::to_string(out.sourceLine) +
+                 (out.variable.empty() ? "" : ("#" + out.variable)) +
+                 "->" + out.useFile + ":" + std::to_string(out.useLine);
+    else
+        out.id = "UNINIT@" + out.useFile + ":" + std::to_string(out.useLine) + ":" +
+                 std::to_string(out.useCol);
     out.codeSnippet = readCodeSnippet(out.useFile, out.useLine);
     if (out.codeSnippet.empty() && !out.sourceFile.empty())
         out.codeSnippet = readCodeSnippet(out.sourceFile, out.sourceLine);
@@ -464,6 +582,61 @@ bool SaberSliceCollector::writeSlices(const char* generatedBy) const
     os << "  \"generated_by\": \"" << jsonEscape(generatedBy ? generatedBy : "SVFmemplus-SABER")
        << "\",\n";
     os << "  \"slice_count\": " << slices.size() << ",\n";
+
+    // Function-level grouping so the offline LLM triage can classify all suspect
+    // objects of one function in a single call instead of one call per report.
+    // This is the dominant lever for the logger-funnel uninit reports, which share
+    // a sink (logging.cpp) but spread over ~one source function each; no report is
+    // dropped — every slice index remains a member of exactly one group.
+    // Strategy 2: key by the object TYPE (the constructor / creation-site concept),
+    // which collapses the many-creations -> one-sink logger funnel that per-function
+    // grouping cannot. Each group lists its members with their distinct caller
+    // contexts (the LOG call sites) so no report is lost and density is high.
+    std::vector<std::string> groupOrder;
+    std::map<std::string, std::vector<size_t>> groups;
+    for (size_t k = 0; k < slices.size(); ++k)
+    {
+        std::string key = slices[k].objectType;
+        if (key.empty())
+            key = slices[k].sourceFunc;
+        if (key.empty())
+            key = slices[k].id; // singleton group when nothing better is known
+        auto it = groups.find(key);
+        if (it == groups.end())
+        {
+            groups.emplace(key, std::vector<size_t>{k});
+            groupOrder.push_back(key);
+        }
+        else
+            it->second.push_back(k);
+    }
+    os << "  \"group_count\": " << groupOrder.size() << ",\n";
+    os << "  \"groups\": [";
+    for (size_t g = 0; g < groupOrder.size(); ++g)
+    {
+        const std::vector<size_t>& members = groups[groupOrder[g]];
+        // Distinct caller contexts (file:line) within this object-type group.
+        std::vector<std::string> ctxs;
+        for (size_t idx : members)
+        {
+            if (slices[idx].callerLine == 0 && slices[idx].callerFile.empty())
+                continue;
+            std::string c = slices[idx].callerFile + ":" + std::to_string(slices[idx].callerLine);
+            if (std::find(ctxs.begin(), ctxs.end(), c) == ctxs.end())
+                ctxs.push_back(c);
+        }
+        os << (g ? "," : "") << "\n    { \"object_type\": \""
+           << jsonEscape(groupOrder[g]) << "\", \"member_count\": " << members.size()
+           << ", \"caller_contexts\": [";
+        for (size_t c = 0; c < ctxs.size(); ++c)
+            os << (c ? ", " : "") << "\"" << jsonEscape(ctxs[c]) << "\"";
+        os << "], \"members\": [";
+        for (size_t m = 0; m < members.size(); ++m)
+            os << (m ? ", " : "") << members[m];
+        os << "] }";
+    }
+    os << (groupOrder.empty() ? "" : "\n  ") << "],\n";
+
     os << "  \"slices\": [";
     for (size_t k = 0; k < slices.size(); ++k)
         os << (k ? "," : "") << "\n" << slices[k].toJson("    ");

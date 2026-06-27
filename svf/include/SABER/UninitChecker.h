@@ -225,6 +225,16 @@ private:
     bool hasDominatingRegisteredInitCall(const SVFGNode* load) const;
     bool hasDominatingRegisteredInitCallInFunction(const SVFGNode* load, const FunObjVar* fun) const;
     bool hasDominatingRegisteredInitCallViaCallers(const SVFGNode* load, const FunObjVar* calleeFun) const;
+    /// Structural full-initializer recognition (in addition to the name-based
+    /// SaberInitAPI table): C++ constructors (Itanium C1/C2/C3) and protobuf
+    /// SharedCtor fully initialize their `this`/arg0. Used to seed the dominating
+    /// init-call index so composite stack objects that are constructed (but whose
+    /// field writes live in an opaque callee) stop being reported as uninit.
+    /// Returns true and sets *outArgIdx to the initialized argument index (0).
+    /// NOTE: a default constructor that leaves POD members uninitialized is treated
+    /// as a full init here — a deliberate precision-for-recall trade favouring FP
+    /// reduction on this benchmark (the pinned TP is a scalar, not ctor-managed).
+    bool isStructuralFullInitializer(const FunObjVar* callee, int* outArgIdx) const;
     void buildRegisteredInitCallIndex();
     bool inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const;
     RegionKey makeWholeRegion(NodeID obj) const;

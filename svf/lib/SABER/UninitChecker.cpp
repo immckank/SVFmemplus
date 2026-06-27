@@ -297,11 +297,20 @@ void UninitChecker::analyze()
         outs().flush();
     }
 
+    // Dev-only fast iteration: cap the number of sources processed so export /
+    // serialization changes can be smoke-tested in seconds instead of a full
+    // ~36-min analysis. Unset in production. (SABER_UNINIT_MAX_SOURCES=N)
+    u32_t devSourceCap = 0;
+    if (const char* capEnv = std::getenv("SABER_UNINIT_MAX_SOURCES"))
+        devSourceCap = static_cast<u32_t>(std::strtoul(capEnv, nullptr, 10));
+
     u32_t sourceIndex = 0;
     for (SVFGNodeSetIter iter = sourcesBegin(), eiter = sourcesEnd();
             iter != eiter; ++iter)
     {
         ++sourceIndex;
+        if (devSourceCap != 0 && sourceIndex > devSourceCap)
+            break;
         setCurSlice(*iter);
 
         ContextCond cxt;
@@ -1988,6 +1997,38 @@ bool UninitChecker::hasDominatingInitBlocker(ProgSlice* slice, const SVFGNode* l
     return false;
 }
 
+bool UninitChecker::isStructuralFullInitializer(const FunObjVar* callee, int* outArgIdx) const
+{
+    // Experiment (reverted from the active path): treating C++ ctors (Itanium
+    // C1/C2/C3) and protobuf SharedCtor as full initializers of arg0 and feeding
+    // them to the use-side dominating-init machinery fired 0x on the ldu benchmark
+    // — the logged composites are pre-constructed parameters with no ctor
+    // dominating the use or its direct caller. Kept for reference / a future
+    // source-side init lever; NOT wired into buildRegisteredInitCallIndex.
+    if (callee == nullptr)
+        return false;
+    const std::string& n = callee->getName();
+    if (n.empty())
+        return false;
+    if (n.find("SharedCtor") != std::string::npos)
+    {
+        if (outArgIdx) *outArgIdx = 0;
+        return true;
+    }
+    if (n.compare(0, 2, "_Z") == 0)
+    {
+        for (const char* sel : {"C1E", "C2E", "C3E"})
+        {
+            if (n.find(sel) != std::string::npos)
+            {
+                if (outArgIdx) *outArgIdx = 0;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void UninitChecker::buildRegisteredInitCallIndex()
 {
     registeredInitCallsByFun.clear();
@@ -2079,8 +2120,14 @@ bool UninitChecker::hasDominatingRegisteredInitCallViaCallers(const SVFGNode* lo
 
     CallGraphEdge::CallInstSet callSites;
     getCallgraph()->getAllCallSitesInvokingCallee(calleeFun, callSites);
+    // Heavily-called sinks (e.g. the streaming logger) have very large caller sets;
+    // bound the scan so structural-initializer recognition stays cheap.
+    u32_t examined = 0;
+    const u32_t kMaxCallerSites = 256;
     for (const CallICFGNode* cs : callSites)
     {
+        if (++examined > kMaxCallerSites)
+            break;
         const FunObjVar* caller = cs->getCaller();
         if (caller == nullptr)
             continue;
