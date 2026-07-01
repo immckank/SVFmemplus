@@ -25,6 +25,7 @@
  */
 
 #include "SABER/SaberInitAPI.h"
+#include "SABER/SaberSemanticRules.h"
 
 using namespace SVF;
 
@@ -75,6 +76,13 @@ bool SaberInitAPI::isInitializerName(const std::string& name,
 {
     if (name.empty())
         return false;
+    if (const SaberSemanticRules::Rule* rule =
+            SaberSemanticRules::get()->find(name, SaberSemanticRules::Kind::INITIALIZER))
+    {
+        if (outArgIdx) *outArgIdx = rule->targetArg;
+        if (outReason) *outReason = rule->reason.c_str();
+        return true;
+    }
     for (const InitRule& r : rules)
     {
         const bool hit = r.exactMatch ? (name == r.name)

@@ -83,6 +83,35 @@ std::string cleanTypeName(std::string s)
     return out;
 }
 
+void collectTrace(const GenericBug::EventStack& events, std::vector<SaberTraceNode>& out)
+{
+    out.clear();
+    for (const SVFBugEvent& event : events)
+    {
+        const ICFGNode* node = event.getEventInst();
+        if (node == nullptr)
+            continue;
+        SaberTraceNode trace;
+        trace.description = event.getEventDescription();
+        trace.location = SaberSliceExportUtil::locFromICFG(node);
+        if (node->getFun())
+            trace.function = node->getFun()->getName();
+        switch (event.getEventType())
+        {
+        case SVFBugEvent::SourceInst: trace.role = "source"; break;
+        case SVFBugEvent::Free: trace.role = "free"; break;
+        case SVFBugEvent::Use: trace.role = "use"; break;
+        default: trace.role = "path"; break;
+        }
+        if (!out.empty() && out.back().function == trace.function &&
+                out.back().location.file == trace.location.file &&
+                out.back().location.line == trace.location.line &&
+                out.back().role == trace.role)
+            continue;
+        out.push_back(std::move(trace));
+    }
+}
+
 } // namespace
 
 namespace SVF {
@@ -152,6 +181,17 @@ std::string SaberSlice::toJson(const std::string& ind) const
            << "\", \"condition\": \"" << jsonEscape(e.condition) << "\" }";
     }
     os << (pathConditions.empty() ? "" : ("\n" + i2)) << "],\n";
+    os << i2 << "\"trace\": [";
+    for (size_t k = 0; k < callTrace.size(); ++k)
+    {
+        const SaberTraceNode& n = callTrace[k];
+        os << (k ? "," : "") << "\n" << i3 << "{ \"role\": \"" << jsonEscape(n.role)
+           << "\", \"function\": \"" << jsonEscape(n.function) << "\", \"location\": { \"file\": \""
+           << jsonEscape(n.location.file) << "\", \"line\": " << n.location.line
+           << ", \"col\": " << n.location.col << " }, \"description\": \""
+           << jsonEscape(n.description) << "\" }";
+    }
+    os << (callTrace.empty() ? "" : ("\n" + i2)) << "],\n";
     os << i2 << "\"code_snippet\": \"" << jsonEscape(codeSnippet) << "\"\n";
     os << ind << "}";
     return os.str();
@@ -160,7 +200,15 @@ std::string SaberSlice::toJson(const std::string& ind) const
 bool SaberSliceExportUtil::parseLocField(const std::string& locJson, const char* key,
                                          std::string& outStr, int& outInt)
 {
-    cJSON* lj = cJSON_Parse(locJson.c_str());
+    // Some ICFG nodes expose a decorated location such as
+    // `CallICFGNode: { "ln": 12, ... }`, while others expose the JSON object
+    // directly. Accept both forms so report export never loses call/free sites.
+    std::string json = locJson;
+    const size_t begin = json.find('{');
+    const size_t end = json.rfind('}');
+    if (begin != std::string::npos && end != std::string::npos && end >= begin)
+        json = json.substr(begin, end - begin + 1);
+    cJSON* lj = cJSON_Parse(json.c_str());
     if (!lj)
         return false;
     bool ok = false;
@@ -341,6 +389,7 @@ bool SaberSliceCollector::collectUAFSlice(const GenericBug::EventStack& eventSta
     SaberSliceExportUtil::fillLocFromICFG(useICFG, out.useFile, out.useLine, out.useCol);
 
     SaberSliceExportUtil::collectPathConditions(eventStack, out.pathConditions);
+    collectTrace(eventStack, out.callTrace);
 
     std::ostringstream id;
     id << out.freeFile << ":" << out.freeLine << "->" << out.useFile << ":" << out.useLine;
@@ -456,6 +505,7 @@ bool SaberSliceCollector::collectUninitSlice(const SVFGNode* source,
     }
 
     SaberSliceExportUtil::collectPathConditions(eventStack, out.pathConditions);
+    collectTrace(eventStack, out.callTrace);
 
     // Identify by declaration site + variable so funnel-shared sinks stay distinct.
     if (!out.sourceFile.empty())
@@ -499,6 +549,7 @@ bool SaberSliceCollector::collectLeakSlice(GenericBug::BugType bugType,
     }
 
     SaberSliceExportUtil::collectPathConditions(eventStack, out.pathConditions);
+    collectTrace(eventStack, out.callTrace);
 
     out.id = "LEAK@" + out.leakKind + "@" + out.sourceFile + ":" +
              std::to_string(out.sourceLine);
@@ -533,6 +584,7 @@ bool SaberSliceCollector::collectDoubleFreeSlice(const GenericBug::EventStack& e
                                               out.sourceCol);
 
     SaberSliceExportUtil::collectPathConditions(eventStack, out.pathConditions);
+    collectTrace(eventStack, out.callTrace);
 
     const std::string anchorFile = !out.freeFile.empty() ? out.freeFile : out.sourceFile;
     const int anchorLine = !out.freeFile.empty() ? out.freeLine : out.sourceLine;
@@ -642,6 +694,85 @@ bool SaberSliceCollector::writeSlices(const char* generatedBy) const
         os << (k ? "," : "") << "\n" << slices[k].toJson("    ");
     os << (slices.empty() ? "" : "\n  ") << "]\n";
     os << "}\n";
+    return true;
+}
+
+bool SaberSliceCollector::writeReport(const char* generatedBy) const
+{
+    if (reportOutPath.empty())
+        return false;
+    std::ofstream os(reportOutPath, std::ios::trunc);
+    if (!os)
+    {
+        SVFUtil::errs() << "[SaberReport] cannot open report output: " << reportOutPath << "\n";
+        return false;
+    }
+    os << "{\n"
+       << "  \"schema\": \"saber-report/v2\",\n"
+       << "  \"generated_by\": \"" << jsonEscape(generatedBy ? generatedBy : "SVFmemplus-SABER") << "\",\n"
+       << "  \"alert_count\": " << slices.size() << ",\n"
+       << "  \"alerts\": [";
+    for (size_t k = 0; k < slices.size(); ++k)
+    {
+        os << (k ? "," : "") << "\n    {\n"
+           << "      \"alert\": " << slices[k].toJson("      ") << ",\n"
+           << "      \"solver\": { \"engine\": \"Saber path feasibility\", "
+           << "\"status\": \"accepted_by_checker\", \"constraint_count\": "
+           << slices[k].pathConditions.size()
+           << ", \"model\": null, \"limitation\": "
+           << "\"The checker accepted this path; an SMT model is not retained by the current solver API.\" },\n"
+           << "      \"triage\": null,\n"
+           << "      \"semantic_candidates\": [],\n"
+           << "      \"ranking\": { \"score\": null, \"model\": null },\n"
+           << "      \"graph_features\": { \"trace_nodes\": " << slices[k].callTrace.size()
+           << ", \"path_conditions\": " << slices[k].pathConditions.size() << " }\n"
+           << "    }";
+    }
+    os << (slices.empty() ? "" : "\n  ") << "]\n}\n";
+    return true;
+}
+
+bool SaberSliceCollector::writeMarkdown(const char* generatedBy) const
+{
+    if (markdownOutPath.empty())
+        return false;
+    std::ofstream os(markdownOutPath, std::ios::trunc);
+    if (!os)
+    {
+        SVFUtil::errs() << "[SaberReport] cannot open markdown output: " << markdownOutPath << "\n";
+        return false;
+    }
+    os << "# Saber analysis report\n\n"
+       << "- Generated by: " << (generatedBy ? generatedBy : "SVFmemplus-SABER") << "\n"
+       << "- Alerts: " << slices.size() << "\n\n";
+    for (const SaberSlice& s : slices)
+    {
+        os << "## " << saberSliceKindStr(s.kind) << " — `" << s.id << "`\n\n"
+           << "- Static verdict: " << s.staticVerdict << "\n"
+           << "- Source: `" << s.sourceFile << ":" << s.sourceLine << "`\n";
+        if (!s.freeFile.empty())
+            os << "- Free: `" << s.freeFile << ":" << s.freeLine << "`\n";
+        if (!s.useFile.empty())
+            os << "- Use: `" << s.useFile << ":" << s.useLine << "`\n";
+        if (!s.variable.empty())
+            os << "- Object: `" << s.variable << "` (`" << s.objectType << "`)\n";
+        os << "- Path feasibility: accepted by the Saber checker ("
+           << s.pathConditions.size() << " exported constraint(s); SMT model not retained)\n";
+        os << "\n### Execution trace\n\n";
+        if (s.callTrace.empty())
+            os << "_No trace nodes exported._\n";
+        for (const SaberTraceNode& n : s.callTrace)
+            os << "1. **" << n.role << "** `" << n.function << "` at `"
+               << n.location.file << ":" << n.location.line << "` — " << n.description << "\n";
+        os << "\n### Path conditions\n\n";
+        if (s.pathConditions.empty())
+            os << "_No explicit path conditions._\n";
+        for (const SaberPathEdge& e : s.pathConditions)
+            os << "- `" << e.location << "` — " << e.condition << "\n";
+        if (!s.codeSnippet.empty())
+            os << "\n### Source context\n\n```\n" << s.codeSnippet << "```\n";
+        os << "\n";
+    }
     return true;
 }
 

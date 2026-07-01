@@ -27,6 +27,7 @@
  */
 
 #include "SABER/SaberMemTransferAPI.h"
+#include "SABER/SaberSemanticRules.h"
 #include <cassert>
 #include <cstdio>
 #include <set>
@@ -320,6 +321,29 @@ u16_t SaberMemTransferAPI::lookupSpecId(const std::string& name) const
 
 const SaberMemTransferAPI::TransferSpec* SaberMemTransferAPI::getSpecByName(const std::string& name) const
 {
+    if (const SaberSemanticRules::Rule* rule =
+            SaberSemanticRules::get()->find(name, SaberSemanticRules::Kind::MEMORY_TRANSFER))
+    {
+        dynamicAccessRules.clear();
+        if (rule->targetArg >= 0)
+            dynamicAccessRules.push_back(
+                {static_cast<s8_t>(rule->targetArg), static_cast<s8_t>(rule->lengthArg)});
+        if (rule->sourceArg >= 0)
+            dynamicAccessRules.push_back(
+                {static_cast<s8_t>(rule->sourceArg), static_cast<s8_t>(rule->lengthArg)});
+        dynamicSpec.kind = rule->effect == "set" ? TK_SET :
+                           rule->effect == "string_copy" ? TK_STRING_COPY : TK_COPY;
+        dynamicSpec.ptrProp = {
+            static_cast<u8_t>(rule->targetArg < 0 ? 0 : rule->targetArg),
+            static_cast<u8_t>(rule->sourceArg < 0 ? 0 : rule->sourceArg),
+            static_cast<s8_t>(rule->lengthArg), rule->targetArg >= 0 && rule->sourceArg >= 0
+        };
+        dynamicSpec.accessRules = dynamicAccessRules.empty() ? nullptr : dynamicAccessRules.data();
+        dynamicSpec.numAccessRules = static_cast<u8_t>(dynamicAccessRules.size());
+        dynamicSpec.strCopyLike = dynamicSpec.kind == TK_STRING_COPY;
+        dynamicSpec.strSrcArgIdx = static_cast<u8_t>(rule->sourceArg < 0 ? 0 : rule->sourceArg);
+        return &dynamicSpec;
+    }
     const u16_t id = lookupSpecId(name);
     if (id >= specTemplates.size())
         return nullptr;

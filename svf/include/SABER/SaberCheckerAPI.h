@@ -33,6 +33,7 @@
 #include "Util/SVFUtil.h"
 #include "Graphs/ICFGNode.h"
 #include "SVFIR/SVFVariables.h" // add header
+#include "SABER/SaberSemanticRules.h"
 
 namespace SVF
 {
@@ -78,6 +79,15 @@ private:
     {
         if(F)
         {
+            SaberSemanticRules* semantic = SaberSemanticRules::get();
+            if (semantic->find(F->getName(), SaberSemanticRules::Kind::ALLOCATOR))
+                return CK_ALLOC;
+            if (semantic->find(F->getName(), SaberSemanticRules::Kind::DEALLOCATOR))
+                return CK_FREE;
+            if (semantic->find(F->getName(), SaberSemanticRules::Kind::RESOURCE_OPEN))
+                return CK_FOPEN;
+            if (semantic->find(F->getName(), SaberSemanticRules::Kind::RESOURCE_CLOSE))
+                return CK_FCLOSE;
             TDAPIMap::const_iterator it= tdAPIMap.find(F->getName());
             if(it != tdAPIMap.end())
                 return it->second;

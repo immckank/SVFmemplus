@@ -89,6 +89,8 @@ public:
 private:
     NameToSpecMap nameToSpecMap;
     std::vector<TransferSpec> specTemplates;
+    mutable std::vector<MemAccessRule> dynamicAccessRules;
+    mutable TransferSpec dynamicSpec{};
 
     SaberMemTransferAPI()
     {

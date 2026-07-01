@@ -37,6 +37,8 @@
 
 #include "SABER/UseAfterFreeChecker.h"
 #include "SABER/UninitChecker.h"
+#include "SABER/SaberSemanticRules.h"
+#include <filesystem>
 
 
 using namespace llvm;
@@ -46,6 +48,12 @@ static const Option<std::string> SaberSliceOut(
     "saber-slice-out",
     "Export saber-slice/v1 JSON for downstream LLM context",
     "");
+static const Option<std::string> ReportDir(
+    "report-dir",
+    "Directory for default Saber JSON, Markdown, and compatibility slice reports",
+    ".");
+static const Option<std::string> SaberSemanticRulesPath(
+    "saber-semantic-rules", "Load approved semantic-rules/v1 JSON", "");
 
 static void maybeSetSliceExportConfig()
 {
@@ -53,6 +61,43 @@ static void maybeSetSliceExportConfig()
         return;
 
     LeakChecker::setSliceExportPath(SaberSliceOut());
+}
+
+static std::string inputStem(const std::vector<std::string>& modules)
+{
+    if (modules.empty())
+        return "saber";
+    std::filesystem::path path(modules.front());
+    return path.stem().string();
+}
+
+static const char* checkerTag()
+{
+    if (Options::DFreeCheck()) return "dfree";
+    if (Options::UAFCheck()) return "uaf";
+    if (Options::UninitCheck()) return "uninit";
+    if (Options::FileCheck()) return "file";
+    return "leak";
+}
+
+static void setDefaultReportConfig(const std::vector<std::string>& modules)
+{
+    const std::filesystem::path dir =
+        ReportDir().empty() ? std::filesystem::path(".") : std::filesystem::path(ReportDir());
+    std::error_code error;
+    std::filesystem::create_directories(dir, error);
+    if (error)
+    {
+        SVFUtil::errs() << "[SaberReport] cannot create report directory "
+                        << dir.string() << ": " << error.message() << "\n";
+        std::exit(EXIT_FAILURE);
+    }
+    const std::string base = inputStem(modules) + "_" + checkerTag();
+    LeakChecker::setReportExportPaths(
+        (dir / (base + "_report.json")).string(),
+        (dir / (base + "_report.md")).string());
+    if (SaberSliceOut().empty())
+        LeakChecker::setSliceExportPath((dir / (base + "_slices.json")).string());
 }
 
 int main(int argc, char ** argv)
@@ -72,6 +117,10 @@ int main(int argc, char ** argv)
     SVFIRBuilder builder;
     SVFIR* pag = builder.build();
 
+    if (!SaberSemanticRulesPath().empty() &&
+            !SaberSemanticRules::get()->loadFile(SaberSemanticRulesPath()))
+        SVFUtil::errs() << "[SaberSemanticRules] rules rejected; using built-in semantics only\n";
+
 
     std::unique_ptr<LeakChecker> saber;
 
@@ -89,6 +138,7 @@ int main(int argc, char ** argv)
         saber = std::make_unique<LeakChecker>();  // if no checker is specified, we use leak checker as the default one.
 
     maybeSetSliceExportConfig();
+    setDefaultReportConfig(moduleNameVec);
 
     saber->runOnModule(pag);
     LLVMModuleSet::releaseLLVMModuleSet();

@@ -95,6 +95,7 @@ public:
     //@}
 
     static void setSliceExportPath(const std::string& path);
+    static void setReportExportPaths(const std::string& jsonPath, const std::string& markdownPath);
     virtual void finalize() override;
 
 protected:
@@ -148,6 +149,8 @@ protected:
     //@}
     SaberSliceCollector sliceCollector_;
     static std::string s_sliceOutPath_;
+    static std::string s_reportOutPath_;
+    static std::string s_markdownOutPath_;
     static bool s_sliceExportConfigured_;
     std::vector<SaberPendingReport> pendingReports_;
 

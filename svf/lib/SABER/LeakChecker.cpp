@@ -36,12 +36,22 @@ using namespace SVF;
 using namespace SVFUtil;
 
 std::string LeakChecker::s_sliceOutPath_;
+std::string LeakChecker::s_reportOutPath_;
+std::string LeakChecker::s_markdownOutPath_;
 bool LeakChecker::s_sliceExportConfigured_ = false;
 
 void LeakChecker::setSliceExportPath(const std::string& path)
 {
     s_sliceOutPath_ = path;
     s_sliceExportConfigured_ = true;
+}
+
+void LeakChecker::setReportExportPaths(const std::string& jsonPath, const std::string& markdownPath)
+{
+    s_reportOutPath_ = jsonPath;
+    s_markdownOutPath_ = markdownPath;
+    if (!jsonPath.empty() || !markdownPath.empty())
+        s_sliceExportConfigured_ = true;
 }
 
 bool LeakChecker::sliceExportEnabled() const
@@ -54,6 +64,8 @@ void LeakChecker::prepareSliceCollector()
     if (!sliceExportEnabled())
         return;
     sliceCollector_.setSliceOutPath(s_sliceOutPath_);
+    sliceCollector_.setReportOutPath(s_reportOutPath_);
+    sliceCollector_.setMarkdownOutPath(s_markdownOutPath_);
 }
 
 const char* LeakChecker::sliceExportGeneratedBy() const
@@ -115,11 +127,18 @@ void LeakChecker::flushPendingReports()
 void LeakChecker::finalize()
 {
     flushPendingReports();
-    if (sliceExportEnabled() && !sliceCollector_.empty())
+    if (sliceExportEnabled())
     {
-        sliceCollector_.writeSlices(sliceExportGeneratedBy());
-        SVFUtil::outs() << "[SaberSliceExport] exported " << sliceCollector_.size()
-                        << " slice(s) to " << sliceCollector_.sliceOutPathRef() << "\n";
+        if (!sliceCollector_.sliceOutPathRef().empty())
+        {
+            sliceCollector_.writeSlices(sliceExportGeneratedBy());
+            SVFUtil::outs() << "[SaberSliceExport] exported " << sliceCollector_.size()
+                            << " slice(s) to " << sliceCollector_.sliceOutPathRef() << "\n";
+        }
+        if (!sliceCollector_.reportOutPathRef().empty())
+            sliceCollector_.writeReport(sliceExportGeneratedBy());
+        if (!sliceCollector_.markdownOutPathRef().empty())
+            sliceCollector_.writeMarkdown(sliceExportGeneratedBy());
     }
     SrcSnkDDA::finalize();
 }

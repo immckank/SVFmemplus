@@ -48,6 +48,14 @@ struct SaberSourceLoc
     }
 };
 
+struct SaberTraceNode
+{
+    std::string role;
+    std::string function;
+    SaberSourceLoc location;
+    std::string description;
+};
+
 /// Shared helpers for source-location parsing and report keys.
 struct SaberSliceExportUtil
 {
@@ -109,6 +117,7 @@ struct SaberSlice
     int free2Line = 0;
 
     std::vector<SaberPathEdge> pathConditions;
+    std::vector<SaberTraceNode> callTrace;
     std::string codeSnippet;
 
     std::string toJson(const std::string& indent) const;
@@ -136,7 +145,11 @@ class SaberSliceCollector
 {
 public:
     void setSliceOutPath(const std::string& path) { sliceOutPath = path; }
+    void setReportOutPath(const std::string& path) { reportOutPath = path; }
+    void setMarkdownOutPath(const std::string& path) { markdownOutPath = path; }
     const std::string& sliceOutPathRef() const { return sliceOutPath; }
+    const std::string& reportOutPathRef() const { return reportOutPath; }
+    const std::string& markdownOutPathRef() const { return markdownOutPath; }
 
     bool collectUAFSlice(const GenericBug::EventStack& eventStack,
                          const std::string& reportKind, SaberSlice& out) const;
@@ -154,11 +167,15 @@ public:
     const std::vector<SaberSlice>& getSlices() const { return slices; }
 
     bool writeSlices(const char* generatedBy) const;
+    bool writeReport(const char* generatedBy) const;
+    bool writeMarkdown(const char* generatedBy) const;
 
 private:
     std::string readCodeSnippet(const std::string& file, int line) const;
 
     std::string sliceOutPath;
+    std::string reportOutPath;
+    std::string markdownOutPath;
     std::vector<SaberSlice> slices;
 };
 
