@@ -35,23 +35,13 @@
 using namespace SVF;
 using namespace SVFUtil;
 
-std::string LeakChecker::s_sliceOutPath_;
-std::string LeakChecker::s_reportOutPath_;
-std::string LeakChecker::s_markdownOutPath_;
+std::string LeakChecker::s_alertOutDir_;
 bool LeakChecker::s_sliceExportConfigured_ = false;
 
-void LeakChecker::setSliceExportPath(const std::string& path)
+void LeakChecker::setAlertOutputDir(const std::string& path)
 {
-    s_sliceOutPath_ = path;
-    s_sliceExportConfigured_ = true;
-}
-
-void LeakChecker::setReportExportPaths(const std::string& jsonPath, const std::string& markdownPath)
-{
-    s_reportOutPath_ = jsonPath;
-    s_markdownOutPath_ = markdownPath;
-    if (!jsonPath.empty() || !markdownPath.empty())
-        s_sliceExportConfigured_ = true;
+    s_alertOutDir_ = path;
+    s_sliceExportConfigured_ = !path.empty();
 }
 
 bool LeakChecker::sliceExportEnabled() const
@@ -63,9 +53,7 @@ void LeakChecker::prepareSliceCollector()
 {
     if (!sliceExportEnabled())
         return;
-    sliceCollector_.setSliceOutPath(s_sliceOutPath_);
-    sliceCollector_.setReportOutPath(s_reportOutPath_);
-    sliceCollector_.setMarkdownOutPath(s_markdownOutPath_);
+    sliceCollector_.setAlertOutDir(s_alertOutDir_);
 }
 
 const char* LeakChecker::sliceExportGeneratedBy() const
@@ -129,16 +117,12 @@ void LeakChecker::finalize()
     flushPendingReports();
     if (sliceExportEnabled())
     {
-        if (!sliceCollector_.sliceOutPathRef().empty())
+        if (!sliceCollector_.alertOutDirRef().empty())
         {
-            sliceCollector_.writeSlices(sliceExportGeneratedBy());
-            SVFUtil::outs() << "[SaberSliceExport] exported " << sliceCollector_.size()
-                            << " slice(s) to " << sliceCollector_.sliceOutPathRef() << "\n";
+            sliceCollector_.writeAlerts(sliceExportGeneratedBy());
+            SVFUtil::outs() << "[SaberAlert] exported " << sliceCollector_.size()
+                            << " alert(s) to " << sliceCollector_.alertOutDirRef() << "\n";
         }
-        if (!sliceCollector_.reportOutPathRef().empty())
-            sliceCollector_.writeReport(sliceExportGeneratedBy());
-        if (!sliceCollector_.markdownOutPathRef().empty())
-            sliceCollector_.writeMarkdown(sliceExportGeneratedBy());
     }
     SrcSnkDDA::finalize();
 }
@@ -433,7 +417,18 @@ void LeakChecker::reportBug(ProgSlice* slice)
         std::vector<std::string> sinkLocs;
         for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
             sinkLocs.push_back(getSinkNodeLoc(*it));
-        emitBug(GenericBug::PARTIALLEAK, eventStack, sinkLocs);
+        SaberPendingReport pending;
+        pending.bugType = GenericBug::PARTIALLEAK;
+        pending.eventStack = std::move(eventStack);
+        pending.sinkLocs = sinkLocs;
+        for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(),
+                eit = slice->sinksEnd(); it != eit; ++it)
+        {
+            GenericBug::EventStack sinkEvents;
+            slice->evalSinkCond2Event(*it, sinkEvents);
+            pending.sinkPathEvents.push_back(std::move(sinkEvents));
+        }
+        queuePendingReport(std::move(pending), "");
     }
     else if (isAllPathReachable() == true && isSomePathReachable() == true)
     {
@@ -447,7 +442,19 @@ void LeakChecker::reportBug(ProgSlice* slice)
             std::vector<std::string> sinkLocs;
             for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(), eit = slice->sinksEnd(); it != eit; ++it)
                 sinkLocs.push_back(getSinkNodeLoc(*it));
-            emitBug(GenericBug::PARTIALLEAK, eventStack, sinkLocs, bypassRet->getSourceLoc());
+            SaberPendingReport pending;
+            pending.bugType = GenericBug::PARTIALLEAK;
+            pending.eventStack = std::move(eventStack);
+            pending.sinkLocs = sinkLocs;
+            pending.sinkBypassReturnLoc = bypassRet->getSourceLoc();
+            for (ProgSlice::SVFGNodeSetIter it = slice->sinksBegin(),
+                    eit = slice->sinksEnd(); it != eit; ++it)
+            {
+                GenericBug::EventStack sinkEvents;
+                slice->evalSinkCond2Event(*it, sinkEvents);
+                pending.sinkPathEvents.push_back(std::move(sinkEvents));
+            }
+            queuePendingReport(std::move(pending), "");
         }
     }
 

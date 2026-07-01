@@ -222,6 +222,22 @@ void ProgSlice::evalFinalCond2Event(GenericBug::EventStack &eventStack) const
     }
 }
 
+void ProgSlice::evalSinkCond2Event(const SVFGNode* sink,
+                                  GenericBug::EventStack& eventStack) const
+{
+    auto found = svfgNodeToCondMap.find(sink);
+    if (found == svfgNodeToCondMap.end())
+        return;
+    NodeBS elems = pathAllocator->exactCondElem(found->second);
+    for (NodeBS::iterator it = elems.begin(), eit = elems.end(); it != eit; ++it)
+    {
+        const ICFGNode* inst = pathAllocator->getCondInst(*it);
+        const u32_t flag = pathAllocator->isNegCond(*it) ? false : true;
+        eventStack.push_back(SVFBugEvent(
+            SVFBugEvent::Branch | ((flag << 4) & BRANCHFLAGMASK), inst));
+    }
+}
+
 /*!
  * Evaluate Atoms of a condition
  * TODO: for now we only evaluate one path, evaluate every single path

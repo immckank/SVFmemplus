@@ -13,7 +13,9 @@ Saber 当前支持：
 
 `bof` 工具用于检测缓冲区越界（`BufferOverflow`）。本轮报告格式优化只作用于 Saber，尚未改造 BOF。
 
-增强报告包含稳定告警 ID、源码片段、调用轨迹、路径条件、求解摘要和语义候选等字段。`graph-reader` 仍可作为常驻语义查询后端，提供函数、调用关系、值流、路径和宏上下文查询。
+每条告警输出为独立 JSON。除 leak 外，`path` 是一条裁剪后的 SVFG
+值流 witness；leak 的 `paths` 是可能安全释放对象的路径，
+`leak_condition` 表示安全条件并集的补集。
 
 ## 构建
 
@@ -36,7 +38,7 @@ source ./setup.sh
 
 ## Saber 默认报告
 
-Markdown 增强告警和 `saber-report/v2` JSON 均为默认行为，不需要额外开关。使用一个 `-report-dir` 参数统一指定输出目录：
+使用 `-report-dir` 指定输出根目录：
 
 ```bash
 saber -leak   -report-dir=/path/to/output input.bc
@@ -45,33 +47,28 @@ saber -uaf    -report-dir=/path/to/output input.bc
 saber -uninit -report-dir=/path/to/output input.bc
 ```
 
-如果输入文件为 `input.bc`，相应检查器默认产生：
+四类检查器分别写入：
 
 ```text
-input_<checker>_report.json
-input_<checker>_report.md
-input_<checker>_slices.json
+alerts/memory_leak/<sha256>.json
+alerts/double_free/<sha256>.json
+alerts/use_after_free/<sha256>.json
+alerts/uninit_use/<sha256>.json
 ```
 
-其中 `<checker>` 为 `leak`、`dfree`、`uaf` 或 `uninit`。终端告警仍输出到标准输出，可按需重定向为 TXT。
+`-report-dir` 默认值为当前目录。终端内容仅作为运行日志，不是下游输入。
 
-`-report-dir` 默认值为当前目录。兼容参数 `-saber-slice-out=<file>` 可单独覆盖 slice JSON 的位置；新管线应优先使用 `-report-dir`。
+## 统一运行（全局管线）
 
-## 统一运行脚本
-
-脚本会对每个 bitcode 依次运行四个 Saber 检查器，并将 TXT、Markdown、JSON 和 slice 文件集中写入同一目录：
+在仓库根目录配置 `script/config.env` 后：
 
 ```bash
-source ./setup.sh
-./run_saber_all_defects.sh \
-  --output-dir /path/to/output \
-  --no-bof \
-  /path/to/input.bc
+./script/run_svf.sh                              # Step1 静态分析
+./script/run_pipeline.sh                         # SVF + FPhandler
+./script/run_svf.sh --checkers leak,dfree        # 仅跑指定 checker
 ```
 
-- `--output-dir`：必填，统一输出目录。
-- `--no-bof`：可选，仅运行 Saber；省略时额外运行现有 BOF 检查。
-- 可在命令末尾传入多个 `.bc` 文件。
+`defect_types=leak,dfree,uaf,uninit` 控制运行哪些检查器；追加 `bof` 可启用 BOF。
 
 ## 语义规则反馈
 
@@ -90,10 +87,9 @@ saber -uninit \
 
 将 Saber 的输出目录配置为 FPhandler 的 `OUTPUT_DIR`。FPhandler 会：
 
-1. 从该目录发现 Saber TXT 告警；
-2. 按 TXT 主名读取同目录的 `*_report.json`；
-3. 直接复用报告中的源码片段、轨迹、路径条件和求解信息；
-4. 将 LLM 分类结果与语义扩增内容原子写回同一 JSON 报告。
+1. 从 `alerts/` 递归发现单警报 JSON；
+2. 直接使用警报 path、源码上下文和 checker 证据；
+3. 将 `classification` 与 `reason` 原子写回同一文件。
 
 ## 主要代码
 
@@ -101,4 +97,4 @@ saber -uninit \
 - `svf/lib/SABER/`：各 Saber 检查器及报告实现
 - `svf-llvm/tools/GraphReader/`：语义查询服务
 - `svf-llvm/tools/BOF/`、`svf/lib/BOF/`：缓冲区越界检测
-- `run_saber_all_defects.sh`：统一输出目录运行脚本
+- 仓库根 `script/run_svf.sh`：全局管线静态分析入口

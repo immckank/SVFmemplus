@@ -44,41 +44,12 @@
 using namespace llvm;
 using namespace SVF;
 
-static const Option<std::string> SaberSliceOut(
-    "saber-slice-out",
-    "Export saber-slice/v1 JSON for downstream LLM context",
-    "");
 static const Option<std::string> ReportDir(
     "report-dir",
-    "Directory for default Saber JSON, Markdown, and compatibility slice reports",
+    "Directory containing the per-alert Saber JSON tree",
     ".");
 static const Option<std::string> SaberSemanticRulesPath(
     "saber-semantic-rules", "Load approved semantic-rules/v1 JSON", "");
-
-static void maybeSetSliceExportConfig()
-{
-    if (SaberSliceOut().empty())
-        return;
-
-    LeakChecker::setSliceExportPath(SaberSliceOut());
-}
-
-static std::string inputStem(const std::vector<std::string>& modules)
-{
-    if (modules.empty())
-        return "saber";
-    std::filesystem::path path(modules.front());
-    return path.stem().string();
-}
-
-static const char* checkerTag()
-{
-    if (Options::DFreeCheck()) return "dfree";
-    if (Options::UAFCheck()) return "uaf";
-    if (Options::UninitCheck()) return "uninit";
-    if (Options::FileCheck()) return "file";
-    return "leak";
-}
 
 static void setDefaultReportConfig(const std::vector<std::string>& modules)
 {
@@ -92,12 +63,7 @@ static void setDefaultReportConfig(const std::vector<std::string>& modules)
                         << dir.string() << ": " << error.message() << "\n";
         std::exit(EXIT_FAILURE);
     }
-    const std::string base = inputStem(modules) + "_" + checkerTag();
-    LeakChecker::setReportExportPaths(
-        (dir / (base + "_report.json")).string(),
-        (dir / (base + "_report.md")).string());
-    if (SaberSliceOut().empty())
-        LeakChecker::setSliceExportPath((dir / (base + "_slices.json")).string());
+    LeakChecker::setAlertOutputDir((dir / "alerts").string());
 }
 
 int main(int argc, char ** argv)
@@ -137,12 +103,11 @@ int main(int argc, char ** argv)
     else
         saber = std::make_unique<LeakChecker>();  // if no checker is specified, we use leak checker as the default one.
 
-    maybeSetSliceExportConfig();
     setDefaultReportConfig(moduleNameVec);
 
     saber->runOnModule(pag);
+    saber.reset();
     LLVMModuleSet::releaseLLVMModuleSet();
-
 
     return 0;
 

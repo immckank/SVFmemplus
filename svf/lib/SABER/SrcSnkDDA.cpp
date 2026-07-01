@@ -155,7 +155,7 @@ void SrcSnkDDA::analyze()
                 double solveStart = 0;
                 if (timeStat)
                     solveStart = SVFStat::getClk(true);
-                if(_curSlice->AllPathReachableSolve())
+                if(_curSlice->AllPathReachableSolve(needAllPathReachabilityCheck()))
                     _curSlice->setAllReachable();
                 if (timeStat)
                     saberTimeStat.solveTime += (SVFStat::getClk(true) - solveStart) / TIMEINTERVAL;

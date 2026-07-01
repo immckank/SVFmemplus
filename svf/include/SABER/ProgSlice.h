@@ -228,6 +228,8 @@ public:
     std::string evalFinalCond() const;
     /// Add final condition to eventStack
     void evalFinalCond2Event(GenericBug::EventStack &eventStack) const;
+    void evalSinkCond2Event(const SVFGNode* sink,
+                            GenericBug::EventStack& eventStack) const;
     //@}
 
     inline void enableUAFNodeTracking()

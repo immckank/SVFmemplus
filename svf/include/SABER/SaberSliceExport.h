@@ -54,6 +54,10 @@ struct SaberTraceNode
     std::string function;
     SaberSourceLoc location;
     std::string description;
+    std::string ir;
+    int contextStartLine = 0;
+    int contextEndLine = 0;
+    std::string sourceContext;
 };
 
 /// Shared helpers for source-location parsing and report keys.
@@ -108,6 +112,7 @@ struct SaberSlice
     /// share one object type funneled to one sink, so grouping by object type
     /// collapses the logger funnel far more than per-function grouping.
     std::string objectType;
+    std::string objectDescriptor;
 
     /// MEMORY_LEAK: NEVERFREE | PARTIALLEAK
     std::string leakKind;
@@ -118,9 +123,13 @@ struct SaberSlice
 
     std::vector<SaberPathEdge> pathConditions;
     std::vector<SaberTraceNode> callTrace;
-    std::string codeSnippet;
+    std::vector<std::string> potentialFreeLocs;
+    std::vector<std::string> potentialFreeContexts;
+    std::vector<std::vector<SaberPathEdge>> safePathConditions;
+    std::string bypassReturnLoc;
 
     std::string toJson(const std::string& indent) const;
+    std::string stableIdentity() const;
 };
 
 /// Queued SABER report emitted at finalize; slice context is collected on flush.
@@ -131,9 +140,11 @@ struct SaberPendingReport
 
     /// Deferred terminal lines for leak/dfree sink sites (printed with the bug).
     std::vector<std::string> sinkLocs;
+    std::vector<GenericBug::EventStack> sinkPathEvents;
     std::string sinkBypassReturnLoc;
 
     std::string uafReportKind;
+    std::string uafObjectDescriptor;
 
     const SVFGNode* uninitSource = nullptr;
     std::string uninitSourceKind;
@@ -144,12 +155,8 @@ struct SaberPendingReport
 class SaberSliceCollector
 {
 public:
-    void setSliceOutPath(const std::string& path) { sliceOutPath = path; }
-    void setReportOutPath(const std::string& path) { reportOutPath = path; }
-    void setMarkdownOutPath(const std::string& path) { markdownOutPath = path; }
-    const std::string& sliceOutPathRef() const { return sliceOutPath; }
-    const std::string& reportOutPathRef() const { return reportOutPath; }
-    const std::string& markdownOutPathRef() const { return markdownOutPath; }
+    void setAlertOutDir(const std::string& path) { alertOutDir = path; }
+    const std::string& alertOutDirRef() const { return alertOutDir; }
 
     bool collectUAFSlice(const GenericBug::EventStack& eventStack,
                          const std::string& reportKind, SaberSlice& out) const;
@@ -166,16 +173,13 @@ public:
     size_t size() const { return slices.size(); }
     const std::vector<SaberSlice>& getSlices() const { return slices; }
 
-    bool writeSlices(const char* generatedBy) const;
-    bool writeReport(const char* generatedBy) const;
-    bool writeMarkdown(const char* generatedBy) const;
+    bool writeAlerts(const char* generatedBy) const;
 
 private:
     std::string readCodeSnippet(const std::string& file, int line) const;
+    void addSourceContext(std::vector<SaberTraceNode>& trace) const;
 
-    std::string sliceOutPath;
-    std::string reportOutPath;
-    std::string markdownOutPath;
+    std::string alertOutDir;
     std::vector<SaberSlice> slices;
 };
 

@@ -361,6 +361,13 @@ protected:
         return true;
     }
 
+    /// Whether AllPathReachableSolve should finish with isSatisfiableForAll().
+    /// Double-free only needs VF guards plus isSatisfiableForPairs() in reportBug.
+    virtual bool needAllPathReachabilityCheck() const
+    {
+        return true;
+    }
+
     virtual bool isAllPathReachable()
     {
         return _curSlice->isAllReachable();

@@ -1761,8 +1761,36 @@ void UseAfterFreeChecker::queueUAFReport(GenericBug::EventStack eventStack,
     pending.bugType = GenericBug::USEAFTERFREE;
     pending.eventStack = std::move(eventStack);
     pending.uafReportKind = reportKind;
-    if (!queuePendingReport(std::move(pending),
-                            SaberSliceExportUtil::makeICFGPairLocKey(freeICFG, useICFG)))
+    PointerAnalysis* pta = getSVFG() == nullptr ? nullptr : getSVFG()->getPTA();
+    std::vector<std::string> objectParts;
+    if (pta != nullptr && freeICFG != nullptr)
+    {
+        for (const SVFGNode* freeNode : freeNodes)
+        {
+            if (freeNode->getICFGNode() != freeICFG)
+                continue;
+            PointsTo pointsTo;
+            collectAliasPtsForVar(pta, getFreedPointerVar(freeNode), pointsTo);
+            for (PointsTo::iterator it = pointsTo.begin(), eit = pointsTo.end(); it != eit; ++it)
+            {
+                const SVFVar* object = getPAG()->getGNode(*it);
+                if (object == nullptr)
+                    continue;
+                std::string part = object->getSourceLoc();
+                if (object->getType())
+                    part += "|" + object->getType()->toString();
+                objectParts.push_back(std::move(part));
+            }
+        }
+    }
+    std::sort(objectParts.begin(), objectParts.end());
+    objectParts.erase(std::unique(objectParts.begin(), objectParts.end()), objectParts.end());
+    for (const std::string& part : objectParts)
+        pending.uafObjectDescriptor += (pending.uafObjectDescriptor.empty() ? "" : ";") + part;
+    const std::string dedupKey =
+        SaberSliceExportUtil::makeICFGPairLocKey(freeICFG, useICFG) +
+        "#" + pending.uafObjectDescriptor;
+    if (!queuePendingReport(std::move(pending), dedupKey))
         return;
     ++saberTimeStat.uafReportedSources;
 }
