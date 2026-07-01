@@ -56,7 +56,7 @@ echo
 # Expected baseline:  <case>  <expected MUST>  <expected MAY (-1 = >=1, ignore exact)>
 # ----------------------------------------------------------------------------
 declare -a CASES=(
-    "stack_oob       2  -1"   # a[10], a[16] MUST; loop a[i] -> MAY
+    "stack_oob       2   0"   # a[10], a[16] MUST; safe() loop a[i] i<10 now proven in-bounds (no MAY)
     "single_byte     1   0"   # b[1] MUST; b[0] safe
     "heap_oob        3   0"   # malloc/calloc/realloc MUST; heap_safe none
     "memcpy_oob      3   0"   # memcpy/memset/strncpy MUST; copy_safe none
@@ -66,6 +66,7 @@ declare -a CASES=(
     "struct_oob      1   0"   # struct field index OOB MUST; struct_safe none
     "alloc_offbyone_memcpy_s  1  1"   # symbolic under-alloc: const_under MUST, cond_under MAY, exact safe
     "loop_oob        0  -1"   # off-by-one loop a[i] i<=10 -> MAY (>=1); safe_loop none; no MUST
+    "mask_idx        0   1"   # i=x&0xF in [0,15]: a[16] mask_safe SAFE; a[10] mask_oob MAY
 )
 
 pass=0

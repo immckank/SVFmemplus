@@ -29,6 +29,10 @@
 
 #include "BOF/RangeAnalysis.h"
 #include "SVFIR/SVFIR.h"
+#include "SVFIR/SVFStatements.h"
+#include "SVFIR/SVFVariables.h"
+#include "Graphs/ICFGNode.h"
+#include <cstdlib>
 using namespace SVF;
 using namespace std;
 
@@ -37,7 +41,10 @@ const int RangeAnalysis::MAX_AFFINE_DEPTH = 60;
 const size_t RangeAnalysis::MAX_AFFINE_TERMS = 16;
 
 RangeAnalysis::RangeAnalysis(){
-    
+    // Allow turning guard/loop narrowing off for A/B precision measurement.
+    if(const char* v = std::getenv("BOF_DISABLE_GUARD"))
+        if(v[0] && v[0] != '0')
+            guardEnabled = false;
 }
 
 bool RangeAnalysis::analyzeBufferRange(const StackObjVar* stackObjVar){
@@ -206,15 +213,42 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var, const ICFGNode* context,
                         case BinaryOPStmt::OpCode::AShr:  // Shift right (arithmetic)
                             var_range = Range::join(var_range, Range::ashr(analyzeVarRange(op1, context, depth+1), analyzeVarRange(op2, context, depth+1)));
                             break;
+                        // Bitwise ops: an *unresolved* operand resolves to
+                        // BOTTOM here (a leaf such as an unknown argument has no
+                        // def edge). BOTTOM is absorbing in bit_and/or/xor, which
+                        // would discard a perfectly sound mask bound -- e.g.
+                        // `x & 0xF` is provably in [0,15] for ANY x, yet an
+                        // unknown x (BOTTOM) collapses the AND to BOTTOM and the
+                        // index later degrades to TOP at handleGep, a false MAY.
+                        // Treat an unresolved bitwise operand as unknown (TOP):
+                        // bit_and(TOP,[0,15]) = [0,15] is the sound result.
                         case BinaryOPStmt::OpCode::And:  // Logical and
-                            var_range = Range::join(var_range, Range::bit_and(analyzeVarRange(op1, context, depth+1), analyzeVarRange(op2, context, depth+1)));
+                        {
+                            Range a = analyzeVarRange(op1, context, depth+1);
+                            Range b = analyzeVarRange(op2, context, depth+1);
+                            if(a.isBottom()) a = Range::TOP;
+                            if(b.isBottom()) b = Range::TOP;
+                            var_range = Range::join(var_range, Range::bit_and(a, b));
                             break;
+                        }
                         case BinaryOPStmt::OpCode::Or:  // Logical or
-                            var_range = Range::join(var_range, Range::bit_or(analyzeVarRange(op1, context, depth+1), analyzeVarRange(op2, context, depth+1)));
+                        {
+                            Range a = analyzeVarRange(op1, context, depth+1);
+                            Range b = analyzeVarRange(op2, context, depth+1);
+                            if(a.isBottom()) a = Range::TOP;
+                            if(b.isBottom()) b = Range::TOP;
+                            var_range = Range::join(var_range, Range::bit_or(a, b));
                             break;
+                        }
                         case BinaryOPStmt::OpCode::Xor:  // Logical xor
-                            var_range = Range::join(var_range, Range::bit_xor(analyzeVarRange(op1, context, depth+1), analyzeVarRange(op2, context, depth+1)));
+                        {
+                            Range a = analyzeVarRange(op1, context, depth+1);
+                            Range b = analyzeVarRange(op2, context, depth+1);
+                            if(a.isBottom()) a = Range::TOP;
+                            if(b.isBottom()) b = Range::TOP;
+                            var_range = Range::join(var_range, Range::bit_xor(a, b));
                             break;
+                        }
                     }
                 }
             }
@@ -255,7 +289,20 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var, const ICFGNode* context,
     // Put in cache. Values without a supported defining edge are unknown, not
     // unreachable; propagate TOP so callers still perform conservative checks.
     if(!var_range.isBottom())
+    {
+        // Guard- / loop-aware narrowing (query-time virtual pi-node): when this
+        // value is a memory load whose range is still (effectively) unbounded,
+        // try to tighten it using the branch predicates that dominate the load
+        // and, inside loops, the recognised monotone induction. Applied under
+        // every context (the dominating guard / induction is a structural fact
+        // independent of the call-site), and the bound side is re-evaluated
+        // under the *same* context so a context-bound limit stays consistent --
+        // crucially this keeps a given access point's offset interval identical
+        // across the contexts that reach it, so the report dedup collapses them.
+        if(guardEnabled)
+            var_range = refineLoad(var, var_range, context);
         setCachedVarRange(context, var, var_range);
+    }
     return var_range;
 }
 

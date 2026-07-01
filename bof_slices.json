@@ -1,0 +1,33 @@
+{
+  "schema": "bof-slice/v1",
+  "generated_by": "SVFmemplus-BOF",
+  "slice_count": 1,
+  "slices": [
+    {
+      "id": "GEP_OOB@tests/basic_tests/mask_idx.c:26:5",
+      "kind": "GEP_OOB",
+      "static_verdict": "MAY",
+      "access": {
+        "file": "tests/basic_tests/mask_idx.c",
+        "line": 26,
+        "col": 5,
+        "base": "arrayidx",
+        "index_expr": "O52",
+        "index_range_static": { "lower": "0", "upper": "15", "is_top": false, "is_bottom": false }
+      },
+      "buffer": {
+        "capacity": { "lower": "0", "upper": "9", "is_top": false, "is_bottom": false },
+        "is_heap": false,
+        "domain": "elements"
+      },
+      "induction": {
+        "var": "idxprom",
+        "init": "unknown",
+        "step": "unknown",
+        "update_op": "unknown"
+      },
+      "guards": [],
+      "code_snippet": "    a[i] = 1;            // SAFE: [0,15] subset of valid [0,15]\n    return a[0];\n}\n\nint mask_oob(int x)\n{\n    int a[10];           // valid [0,9]\n    int i = x & 0xF;     // i in [0,15] -> partial overlap -> MAY\n    a[i] = 2;\n    return a[0];\n}\n"
+    }
+  ]
+}

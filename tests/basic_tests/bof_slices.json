@@ -1,7 +1,7 @@
 {
   "schema": "bof-slice/v1",
   "generated_by": "SVFmemplus-BOF",
-  "slice_count": 6,
+  "slice_count": 5,
   "slices": [
     {
       "id": "GEP_OOB@loop_oob.c:20:14",
@@ -13,7 +13,7 @@
         "col": 14,
         "base": "arrayidx",
         "index_expr": "0 | 1 | O37+1",
-        "index_range_static": { "lower": "-INF", "upper": "INF", "is_top": false, "is_bottom": false }
+        "index_range_static": { "lower": "0", "upper": "10", "is_top": false, "is_bottom": false }
       },
       "buffer": {
         "capacity": { "lower": "0", "upper": "9", "is_top": false, "is_bottom": false },
@@ -41,7 +41,7 @@
         "col": 14,
         "base": "arrayidx",
         "index_expr": "O69",
-        "index_range_static": { "lower": "-INF", "upper": "INF", "is_top": true, "is_bottom": false }
+        "index_range_static": { "lower": "0", "upper": "81", "is_top": false, "is_bottom": false }
       },
       "buffer": {
         "capacity": { "lower": "0", "upper": "9", "is_top": false, "is_bottom": false },
@@ -93,7 +93,7 @@
         "col": 18,
         "base": "arrayidx",
         "index_expr": "0 | 1 | O177+1",
-        "index_range_static": { "lower": "-INF", "upper": "INF", "is_top": false, "is_bottom": false }
+        "index_range_static": { "lower": "0", "upper": "INF", "is_top": false, "is_bottom": false }
       },
       "buffer": {
         "capacity": { "lower": "0", "upper": "7", "is_top": false, "is_bottom": false },
@@ -136,34 +136,6 @@
       },
       "guards": [],
       "code_snippet": "// --- Case 5: nested loop with product index a[i*j] -------------------------\n//   for i<6: for j<6: a[i*j].  max i*j = 5*5 = 25 > capacity 16 -> REAL overflow.\nint product_index(void)\n{\n    int a[16];\n    int s = 0;\n    for (int i = 0; i < 6; i++)\n        for (int j = 0; j < 6; j++)\n            s += a[i * j];\n    return s;\n}\n"
-    },
-    {
-      "id": "GEP_OOB@loop_oob.c:82:14",
-      "kind": "GEP_OOB",
-      "static_verdict": "MAY",
-      "access": {
-        "file": "loop_oob.c",
-        "line": 82,
-        "col": 14,
-        "base": "arrayidx",
-        "index_expr": "0 | 1 | O269+1",
-        "index_range_static": { "lower": "-INF", "upper": "INF", "is_top": false, "is_bottom": false }
-      },
-      "buffer": {
-        "capacity": { "lower": "0", "upper": "9", "is_top": false, "is_bottom": false },
-        "is_heap": false,
-        "domain": "elements"
-      },
-      "induction": {
-        "var": "idxprom",
-        "init": "unknown",
-        "step": "1",
-        "update_op": "+"
-      },
-      "guards": [
-        { "predicate": "<", "lhs": "%256", "rhs": "10", "rhs_range": { "lower": "10", "upper": "10", "is_top": false, "is_bottom": false }, "enter_loop_when": "unknown", "valid": true }
-      ],
-      "code_snippet": "\n// --- Case 6: safe simple loop (contrast, should be SAFE) -------------------\n//   i in 0..9, capacity 10 -> in bounds.  Reported MAY but truly safe.\nint safe_loop(void)\n{\n    int a[10];\n    int s = 0;\n    for (int i = 0; i < 10; i++)\n        s += a[i];\n    return s;\n}\n"
     }
   ]
 }

@@ -55,24 +55,24 @@ public:
     }
 
     /// We start from here
-    virtual bool runOnModule(SVFIR* pag)
+    virtual bool runOnModule(SVFIR* pag) override
     {
         /// start analysis
         analyze();
         return false;
     }
 
-    inline bool isSourceLikeFun(const FunObjVar* fun)
+    inline bool isSourceLikeFun(const FunObjVar* fun) override
     {
         return SaberCheckerAPI::getCheckerAPI()->isFOpen(fun);
     }
     /// Whether the function is a heap deallocator (free/release memory)
-    inline bool isSinkLikeFun(const FunObjVar* fun)
+    inline bool isSinkLikeFun(const FunObjVar* fun) override
     {
         return SaberCheckerAPI::getCheckerAPI()->isFClose(fun);
     }
     /// Report file/close bugs
-    void reportBug(ProgSlice* slice);
+    void reportBug(ProgSlice* slice) override;
 
 protected:
     bool enableReachGlobalPrune() const override
