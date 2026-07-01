@@ -1,47 +1,19 @@
 {
   "schema": "bof-slice/v1",
   "generated_by": "SVFmemplus-BOF",
-  "slice_count": 5,
+  "slice_count": 1,
   "slices": [
     {
-      "id": "GEP_OOB@loop_oob.c:20:14",
+      "id": "GEP_OOB@mask_idx.c:26:5",
       "kind": "GEP_OOB",
       "static_verdict": "MAY",
       "access": {
-        "file": "loop_oob.c",
-        "line": 20,
-        "col": 14,
+        "file": "mask_idx.c",
+        "line": 26,
+        "col": 5,
         "base": "arrayidx",
-        "index_expr": "0 | 1 | O37+1",
-        "index_range_static": { "lower": "0", "upper": "10", "is_top": false, "is_bottom": false }
-      },
-      "buffer": {
-        "capacity": { "lower": "0", "upper": "9", "is_top": false, "is_bottom": false },
-        "is_heap": false,
-        "domain": "elements"
-      },
-      "induction": {
-        "var": "idxprom",
-        "init": "unknown",
-        "step": "1",
-        "update_op": "+"
-      },
-      "guards": [
-        { "predicate": "<=", "lhs": "%22", "rhs": "10", "rhs_range": { "lower": "10", "upper": "10", "is_top": false, "is_bottom": false }, "enter_loop_when": "unknown", "valid": true }
-      ],
-      "code_snippet": "\n// --- Case 1: classic off-by-one (linear, guard extractable) ----------------\n//   i in 0..10 -> a[10] escapes [0,9].  REAL overflow.\nint off_by_one(void)\n{\n    int a[10];\n    int s = 0;\n    for (int i = 0; i <= 10; i++)\n        s += a[i];\n    return s;\n}\n"
-    },
-    {
-      "id": "GEP_OOB@loop_oob.c:33:14",
-      "kind": "GEP_OOB",
-      "static_verdict": "MAY",
-      "access": {
-        "file": "loop_oob.c",
-        "line": 33,
-        "col": 14,
-        "base": "arrayidx",
-        "index_expr": "O69",
-        "index_range_static": { "lower": "0", "upper": "81", "is_top": false, "is_bottom": false }
+        "index_expr": "O52",
+        "index_range_static": { "lower": "0", "upper": "15", "is_top": false, "is_bottom": false }
       },
       "buffer": {
         "capacity": { "lower": "0", "upper": "9", "is_top": false, "is_bottom": false },
@@ -55,87 +27,7 @@
         "update_op": "unknown"
       },
       "guards": [],
-      "code_snippet": "//   Even with i < 10 the index i*i reaches 81, far past [0,9]. The index is a\n//   multiply, so neither the interval domain nor the lightweight affine form\n//   can bound it.  REAL overflow.\nint quadratic_index(void)\n{\n    int a[10];\n    int s = 0;\n    for (int i = 0; i < 10; i++)\n        s += a[i * i];\n    return s;\n}\n"
-    },
-    {
-      "id": "GEP_OOB@loop_oob.c:45:18",
-      "kind": "GEP_OOB",
-      "static_verdict": "MAY",
-      "access": {
-        "file": "loop_oob.c",
-        "line": 45,
-        "col": 18,
-        "base": "arrayidx",
-        "index_expr": "O116",
-        "index_range_static": { "lower": "-INF", "upper": "INF", "is_top": true, "is_bottom": false }
-      },
-      "buffer": {
-        "capacity": { "lower": "0", "upper": "19", "is_top": false, "is_bottom": false },
-        "is_heap": false,
-        "domain": "elements"
-      },
-      "induction": {
-        "var": "idxprom",
-        "init": "unknown",
-        "step": "unknown",
-        "update_op": "unknown"
-      },
-      "guards": [],
-      "code_snippet": "// --- Case 3: nested double loop, flattened 2D index a[i*cols + j] ----------\n//   rows=5, cols=5 -> max index 4*5 + 4 = 24, capacity is 20 -> REAL overflow.\nint nested_flatten(void)\n{\n    int g[20];\n    int s = 0;\n    for (int i = 0; i < 5; i++)\n        for (int j = 0; j < 5; j++)\n            s += g[i * 5 + j];\n    return s;\n}\n"
-    },
-    {
-      "id": "GEP_OOB@loop_oob.c:59:18",
-      "kind": "GEP_OOB",
-      "static_verdict": "MAY",
-      "access": {
-        "file": "loop_oob.c",
-        "line": 59,
-        "col": 18,
-        "base": "arrayidx",
-        "index_expr": "0 | 1 | O177+1",
-        "index_range_static": { "lower": "0", "upper": "INF", "is_top": false, "is_bottom": false }
-      },
-      "buffer": {
-        "capacity": { "lower": "0", "upper": "7", "is_top": false, "is_bottom": false },
-        "is_heap": false,
-        "domain": "elements"
-      },
-      "induction": {
-        "var": "idxprom",
-        "init": "unknown",
-        "step": "1",
-        "update_op": "+"
-      },
-      "guards": [
-        { "predicate": "<=", "lhs": "%163", "rhs": "0 | 1 | O183+1", "rhs_range": { "lower": "-INF", "upper": "INF", "is_top": false, "is_bottom": false }, "enter_loop_when": "unknown", "valid": true }
-      ],
-      "code_snippet": "//   SAFE, but the analyzer still reports MAY (it cannot prove j <= i < 8).\n//   The LLM must reason about the coupled guards to call this safe.\nint triangular(void)\n{\n    int a[8];\n    int s = 0;\n    for (int i = 0; i < 8; i++)\n        for (int j = 0; j <= i; j++)\n            s += a[j];\n    return s;\n}\n"
-    },
-    {
-      "id": "GEP_OOB@loop_oob.c:71:18",
-      "kind": "GEP_OOB",
-      "static_verdict": "MAY",
-      "access": {
-        "file": "loop_oob.c",
-        "line": 71,
-        "col": 18,
-        "base": "arrayidx",
-        "index_expr": "O219",
-        "index_range_static": { "lower": "-INF", "upper": "INF", "is_top": true, "is_bottom": false }
-      },
-      "buffer": {
-        "capacity": { "lower": "0", "upper": "15", "is_top": false, "is_bottom": false },
-        "is_heap": false,
-        "domain": "elements"
-      },
-      "induction": {
-        "var": "idxprom",
-        "init": "unknown",
-        "step": "unknown",
-        "update_op": "unknown"
-      },
-      "guards": [],
-      "code_snippet": "// --- Case 5: nested loop with product index a[i*j] -------------------------\n//   for i<6: for j<6: a[i*j].  max i*j = 5*5 = 25 > capacity 16 -> REAL overflow.\nint product_index(void)\n{\n    int a[16];\n    int s = 0;\n    for (int i = 0; i < 6; i++)\n        for (int j = 0; j < 6; j++)\n            s += a[i * j];\n    return s;\n}\n"
+      "code_snippet": "    a[i] = 1;            // SAFE: [0,15] subset of valid [0,15]\n    return a[0];\n}\n\nint mask_oob(int x)\n{\n    int a[10];           // valid [0,9]\n    int i = x & 0xF;     // i in [0,15] -> partial overlap -> MAY\n    a[i] = 2;\n    return a[0];\n}\n"
     }
   ]
 }

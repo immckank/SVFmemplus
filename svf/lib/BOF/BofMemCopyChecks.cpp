@@ -45,6 +45,38 @@
 using namespace SVF;
 
 // ===========================================================================
+// String length-oracle classifiers (std::string support / strlen-guard model).
+//
+// A strcpy/strcat source is frequently *not* a tracked char[] buffer -- it is a
+// field of an unknown incoming pointer (`f->d_name`) or the return of
+// std::string::data()/c_str(). In those cases the copied length is instead
+// bounded by a dominating "length oracle" (strlen(P) or std::string::size())
+// whose guarded value (e.g. `> 32`) is recovered via guardedValueRange.
+// ===========================================================================
+namespace
+{
+inline bool nameIsStrlen(const std::string& n)
+{
+    return n == "strlen" || n == "strnlen" || n == "__strlen_chk";
+}
+// libstdc++ (_ZNSt7__cxx11...) and libc++ (_ZNSt3__1...) both length-prefix the
+// selector in Itanium mangling, so matching "basic_string" + the length-tagged
+// method token is portable across standard libraries.
+inline bool nameIsStrSize(const std::string& n)
+{
+    return n.find("basic_string") != std::string::npos &&
+           (n.find("4size") != std::string::npos ||
+            n.find("6length") != std::string::npos);
+}
+inline bool nameIsStrData(const std::string& n)
+{
+    return n.find("basic_string") != std::string::npos &&
+           (n.find("4data") != std::string::npos ||
+            n.find("5c_str") != std::string::npos);
+}
+} // namespace
+
+// ===========================================================================
 // Feature 2: memory-copy / string API overflow checks.
 // ===========================================================================
 bool BufferOverflowChecker::getByteBuffer(const SVFVar* var, signed long long& capacity,
@@ -231,6 +263,56 @@ void BufferOverflowChecker::trySymbolicUnderAlloc(const SVFVar* bufArg,
 void BufferOverflowChecker::checkMemoryOps(SVFIR* pag)
 {
     ICFG* icfg = pag->getICFG();
+
+    // ---- Length-oracle pre-pass (std::string / strlen-guard modeling) ----
+    // Index every length oracle so a later strcpy/strcat can bound its source's
+    // copied length even when the source is not a tracked char[] buffer:
+    //   * strlen(P)                    -> keyed by locationToken(P)   (char*)
+    //   * std::string::size()/length() -> keyed by "S(" locationToken(this) ")"
+    // and remember which SSA values are std::string::data()/c_str() returns (the
+    // usual strcpy source) so they can be bridged to the size() oracle on the
+    // same string object. The oracle's return value is guard-refined at the copy
+    // site (guardedValueRange), turning `size()>32` into a [33, INF) lower bound.
+    std::map<std::string, const SVFVar*> lenOracleByPtr;  // strlen arg tok -> ret
+    std::map<std::string, const SVFVar*> lenOracleByStr;  // size 'this' key -> ret
+    std::map<const SVFVar*, std::string> dataRetToStr;    // data()/c_str() ret -> key
+    for (auto oit = icfg->begin(); oit != icfg->end(); ++oit)
+    {
+        const CallICFGNode* c = SVFUtil::dyn_cast<CallICFGNode>(oit->second);
+        if (!c)
+            continue;
+        const FunObjVar* f = c->getCalledFunction();
+        if (!f || c->arg_size() < 1)
+            continue;
+        const std::string nm = f->getName();
+        const bool isLen  = nameIsStrlen(nm);
+        const bool isSize = nameIsStrSize(nm);
+        const bool isData = nameIsStrData(nm);
+        if (!isLen && !isSize && !isData)
+            continue;
+
+        const SVFVar* subject = c->getArgument(0); // char* (strlen) or 'this' (string)
+        if (!subject)
+            continue;
+        const std::string tok = rangeAnalysis.locationToken(subject);
+        if (tok.empty())
+            continue;
+
+        const RetICFGNode* rn = c->getRetICFGNode();
+        if (!rn || !pag->callsiteHasRet(rn))
+            continue;
+        const SVFVar* ret = rn->getActualRet();
+        if (!ret)
+            continue;
+
+        if (isData)
+            dataRetToStr.emplace(ret, "S(" + tok + ")");
+        else if (isLen)
+            lenOracleByPtr.emplace(tok, ret);
+        else // isSize
+            lenOracleByStr.emplace("S(" + tok + ")", ret);
+    }
+
     for (auto nodeIt = icfg->begin(); nodeIt != icfg->end(); ++nodeIt)
     {
         const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(nodeIt->second);
@@ -303,20 +385,75 @@ void BufferOverflowChecker::checkMemoryOps(SVFIR* pag)
             Range lenBytes;
             if (strLike)
             {
-                // strcpy/strcat-like: copied length is bounded by the source
-                // string buffer's remaining capacity (including terminating nul).
+                // strcpy/strcat-like: the copied length is strlen(src)+1 bytes.
                 const u32_t srcIdx = (u32_t)rule.bufArgIdx + 1;
                 if (srcIdx >= argn)
                     continue;
+                const SVFVar* srcVar = call->getArgument(srcIdx);
+                if (!srcVar)
+                    continue;
+
+                bool haveLen = false;
+
+                // (1) Guarded length oracle on the same source. Gives a *lower*
+                //     bound (e.g. from `size()>32` / `strlen(d_name)>32`), which
+                //     is what can upgrade a strcpy to a MUST overflow.
+                Range oracleChars = Range::TOP;
+                auto dit = dataRetToStr.find(srcVar); // std::string data()/c_str()
+                if (dit != dataRetToStr.end())
+                {
+                    auto oit = lenOracleByStr.find(dit->second);
+                    if (oit != lenOracleByStr.end())
+                        oracleChars = rangeAnalysis.guardedValueRange(oit->second, call);
+                }
+                if (oracleChars.isTop()) // char* source guarded by strlen(src)
+                {
+                    auto oit = lenOracleByPtr.find(rangeAnalysis.locationToken(srcVar));
+                    if (oit != lenOracleByPtr.end())
+                        oracleChars = rangeAnalysis.guardedValueRange(oit->second, call);
+                }
+                if (!oracleChars.isBottom() && !oracleChars.isTop())
+                {
+                    signed long long lo = oracleChars.getLower();
+                    if (lo < 0)
+                        lo = 0;
+                    const signed long long hi = oracleChars.getUpper();
+                    const signed long long bLo =
+                        (lo >= Range::INF - 1024) ? Range::INF : lo + 1;
+                    const signed long long bHi =
+                        (hi >= Range::INF - 1024) ? Range::INF : hi + 1;
+                    lenBytes = Range(bLo < 1 ? 1 : bLo, bHi);
+                    haveLen = true;
+                }
+
+                // (2) Source-buffer capacity (upper bound). Original behaviour,
+                //     and the fallback when no guard applies; also tightens the
+                //     oracle's upper bound when both are known.
                 signed long long srcCap = 0;
                 Range srcOff;
                 bool srcHeap = false;
-                if (!getByteBuffer(call->getArgument(srcIdx), srcCap, srcOff, srcHeap))
+                if (getByteBuffer(srcVar, srcCap, srcOff, srcHeap))
+                {
+                    const signed long long maxLen = srcCap - srcOff.getLower();
+                    if (maxLen > 0)
+                    {
+                        const Range capRange(1, maxLen);
+                        if (!haveLen)
+                        {
+                            lenBytes = capRange;
+                            haveLen = true;
+                        }
+                        else
+                        {
+                            const Range m = Range::meet(lenBytes, capRange);
+                            if (!m.isBottom())
+                                lenBytes = m;
+                        }
+                    }
+                }
+
+                if (!haveLen)
                     continue; // unknown source length -> stay silent (no noise)
-                const signed long long maxLen = srcCap - srcOff.getLower();
-                if (maxLen <= 0)
-                    continue;
-                lenBytes = Range(1, maxLen);
             }
             else
             {

@@ -39,6 +39,15 @@ using namespace SVF;
 static const Option<std::string> BofReportFile(
     "bof-report", "Dump the buffer-overflow bug report to the given JSON file", "");
 
+// ---- "Client-special edition" display switch (output only) ----
+// When set, MAY (possible) overflows are rendered as MUST in the terminal
+// output and the JSON report. Detection / classification is unchanged; the
+// default (off) is what the experiments use.
+static const Option<bool> BofMayAsMust(
+    "bof-may-as-must",
+    "Render MAY (possible) overflows as MUST in the output (display only)",
+    false);
+
 // ---- LLM MAY-triage overlay (pure add-on; never alters sound results) ----
 static const Option<std::string> LlmConfigFile(
     "llm-config",
@@ -94,6 +103,9 @@ int main(int argc, char** argv)
     if (!LlmSidecar().empty())
         llmCfg.sidecarPath = LlmSidecar();
     bufferOverflowChecker.setLLMTriageConfig(llmCfg);
+
+    // Client-special edition: display MAY as MUST (output only).
+    bufferOverflowChecker.setMayAsMust(BofMayAsMust());
 
     bufferOverflowChecker.runOnModule(pag);
 

@@ -161,20 +161,26 @@ void BufferOverflowChecker::flushReports()
                 continue;
         }
 
+        // Presentation-only severity: the "client-special" switch renders a MAY
+        // as MUST. Applied strictly after the dedup above (which keys on the
+        // real pr.mustOverflow), so the set of emitted points is identical to
+        // the default run -- only the displayed label / bug kind changes.
+        const bool showMust = pr.mustOverflow || mayAsMust;
+
         // Structured report (requires a non-empty event stack).
         if (pr.loc)
         {
             GenericBug::EventStack eventStack;
             eventStack.push_back(SVFBugEvent(SVFBugEvent::SourceInst, pr.loc));
             bugReport.addAbsExecBug(
-                pr.mustOverflow ? GenericBug::FULLBUFOVERFLOW : GenericBug::PARTIALBUFOVERFLOW,
+                showMust ? GenericBug::FULLBUFOVERFLOW : GenericBug::PARTIALBUFOVERFLOW,
                 eventStack, pr.size.getLower(), pr.size.getUpper(),
                 pr.offset.getLower(), pr.offset.getUpper());
         }
 
         // Human-readable terminal output.
         SVFUtil::outs() << "[BufferOverflowChecker] "
-                        << (pr.mustOverflow ? "MUST" : "MAY") << " buffer overflow ("
+                        << (showMust ? "MUST" : "MAY") << " buffer overflow ("
                         << bofKindStr(pr.kind) << ")\n"
                         << "  Base       : " << friendlyLoc(pr.base->toString()) << "\n"
                         << "  Access     : " << pr.offset.toString() << "\n"

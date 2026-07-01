@@ -101,6 +101,15 @@ namespace SVF {
                 llmTriage.setConfig(cfg);
             }
 
+            /// "Client-special edition" display switch: when enabled, MAY
+            /// (possible) overflows are *rendered* as MUST in both the terminal
+            /// output and the structured bug report. This is purely a
+            /// presentation flip applied at emission time -- the underlying
+            /// MUST/MAY classification, dedup and LLM-triage logic are unchanged,
+            /// so the default (off) behaviour used by the experiments is
+            /// unaffected. Must be set before runOnModule().
+            void setMayAsMust(bool on) { mayAsMust = on; }
+
         private:
             /// Per-edge dispatch handlers (split from the old monolithic propagate).
             void handleGep(const GepStmt* gepStmt, const RangeFlowNode& srcNode);
@@ -239,6 +248,9 @@ namespace SVF {
             std::set<std::string> bugLoc;
             /// Deferred reports, resolved/emitted by flushReports().
             std::vector<PendingReport> pendingReports;
+            /// Presentation-only switch (see setMayAsMust): render MAY as MUST
+            /// at emission time. Off by default; never affects classification.
+            bool mayAsMust = false;
     };
 }
 

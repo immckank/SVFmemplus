@@ -303,6 +303,46 @@ Range RangeAnalysis::refineByGuards(const SVFVar* /*loadVar*/, const std::string
     return r;
 }
 
+Range RangeAnalysis::guardedValueRange(const SVFVar* var, const ICFGNode* useLoc)
+{
+    // Guard narrowing is the mechanism here; honour the ablation master switch
+    // so an A/B "guard off" run treats these opaque values as fully unknown.
+    if (!guardEnabled || !var || !useLoc)
+        return Range::TOP;
+
+    const SVFBasicBlock* useBB = useLoc->getBB();
+    const FunObjVar* fun = useLoc->getFun();
+    if (!useBB || !fun)
+        return Range::TOP;
+
+    buildGuardIndex();
+    const std::string tok = locationToken(var);
+    if (tok.empty())
+        return Range::TOP;
+    auto git = guardIndex.find(tok);
+    if (git == guardIndex.end())
+        return Range::TOP;
+
+    // Start from TOP (the value itself is opaque -- e.g. a strlen / size return)
+    // and meet every branch predicate whose guarded successor dominates the use.
+    Range r = Range::TOP;
+    for (const GuardEntry& g : git->second)
+    {
+        if (g.fun != fun)
+            continue;
+        if (g.succBB != useBB && !fun->dominate(g.succBB, useBB))
+            continue;
+        const Range bnd = analyzeVarRange(g.bndSide);
+        const Range iv = evalGuardInterval(g.predicate, g.idxIsOp0, g.condTrue, bnd);
+        if (iv.isTop())
+            continue;
+        const Range m = Range::meet(r, iv);
+        if (!m.isBottom())
+            r = m;
+    }
+    return r;
+}
+
 Range RangeAnalysis::refineByLoop(const SVFVar* /*loadVar*/, const std::string& valTok,
                                   const std::string& addrTok,
                                   const SVFBasicBlock* loadBB, const FunObjVar* fun,

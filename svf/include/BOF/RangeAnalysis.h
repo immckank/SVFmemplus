@@ -92,6 +92,15 @@ namespace SVF {
             /// of degrading to TOP across the Call edge.
             Range analyzeVarRange(const SVFVar* var, const ICFGNode* context, int depth = 0);
 
+            /// Guard-refined range of an arbitrary SSA value @p var at a use
+            /// site @p useLoc, starting from TOP and meeting every dominating
+            /// branch predicate that compares @p var to a bound. Unlike
+            /// refineLoad (which narrows *loads*), this queries the value's own
+            /// structural token in the guard index, so it also refines opaque
+            /// call-return values such as `strlen(p)` / `std::string::size()`.
+            /// Returns TOP when guard narrowing is disabled or no guard applies.
+            Range guardedValueRange(const SVFVar* var, const ICFGNode* useLoc);
+
             /// Bind a callee formal parameter's range at a specific call site so
             /// that context-sensitive analyzeVarRange can recover it.
             void bindFormalRange(const ICFGNode* context, const SVFVar* formal,
