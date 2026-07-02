@@ -28,17 +28,19 @@
  */
 
 #include "BOF/LLMTriage.h"
+#include "BOF/BofAlertReporter.h"
 #include "BOF/RangeAnalysis.h"
 #include "SVFIR/SVFIR.h"
 #include "SVFIR/SVFStatements.h"
 #include "SVFIR/SVFVariables.h"
 #include "Graphs/ICFGNode.h"
+#include "Util/SourceEvidence.h"
 #include "Util/cJSON.h"
 #include "Util/SVFUtil.h"
-
+#include "Util/UnifiedAlertWriter.h"
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
-#include <set>
 #include <sstream>
 
 using namespace SVF;
@@ -195,14 +197,17 @@ std::string BofSlice::toJson(const std::string& ind) const
     os << i3 << "\"line\": " << line << ",\n";
     os << i3 << "\"col\": " << col << ",\n";
     os << i3 << "\"base\": \"" << jsonEscape(base) << "\",\n";
+    os << i3 << "\"ir\": \"" << jsonEscape(ir) << "\",\n";
     os << i3 << "\"index_expr\": \"" << jsonEscape(indexExpr) << "\",\n";
-    os << i3 << "\"index_range_static\": " << sliceRangeJson(indexRange) << "\n";
+    os << i3 << "\"index_range_static\": " << sliceRangeJson(indexRange) << ",\n";
+    os << i3 << "\"access_range\": " << sliceRangeJson(accessRange) << "\n";
     os << i2 << "},\n";
 
     os << i2 << "\"buffer\": {\n";
     os << i3 << "\"capacity\": " << sliceRangeJson(capacity) << ",\n";
     os << i3 << "\"is_heap\": " << (isHeap ? "true" : "false") << ",\n";
-    os << i3 << "\"domain\": \"" << jsonEscape(domain) << "\"\n";
+    os << i3 << "\"domain\": \"" << jsonEscape(domain) << "\",\n";
+    os << i3 << "\"access_kind\": \"" << jsonEscape(reportKind) << "\"\n";
     os << i2 << "},\n";
 
     os << i2 << "\"induction\": {\n";
@@ -293,26 +298,17 @@ bool LLMTriage::collectSlice(const SVFVar* base, const SVFVar* indexVar,
         return false;
 
     // ---- access point (parse SVF's getSourceLoc JSON: {"ln","cl","fl"}) ----
-    out.file.clear();
-    out.line = 0;
-    out.col = 0;
-    const std::string locJson = loc->getSourceLoc();
-    if (cJSON* lj = cJSON_Parse(locJson.c_str()))
-    {
-        if (cJSON* ln = cJSON_GetObjectItem(lj, "ln"))
-            if (cJSON_IsNumber(ln)) out.line = (int)ln->valuedouble;
-        if (cJSON* cl = cJSON_GetObjectItem(lj, "cl"))
-            if (cJSON_IsNumber(cl)) out.col = (int)cl->valuedouble;
-        if (cJSON* fl = cJSON_GetObjectItem(lj, "fl"))
-            if (cJSON_IsString(fl) && fl->valuestring) out.file = fl->valuestring;
-        cJSON_Delete(lj);
-    }
+    const SourceLocation location = parseSourceLocation(loc->getSourceLoc());
+    out.file = location.file;
+    out.line = location.line;
+    out.col = location.column;
 
     out.kind = "GEP_OOB";
     out.staticVerdict = "MAY";
     out.id = out.kind + "@" + out.file + ":" + std::to_string(out.line) + ":" +
              std::to_string(out.col);
     out.base = friendlyName(base);
+    out.ir = base ? base->toString() : "";
 
     // ---- index symbolic form + static range ----
     if (indexVar)
@@ -436,32 +432,7 @@ void LLMTriage::extractInduction(const SVFVar* indexVar, RangeAnalysis& ra,
 
 std::string LLMTriage::readCodeSnippet(const std::string& file, int line) const
 {
-    if (file.empty() || line <= 0)
-        return "";
-    std::ifstream in(file);
-    if (!in)
-        return "";
-
-    // Window biased upward to capture the enclosing `for (...)` header.
-    const int before = 8;
-    const int after = 2;
-    const int from = (line - before > 1) ? (line - before) : 1;
-    const int to = line + after;
-
-    std::string out;
-    std::string cur;
-    int n = 0;
-    while (std::getline(in, cur))
-    {
-        ++n;
-        if (n < from)
-            continue;
-        if (n > to)
-            break;
-        out += cur;
-        out += "\n";
-    }
-    return out;
+    return readSourceSnippet(file, line, 8, 2);
 }
 
 // ===========================================================================
@@ -489,6 +460,106 @@ bool LLMTriage::writeSlices() const
     os << (slices.empty() ? "" : "\n  ") << "]\n";
     os << "}\n";
     return true;
+}
+
+bool BofAlertReporter::write(const LLMTriageConfig& cfg,
+                             const std::vector<BofSlice>& slices)
+{
+    if (cfg.alertOutDir.empty())
+        return false;
+
+    UnifiedAlertWriter writer(
+        (std::filesystem::path(cfg.alertOutDir) / "alerts").string(),
+        "buffer_overflow");
+    bool ok = true;
+    for (const BofSlice& s : slices)
+    {
+        const std::string identity =
+            "BUFFER_OVERFLOW|" + s.kind + "|" + s.staticVerdict + "|" +
+            s.file + "|" + std::to_string(s.line) + "|" +
+            std::to_string(s.col) + "|" + s.base + "|" +
+            s.accessRange.lower + ":" + s.accessRange.upper + "|" +
+            s.capacity.lower + ":" + s.capacity.upper;
+        const std::string digest = alertSha256(identity);
+
+        std::ostringstream os;
+        os << "{\n"
+           << "  \"alert_id\": \"sha256:" << digest << "\",\n"
+           << "  \"category\": \"BUFFER_OVERFLOW\",\n"
+           << "  \"access\": {\n"
+           << "    \"location\": { \"file\": \"" << jsonEscape(s.file)
+           << "\", \"line\": " << s.line << ", \"column\": " << s.col << " },\n"
+           << "    \"kind\": \"" << jsonEscape(s.kind) << "\",\n"
+           << "    \"base\": \"" << jsonEscape(s.base) << "\",\n"
+           << "    \"ir\": \"" << jsonEscape(s.ir) << "\",\n"
+           << "    \"index_or_length_expression\": \"" << jsonEscape(s.indexExpr) << "\",\n"
+           << "    \"range\": " << sliceRangeJson(s.accessRange) << ",\n"
+           << "    \"source_context\": \"" << jsonEscape(s.codeSnippet) << "\"\n"
+           << "  },\n"
+           << "  \"buffer\": {\n"
+           << "    \"capacity\": " << sliceRangeJson(s.capacity) << ",\n"
+           << "    \"is_heap\": " << (s.isHeap ? "true" : "false") << ",\n"
+           << "    \"domain\": \"" << jsonEscape(s.domain) << "\"\n"
+           << "  },\n"
+           << "  \"variables\": [\n"
+           << "    { \"name\": \"" << jsonEscape(s.induction.var)
+           << "\", \"expression\": \"" << jsonEscape(s.indexExpr)
+           << "\", \"initial_range\": " << sliceRangeJson(s.indexRange)
+           << ", \"final_range\": " << sliceRangeJson(s.accessRange) << " }\n"
+           << "  ],\n"
+           << "  \"range_analysis\": [\n"
+           << "    { \"operation\": \"range_seed\", \"inputs\": ["
+           << "{ \"variable\": \"" << jsonEscape(s.indexExpr)
+           << "\", \"range\": " << sliceRangeJson(s.indexRange)
+           << " }], \"constraint\": \"none\", \"output_range\": "
+           << sliceRangeJson(s.indexRange)
+           << ", \"explanation\": \"Seed the index or transfer-length range.\" }";
+
+        if (s.induction.var != "unknown")
+            os << ",\n    { \"operation\": \"induction_propagation\", \"inputs\": ["
+               << "{ \"variable\": \"" << jsonEscape(s.induction.var)
+               << "\", \"init\": \"" << jsonEscape(s.induction.init)
+               << "\", \"step\": \"" << jsonEscape(s.induction.step)
+               << "\" }], \"constraint\": \"" << jsonEscape(s.induction.updateOp)
+               << jsonEscape(s.induction.step) << "\", \"output_range\": "
+               << sliceRangeJson(s.indexRange)
+               << ", \"explanation\": \"Propagate the induction recurrence.\" }";
+        for (const GuardInfo& g : s.guards)
+            os << ",\n    { \"operation\": \"guard_narrowing\", \"inputs\": ["
+               << "{ \"variable\": \"" << jsonEscape(g.lhs) << "\", \"range\": "
+               << sliceRangeJson(s.indexRange) << " }, { \"variable\": \""
+               << jsonEscape(g.rhs) << "\", \"range\": "
+               << sliceRangeJson(g.rhsRange) << " }], \"constraint\": \""
+               << jsonEscape(g.lhs + " " + g.predicate + " " + g.rhs)
+               << "\", \"output_range\": " << sliceRangeJson(s.indexRange)
+               << ", \"explanation\": \"Apply a controlling comparison.\" }";
+        os << ",\n    { \"operation\": \"access_range\", \"inputs\": ["
+           << "{ \"base\": \"" << jsonEscape(s.base) << "\" }, "
+           << "{ \"index_or_length\": \"" << jsonEscape(s.indexExpr)
+           << "\" }], \"constraint\": \"domain=" << jsonEscape(s.domain)
+           << "\", \"output_range\": " << sliceRangeJson(s.accessRange)
+           << ", \"explanation\": \"Compute the final byte or element range touched.\" },\n"
+           << "    { \"operation\": \"bounds_comparison\", \"inputs\": ["
+           << "{ \"access_range\": " << sliceRangeJson(s.accessRange) << " }, "
+           << "{ \"valid_range\": " << sliceRangeJson(s.capacity)
+           << " }], \"constraint\": \"access_range must be contained in valid_range\", "
+           << "\"output_range\": " << sliceRangeJson(s.accessRange)
+           << ", \"explanation\": \"Static checker verdict: "
+           << jsonEscape(s.staticVerdict) << ".\" }\n"
+           << "  ],\n"
+           << "  \"evidence\": { \"checker\": { \"name\": \"SVFmemplus-BOF\", "
+           << "\"verdict\": \"" << jsonEscape(s.staticVerdict)
+           << "\", \"report_type\": \"" << jsonEscape(s.kind)
+           << "\", \"analysis_degraded\": " << (s.indexRange.isTop ? "true" : "false")
+           << " } },\n"
+           << "  \"classification\": null,\n"
+           << "  \"reason\": \"\"\n"
+           << "}\n";
+
+        ok = writer.write(identity, os.str()) && ok;
+    }
+
+    return writer.removeStale() && ok;
 }
 
 bool LLMTriage::runSidecarAndLoad(std::map<std::string, LLMVerdict>& out) const

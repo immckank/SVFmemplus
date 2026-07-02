@@ -88,7 +88,7 @@ protected:
         return true;
     }
 
-    const char* sliceExportGeneratedBy() const override;
+    SaberSliceKind sliceExportKind() const override;
     void onPendingReportsFlushed(u32_t pendingCount, u32_t emittedCount) override;
 
 private:

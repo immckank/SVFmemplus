@@ -82,9 +82,9 @@ protected:
         return false;
     }
 
-    const char* sliceExportGeneratedBy() const override
+    SaberSliceKind sliceExportKind() const override
     {
-        return "SVFmemplus-DoubleFreeChecker";
+        return SaberSliceKind::DOUBLE_FREE;
     }
 };
 

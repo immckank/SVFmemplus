@@ -38,6 +38,8 @@ using namespace SVF;
 
 static const Option<std::string> BofReportFile(
     "bof-report", "Dump the buffer-overflow bug report to the given JSON file", "");
+static const Option<std::string> ReportDir(
+    "report-dir", "Write unified BOF alerts under <dir>/alerts/buffer_overflow", "");
 
 // ---- "Client-special edition" display switch (output only) ----
 // When set, MAY (possible) overflows are rendered as MUST in the terminal
@@ -102,6 +104,7 @@ int main(int argc, char** argv)
         llmCfg.sliceOutPath = LlmSliceOut();
     if (!LlmSidecar().empty())
         llmCfg.sidecarPath = LlmSidecar();
+    llmCfg.alertOutDir = ReportDir();
     bufferOverflowChecker.setLLMTriageConfig(llmCfg);
 
     // Client-special edition: display MAY as MUST (output only).

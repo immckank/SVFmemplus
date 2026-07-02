@@ -98,13 +98,16 @@ struct BofSlice {
     int line = 0;
     int col = 0;
     std::string base;              ///< buffer base (friendly value name)
+    std::string ir;                ///< IR carrying the base/access value
     std::string indexExpr = "unknown"; ///< symbolic affine form of the index
     SliceRange  indexRange;        ///< static range of the index (typically TOP)
+    SliceRange  accessRange;       ///< final byte/element range checked by BOF
 
     // ---- buffer ----
     SliceRange  capacity;          ///< valid index/byte range of the buffer
     bool        isHeap = false;
     std::string domain = "elements"; ///< "elements" | "bytes"
+    std::string reportKind = "GEP_OOB";
 
     // ---- loop structure ----
     InductionInfo induction;
@@ -129,6 +132,7 @@ struct LLMTriageConfig {
     std::string verdictPath = "bof_verdicts.json";
     std::string sidecarPath;       ///< python sidecar script; empty => skip LLM
     std::string pythonExe = "python3";
+    std::string alertOutDir;
 
     /// Merge values from a JSON config file (missing keys keep current values).
     /// @return false if the file cannot be read/parsed (caller may then fall

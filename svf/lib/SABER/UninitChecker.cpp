@@ -42,9 +42,9 @@ typedef FIFOWorkList<const SVFGNode*> ForwardWorkList;
 static constexpr double kSlowSourceReportSec = 1.0;
 static constexpr double kSlowPathCheckSec = 3.0;
 
-const char* UninitChecker::sliceExportGeneratedBy() const
+SaberSliceKind UninitChecker::sliceExportKind() const
 {
-    return "SVFmemplus-UninitChecker";
+    return SaberSliceKind::UNINIT_USE;
 }
 
 void UninitChecker::onPendingReportsFlushed(u32_t pendingCount, u32_t emittedCount)

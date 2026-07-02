@@ -56,9 +56,9 @@ void LeakChecker::prepareSliceCollector()
     sliceCollector_.setAlertOutDir(s_alertOutDir_);
 }
 
-const char* LeakChecker::sliceExportGeneratedBy() const
+SaberSliceKind LeakChecker::sliceExportKind() const
 {
-    return "SVFmemplus-LeakChecker";
+    return SaberSliceKind::MEMORY_LEAK;
 }
 
 void LeakChecker::collectSliceForPending(const SaberPendingReport& pending)
@@ -119,7 +119,7 @@ void LeakChecker::finalize()
     {
         if (!sliceCollector_.alertOutDirRef().empty())
         {
-            sliceCollector_.writeAlerts(sliceExportGeneratedBy());
+            sliceCollector_.writeAlerts(sliceExportKind());
             SVFUtil::outs() << "[SaberAlert] exported " << sliceCollector_.size()
                             << " alert(s) to " << sliceCollector_.alertOutDirRef() << "\n";
         }

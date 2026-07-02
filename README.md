@@ -11,7 +11,9 @@ Saber 当前支持：
 - `-uaf`：释放后使用（`UseAfterFree`）
 - `-uninit`：未初始化使用（`Uninitialized Use`）
 
-`bof` 工具用于检测缓冲区越界（`BufferOverflow`）。本轮报告格式优化只作用于 Saber，尚未改造 BOF。
+`bof` 工具用于检测缓冲区越界（`BufferOverflow`），通过
+`-report-dir=<dir>` 直接输出统一的
+`alerts/buffer_overflow/<sha256>.json` 单告警文件。
 
 每条告警输出为独立 JSON。除 leak 外，`path` 是一条裁剪后的 SVFG
 值流 witness；leak 的 `paths` 是可能安全释放对象的路径，
@@ -87,7 +89,7 @@ saber -uninit \
 
 将 Saber 的输出目录配置为 FPhandler 的 `OUTPUT_DIR`。FPhandler 会：
 
-1. 从 `alerts/` 递归发现单警报 JSON；
+1. 按 `defect_types` 从 `alerts/` 读取对应类别的单警报 JSON；
 2. 直接使用警报 path、源码上下文和 checker 证据；
 3. 将 `classification` 与 `reason` 原子写回同一文件。
 

@@ -34,6 +34,7 @@
  */
 
 #include "BOF/BufferOverflowChecker.h"
+#include "BOF/BofAlertReporter.h"
 #include "Graphs/ICFGNode.h"
 #include "Util/SVFUtil.h"
 
@@ -152,6 +153,18 @@ const char* bofKindStr(BofKind kind)
     }
     return "access";
 }
+
+const char* bofKindCode(BofKind kind)
+{
+    switch (kind)
+    {
+    case BofKind::GEP_OOB:    return "GEP_OOB";
+    case BofKind::MEMCPY_OOB: return "MEMCPY_OOB";
+    case BofKind::MEMSET_OOB: return "MEMSET_OOB";
+    case BofKind::STRCPY_OOB: return "STRCPY_OOB";
+    }
+    return "UNKNOWN";
+}
 } // namespace
 
 void BufferOverflowChecker::reportBufferOverflowError(const SVFVar* base, const Range& offset,
@@ -269,28 +282,42 @@ void BufferOverflowChecker::flushReports()
             SVFUtil::outs() << "  Location   : " << friendlyLoc(pr.loc->getSourceLoc()) << "\n";
         SVFUtil::outs() << "\n";
 
-        // LLM MAY-triage overlay (pure add-on): slice every surviving GEP_OOB
-        // MAY carrying a symbolic index (loop-induction or guarded). After the
-        // guard/loop narrowing such an index may now be a finite interval rather
-        // than TOP, so we no longer gate on unboundedness. Read-only over the
-        // IR; the sound report emitted above is untouched.
-        if (!pr.mustOverflow && pr.kind == BofKind::GEP_OOB &&
-            pr.indexVar && pr.loc)
+        // Collect structured evidence for every emitted BOF warning.  The same
+        // evidence feeds the unified alert writer and, for eligible MAY GEPs,
+        // the optional legacy sidecar.
+        if (pr.loc)
         {
             BofSlice slice;
             if (llmTriage.collectSlice(pr.base, pr.indexVar, pr.size, pr.isHeap,
                                        pr.loc, rangeAnalysis, slice))
             {
+                slice.kind = bofKindCode(pr.kind);
+                slice.reportKind = bofKindCode(pr.kind);
+                slice.staticVerdict = pr.mustOverflow ? "MUST" : "MAY";
+                slice.accessRange = SliceRange::from(pr.offset);
+                slice.id = slice.kind + "@" + slice.file + ":" +
+                           std::to_string(slice.line) + ":" +
+                           std::to_string(slice.col) + ":" +
+                           slice.staticVerdict + ":" + pr.offset.toString();
                 llmTriage.addSlice(slice);
-                triagedMays.emplace_back(slice.id, friendlyLoc(pr.loc->getSourceLoc()));
+                if (!pr.mustOverflow && pr.kind == BofKind::GEP_OOB && pr.indexVar)
+                    triagedMays.emplace_back(slice.id, friendlyLoc(pr.loc->getSourceLoc()));
             }
         }
     }
 
-    // ===== LLM MAY-triage tail: always export slices; optionally annotate. ====
+    // Unified alerts are the primary BOF output. Run the reporter even when
+    // there are no findings so stale files from the previous run are removed.
+    if (!llmTriage.config().alertOutDir.empty() &&
+        BofAlertReporter::write(llmTriage.config(), llmTriage.getSlices()))
+        SVFUtil::outs() << "[BOFAlert] exported " << llmTriage.size()
+                        << " unified alert(s)\n";
+
+    // The legacy aggregate exists only as an internal exchange file when the
+    // optional sidecar is enabled.
     if (!llmTriage.empty())
     {
-        if (llmTriage.writeSlices())
+        if (llmTriage.config().hasApi() && llmTriage.writeSlices())
             SVFUtil::outs() << "[LLMTriage] exported " << llmTriage.size()
                             << " slice(s) to " << llmTriage.config().sliceOutPath
                             << "\n";
@@ -321,11 +348,6 @@ void BufferOverflowChecker::flushReports()
                                     << tm.second << "\n\n";
                 }
             }
-        }
-        else if (!llmTriage.config().hasApi())
-        {
-            SVFUtil::outs() << "[LLMTriage] no LLM endpoint configured; slices "
-                               "exported for manual review only.\n";
         }
     }
 }

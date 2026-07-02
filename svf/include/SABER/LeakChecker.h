@@ -126,7 +126,7 @@ protected:
 
     bool sliceExportEnabled() const;
     void prepareSliceCollector();
-    virtual const char* sliceExportGeneratedBy() const;
+    virtual SaberSliceKind sliceExportKind() const;
     void clearPendingReports();
     bool queuePendingReport(SaberPendingReport&& report, const std::string& dedupKey);
     void flushPendingReports();

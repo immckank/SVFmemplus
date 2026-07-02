@@ -24,9 +24,9 @@ using namespace SVFUtil;
 static constexpr double kSlowSourceReportSec = 1.0;
 static constexpr double kSlowPairCheckSec = 3.0;
 
-const char* UseAfterFreeChecker::sliceExportGeneratedBy() const
+SaberSliceKind UseAfterFreeChecker::sliceExportKind() const
 {
-    return "SVFmemplus-UseAfterFreeChecker";
+    return SaberSliceKind::USE_AFTER_FREE;
 }
 
 void UseAfterFreeChecker::onPendingReportsFlushed(u32_t pendingCount, u32_t emittedCount)

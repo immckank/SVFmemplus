@@ -173,7 +173,7 @@ public:
     size_t size() const { return slices.size(); }
     const std::vector<SaberSlice>& getSlices() const { return slices; }
 
-    bool writeAlerts(const char* generatedBy) const;
+    bool writeAlerts(SaberSliceKind category) const;
 
 private:
     std::string readCodeSnippet(const std::string& file, int line) const;
