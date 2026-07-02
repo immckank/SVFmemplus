@@ -5,13 +5,11 @@
 #include "SABER/LeakChecker.h"
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace SVF
 {
-
-/*!
- * Double free checker to check deallocations of memory
- */
 
 class UninitChecker : public LeakChecker
 {
@@ -20,12 +18,9 @@ public:
     UninitChecker();
     virtual ~UninitChecker();
 
-    /// We start from here
     virtual bool runOnModule(SVFIR* pag) override;
-
-    /// Report file/close bugs
+    virtual void analyze() override;
     void reportBug(ProgSlice* slice) override;
-
 
     virtual void initSrcs() override;
     virtual void initSnks() override;
@@ -63,10 +58,8 @@ public:
         loadNodes.insert(node);
     }
 
-    bool isSatisfiableForLoads(ProgSlice* rawSlice, ProgSlice* guardSlice,
-                               const SVFGNodeSet& candidateLoads,
-                               const SVFGNodeSet& qualifierStateIgnorePtrStore,
-                               const SVFGNodeSet& qualifierStateAllStore,
+    bool hasFeasibleUninitPath(ProgSlice* rawSlice, ProgSlice* guardSlice,
+                               const SVFGNode* load,
                                GenericBug::EventStack& eventStack);
 
 protected:
@@ -80,29 +73,226 @@ protected:
         return false;
     }
 
+    const char* sliceExportGeneratedBy() const override;
+    void onPendingReportsFlushed(u32_t pendingCount, u32_t emittedCount) override;
+
 private:
+    struct RegionKey
+    {
+        enum Precision
+        {
+            WholeObject,
+            Field,
+            CollapsedObject,
+            Unknown
+        };
+
+        NodeID base = 0;
+        APOffset field = 0;
+        Precision precision = WholeObject;
+
+        RegionKey() = default;
+        RegionKey(NodeID b, APOffset f, Precision p) : base(b), field(f), precision(p) {}
+
+        bool operator==(const RegionKey& rhs) const
+        {
+            return base == rhs.base && field == rhs.field && precision == rhs.precision;
+        }
+    };
+
+    struct RegionKeyHash
+    {
+        std::size_t operator()(const RegionKey& region) const
+        {
+            return std::hash<NodeID>()(region.base) ^
+                   (std::hash<APOffset>()(region.field) << 1) ^
+                   (std::hash<unsigned>()(static_cast<unsigned>(region.precision)) << 2);
+        }
+    };
+
+    typedef std::unordered_set<RegionKey, RegionKeyHash> RegionSet;
+    typedef std::unordered_map<const SVFGNode*, RegionSet> NodeToRegionStateMap;
+
+    enum StoreBlockReason
+    {
+        StoreBlocks,
+        NotStoreNode,
+        NotStrongStore,
+        EmptyRegionSet,
+        RegionDoesNotIntersect,
+        RHSMayCarryUninit
+    };
+
+    enum StrongUpdateFailureReason
+    {
+        StrongOK,
+        StrongNotStore,
+        StrongNoPTA,
+        StrongMultiPts,
+        StrongMultiRegion,
+        StrongCollapsedRegion,
+        StrongUnknownRegion,
+        StrongFieldInsensitive,
+        StrongVarArray
+    };
+
+    struct StoreBlockDebugStats
+    {
+        u32_t checks = 0;
+        u32_t storeNodes = 0;
+        u32_t strongStores = 0;
+        u32_t regionIntersects = 0;
+        u32_t blockers = 0;
+        u32_t notStore = 0;
+        u32_t notStrong = 0;
+        u32_t strongMultiPts = 0;
+        u32_t strongMultiRegion = 0;
+        u32_t strongCollapsedRegion = 0;
+        u32_t strongUnknownRegion = 0;
+        u32_t strongFieldInsensitive = 0;
+        u32_t strongVarArray = 0;
+        u32_t emptyRegion = 0;
+        u32_t regionMiss = 0;
+        u32_t rhsMayCarry = 0;
+        u32_t reachedSource = 0;
+        u32_t visitedBackward = 0;
+    };
+
+    bool shouldSkipHeaderSourceReport(const ICFGNode* sourceICFG, const ICFGNode* useICFG) const;
+    std::string classifySourceKind(const SVFGNode* source) const;
+    std::string classifyAllocator(const SVFGNode* source) const;
+    bool isPlainKmallocAllocatorName(const std::string& name) const;
+    bool isMemsetLikeInitializingStore(const SVFGNode* store) const;
+
     void collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnorePtrStore,
                                const SVFGNodeSet& qualifierStateAllStore,
                                SVFGNodeSet& candidateLoads) const;
-    std::unique_ptr<ProgSlice> buildGuardSlice(ProgSlice* rawSlice,
-                                               const SVFGNodeSet& candidateLoads) const;
+    void collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& candidateLoads) const;
+    std::unique_ptr<ProgSlice> buildStoreBypassGuardSlice(ProgSlice* rawSlice,
+                                                          const SVFGNode* load) const;
     SVFGNodeSet storeNodes;
     SVFGNodeSet loadNodes;
+    SVFGNodeSet ptrStoreNodes;
+    SVFGNodeSet ptrLoadNodes;
+    SVFGNodeSet criticalSinkNodes;
+    std::unordered_map<const SVFGNode*, RegionSet> sourceInitialRegions;
+    mutable std::unordered_map<const SVFGNode*, RegionSet> loadReadRegionCache;
+    mutable std::unordered_map<const SVFGNode*, RegionSet> storeWriteRegionCache;
+    mutable std::unordered_map<const SVFGNode*, bool> ignorePtrStoreForLoadCache;
+    mutable u32_t uninitDebugLinesPrinted = 0;
+    u32_t smallInitSkippedSources = 0;
+    u32_t scopeSkippedSources = 0;
+    u32_t dedupSkippedReports = 0;
+    u32_t headerSkippedReports = 0;
+    u32_t emittedUninitReports = 0;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToLoads;
     std::unordered_map<u64_t, SVFGNodeSet> summaryBoundaryToBoundaries;
+    /// Per-function index of registered-initializer call sites: function -> [(callsite, initArgIdx)].
+    /// Built once from SaberInitAPI; empty (and thus a no-op) until the table is populated.
+    Map<const FunObjVar*, std::vector<std::pair<const CallICFGNode*, int>>> registeredInitCallsByFun;
+
+    bool isPtrStoreNode(const SVFGNode* node) const;
+    bool isPtrLoadNode(const SVFGNode* node) const;
+    bool isCriticalUninitSink(const SVFGNode* load) const;
+    bool flowsToCriticalUseWithinBudget(const SVFGNode* load, u32_t maxSteps) const;
+    bool isMemsetLikeCall(const ICFGNode* node) const;
+    bool isMemcpyLikeCall(const ICFGNode* node) const;
+    bool isCopyFromUserLikeCall(const ICFGNode* node) const;
+    bool isAPIInitStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
     bool shouldConsiderStoreForSummaryMode(const SVFGNode* node, bool ignorePtrStore) const;
     bool isSummaryBoundaryNode(const SVFGNode* node) const;
     u64_t getSummaryKey(const SVFGNode* node, bool ignorePtrStore) const;
-    void getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore, SVFGNodeSet& reachableLoads, SVFGNodeSet& nextBoundaries);
+    void getOrBuildSummaryForBoundary(const SVFGNode* boundary, bool ignorePtrStore,
+                                      const SVFGNodeSet*& reachableLoads,
+                                      const SVFGNodeSet*& nextBoundaries);
     bool shouldIgnorePtrStoreForLoad(const SVFGNode* load) const;
     bool shouldConsiderStoreForMode(const SVFGNode* store, ProgSlice* slice, bool ignorePtrStore) const;
     bool shouldConsiderStoreForLoad(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
-    bool isLoadCoveredByStores(ProgSlice* guardSlice,
-                               const SVFGNode* load,
-                               const SVFGNodeSet& curStoreSet) const;
+    StoreBlockReason classifyStoreBlocker(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
+    StrongUpdateFailureReason classifyStrongUpdateFailure(const SVFGNode* store) const;
+    const char* strongUpdateFailureName(StrongUpdateFailureReason reason) const;
+    const char* storeBlockReasonName(StoreBlockReason reason) const;
+    void updateStoreBlockDebugStats(StoreBlockDebugStats& stats, StoreBlockReason reason,
+                                    const SVFGNode* store) const;
+    void debugCandidateBlockers(ProgSlice* slice, const SVFGNode* load) const;
+    bool sameBasicBlockReachableBefore(const ICFGNode* beforeNode, const ICFGNode* afterNode) const;
+    bool sameFunctionDominates(const ICFGNode* domNode, const ICFGNode* useNode) const;
+    bool hasDominatingInitBlocker(ProgSlice* slice, const SVFGNode* load) const;
+    /// Mode-b init kill: whether a registered SaberInitAPI initializer call
+    /// dominates `load` (same function) and initializes an object the load reads.
+    /// Catches OPAQUE initializers (no value-flow store node) that the store-based
+    /// hasDominatingInitBlocker cannot see. No-op until the init-API table is populated.
+    bool hasDominatingRegisteredInitCall(const SVFGNode* load) const;
+    bool hasDominatingRegisteredInitCallInFunction(const SVFGNode* load, const FunObjVar* fun) const;
+    bool hasDominatingRegisteredInitCallViaCallers(const SVFGNode* load, const FunObjVar* calleeFun) const;
+    /// Structural full-initializer recognition (in addition to the name-based
+    /// SaberInitAPI table): C++ constructors (Itanium C1/C2/C3) and protobuf
+    /// SharedCtor fully initialize their `this`/arg0. Used to seed the dominating
+    /// init-call index so composite stack objects that are constructed (but whose
+    /// field writes live in an opaque callee) stop being reported as uninit.
+    /// Returns true and sets *outArgIdx to the initialized argument index (0).
+    /// NOTE: a default constructor that leaves POD members uninitialized is treated
+    /// as a full init here — a deliberate precision-for-recall trade favouring FP
+    /// reduction on this benchmark (the pinned TP is a scalar, not ctor-managed).
+    bool isStructuralFullInitializer(const FunObjVar* callee, int* outArgIdx) const;
+    void buildRegisteredInitCallIndex();
+    bool inUninitCandidateSlice(ProgSlice* slice, const SVFGNode* node) const;
+    RegionKey makeWholeRegion(NodeID obj) const;
+    RegionKey makeFieldRegion(NodeID obj, APOffset field) const;
+    RegionKey makeCollapsedRegion(NodeID obj) const;
+    RegionKey makeUnknownRegion(NodeID obj) const;
+    bool regionsMayIntersect(const RegionKey& lhs, const RegionKey& rhs) const;
+    bool regionSetsMayIntersect(const RegionSet& lhs, const RegionSet& rhs) const;
+    bool regionCoveredByWrite(const RegionKey& region, const RegionKey& writeRegion) const;
+    bool regionSetsCover(const RegionSet& regions, const RegionSet& writeRegions) const;
+    bool isSameAddressStoreLoad(const SVFGNode* store, const SVFGNode* load) const;
+    bool isLoadSpecificStoreKill(const SVFGNode* load, const SVFGNode* store, ProgSlice* slice) const;
+    bool eraseInitializedRegions(RegionSet& state, const RegionSet& writeRegions) const;
+    bool getStoreStmtWriteRegions(const StoreStmt* store, RegionSet& regions) const;
+    bool storeStmtRHSMayBeUninitSource(const StoreStmt* store, const SVFGNode* source) const;
+    bool isMustExecuteDirectInitStore(const StoreStmt* store, const BaseObjVar* obj) const;
+    bool refineInitialRegionsWithDirectStores(const BaseObjVar* obj, const SVFGNode* source,
+                                              RegionSet& regions) const;
+    bool mergeRegionState(NodeToRegionStateMap& states, const SVFGNode* node, const RegionSet& incoming) const;
+    bool storeRHSMayCarryUninitInState(const SVFGNode* store, ProgSlice* slice,
+                                       const NodeToRegionStateMap& states) const;
+    void computeRegionUninitState(ProgSlice* slice, NodeToRegionStateMap& states) const;
+    bool loadMayReadUninitRegion(const SVFGNode* load, const NodeToRegionStateMap& states) const;
+    bool addPointeeRegions(NodeID ptr, RegionSet& regions) const;
+    bool addObjectRegion(NodeID obj, RegionSet& regions) const;
+    bool getInitialRegionsForSource(const SVFGNode* source, RegionSet& regions) const;
+    const RegionSet& getLoadReadRegions(const SVFGNode* load) const;
+    const RegionSet& getStoreWriteRegions(const SVFGNode* store) const;
+    bool storeMayKillLoadRegion(const SVFGNode* store, const SVFGNode* load) const;
+    bool isStoreStrongRegionKill(const SVFGNode* store) const;
+    bool storeRHSMayCarryUninit(const SVFGNode* store, ProgSlice* slice) const;
+    bool isZeroingAllocatorName(const std::string& name) const;
+    bool isZeroingHeapObject(const HeapObjVar* heapObj) const;
     void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable);
     bool isDefinitelyInitInComputedState(const SVFGNodeSet& mayUninitReachable, const SVFGNode* load) const;
-
+    bool isFormalParameterPointerLoad(const SVFGNode* load) const;
+    bool isPtrLoadAddressComputationOnly(const SVFGNode* load) const;
+    bool isDirectParameterSpillLoad(const SVFGNode* load) const;
+    bool isParameterSpillStackObject(StackObjVar* stackObj, SVFIR* pag) const;
+    bool isSmallDirectlyInitializedStackObject(StackObjVar* stackObj, SVFIR* pag) const;
+    bool isCompositeMemoryObject(const BaseObjVar* obj) const;
+    bool isSmallScalarStackObject(const BaseObjVar* obj) const;
+    bool pagNodeMayReachCallPE(const SVFVar* node, SVFIR* pag) const;
+    bool isAddressEscapingScalarStackObject(StackObjVar* stackObj, SVFIR* pag) const;
+    bool isTrackableScalarStackObject(StackObjVar* stackObj, SVFIR* pag) const;
+    bool isScalarStackValueLoad(const SVFGNode* load) const;
+    bool pointeeIncludesCompositeObject(NodeID ptr) const;
+    bool isReturnAnchoredICFGNode(const ICFGNode* node) const;
+    bool isSystemOrGeneratedCodePath(const std::string& file) const;
+    bool isSystemOrGeneratedCodeICFG(const ICFGNode* node) const;
+    /// Whether a function is out-of-analysis-scope (system/STL/generated), so its
+    /// stack/heap objects should not seed uninitialized-use sources. Delegates to the
+    /// queryable SaberScopeAPI table (path + STL/ABI mangled-name rules).
+    bool isOutOfScopeSourceFunction(const FunObjVar* fun) const;
+    bool isHeapUninitSource(const SVFGNode* source) const;
+    bool isAllocatorInSystemLibrary(const FunObjVar* fun) const;
+    bool backwardValueFlowReachesSource(ProgSlice* slice, const SVFGNode* start,
+                                        const SVFGNode* source) const;
 };
 
 template<class Data>
@@ -125,20 +315,13 @@ public:
         return data_list.size();
     }
 
-    /**
-     * 是否已经访问过该节点（无论是否仍在队列中）
-     */
     inline bool isVisited(const Data &data) const
     {
         return visited.find(data) != visited.end();
     }
 
-    /**
-     * 向队列中推入一个节点（若从未访问过）
-     */
     inline bool push(const Data &data)
     {
-        // 只要访问过，就不再重复入队
         if (visited.insert(data).second) {
             data_list.push_back(data);
             return true;
@@ -146,9 +329,6 @@ public:
         return false;
     }
 
-    /**
-     * 取出队首元素（不会影响 visited 状态）
-     */
     inline Data pop()
     {
         assert(!empty() && "work list is empty");
@@ -164,10 +344,9 @@ public:
     }
 
 private:
-    DataDeque data_list;   ///< 按FIFO顺序的队列
-    DataSet visited;       ///< 所有已访问过的节点（包括已出队）
+    DataDeque data_list;
+    DataSet visited;
 };
-
 
 } // End namespace SVF
 

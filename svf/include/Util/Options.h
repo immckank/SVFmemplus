@@ -261,6 +261,8 @@ public:
     static const Option<bool> DFreeCheck;
     /// use after free checker, Default: false
     static const Option<bool> UAFCheck;
+    /// Add potential-loop hint event to UAF reports (extra ICFG/loop checks), Default: false
+    static const Option<bool> UAFLoopHint;
     /// use of uninit checker, Default: false
     static const Option<bool> UninitCheck;
     /// data race checker, Default: false
@@ -279,6 +281,18 @@ public:
     
     // Maximum number of backward traversal steps in UninitChecker, Default: 2000
     static const Option<u32_t> SaberUninitMaxBackwardSteps;
+    // Enable source-local region-state filtering in UninitChecker, Default: false
+    static const Option<bool> SaberUninitRegionState;
+    // Print detailed UninitChecker initialization-blocker diagnostics, Default: false
+    static const Option<bool> SaberUninitDebug;
+    // Maximum number of detailed UninitChecker debug lines, Default: 50
+    static const Option<u32_t> SaberUninitDebugLimit;
+    // Print SABER phase timing statistics, Default: false
+    static const Option<bool> SaberTimeStat;
+    // UAF: Maximum number of ICFG nodes visited per free when collecting reachable uses, Default: 50000
+    static const Option<u32_t> SaberUAFReachMaxNodes;
+    // UAF: use BB-guard + per-pair pairing (P0) instead of ICFG forward sweep per free, Default: true
+    static const Option<bool> SaberUAFPairBBGuard;
 
     // GraphReader
     static const Option<std::string> FindCallSites;

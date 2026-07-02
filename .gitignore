@@ -9,6 +9,7 @@ Release+Asserts/
 Debug+Asserts/
 autoconf/
 tests/result/
+tests/
 doxygen/
 .*
 !.config.in
@@ -40,3 +41,8 @@ script/
 scripts/
 experiments/
 todo/
+uaf_tests/
+*.json
+# local SABER analysis scratch artifacts (run logs, slice dumps, disassembly)
+scratch*
+

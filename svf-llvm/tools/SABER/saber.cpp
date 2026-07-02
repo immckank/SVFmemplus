@@ -37,10 +37,34 @@
 
 #include "SABER/UseAfterFreeChecker.h"
 #include "SABER/UninitChecker.h"
+#include "SABER/SaberSemanticRules.h"
+#include <filesystem>
 
 
 using namespace llvm;
 using namespace SVF;
+
+static const Option<std::string> ReportDir(
+    "report-dir",
+    "Directory containing the per-alert Saber JSON tree",
+    ".");
+static const Option<std::string> SaberSemanticRulesPath(
+    "saber-semantic-rules", "Load approved semantic-rules/v1 JSON", "");
+
+static void setDefaultReportConfig(const std::vector<std::string>& modules)
+{
+    const std::filesystem::path dir =
+        ReportDir().empty() ? std::filesystem::path(".") : std::filesystem::path(ReportDir());
+    std::error_code error;
+    std::filesystem::create_directories(dir, error);
+    if (error)
+    {
+        SVFUtil::errs() << "[SaberReport] cannot create report directory "
+                        << dir.string() << ": " << error.message() << "\n";
+        std::exit(EXIT_FAILURE);
+    }
+    LeakChecker::setAlertOutputDir((dir / "alerts").string());
+}
 
 int main(int argc, char ** argv)
 {
@@ -59,6 +83,10 @@ int main(int argc, char ** argv)
     SVFIRBuilder builder;
     SVFIR* pag = builder.build();
 
+    if (!SaberSemanticRulesPath().empty() &&
+            !SaberSemanticRules::get()->loadFile(SaberSemanticRulesPath()))
+        SVFUtil::errs() << "[SaberSemanticRules] rules rejected; using built-in semantics only\n";
+
 
     std::unique_ptr<LeakChecker> saber;
 
@@ -75,9 +103,11 @@ int main(int argc, char ** argv)
     else
         saber = std::make_unique<LeakChecker>();  // if no checker is specified, we use leak checker as the default one.
 
-    saber->runOnModule(pag);
-    LLVMModuleSet::releaseLLVMModuleSet();
+    setDefaultReportConfig(moduleNameVec);
 
+    saber->runOnModule(pag);
+    saber.reset();
+    LLVMModuleSet::releaseLLVMModuleSet();
 
     return 0;
 

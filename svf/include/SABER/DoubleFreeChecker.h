@@ -75,6 +75,17 @@ protected:
     {
         return false;
     }
+
+    /// dfree uses isSatisfiableForPairs(); skip leak-style isSatisfiableForAll().
+    bool needAllPathReachabilityCheck() const override
+    {
+        return false;
+    }
+
+    const char* sliceExportGeneratedBy() const override
+    {
+        return "SVFmemplus-DoubleFreeChecker";
+    }
 };
 
 } // End namespace SVF

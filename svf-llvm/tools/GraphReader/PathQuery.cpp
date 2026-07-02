@@ -8,6 +8,7 @@
 #include "Graphs/SVFG.h"
 #include "Util/SVFUtil.h"
 #include "SVF-LLVM/LLVMModule.h"
+#include "SVF-LLVM/ObjTypeInference.h"
 #include "SVFIR/SVFStatements.h"
 #include "SVFIR/SVFVariables.h"
 #include "SVFIR/SVFType.h"
@@ -3421,7 +3422,14 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                                         if (llvmType) {
                                             // Check if LLVM type is pointer to array
                                             if (llvmType->isPointerTy()) {
-                                                // Handle opaque pointers in LLVM 16+
+#if LLVM_VERSION_MAJOR >= 17
+                                                const llvm::Type* pointeeType =
+                                                    LLVMModuleSet::getLLVMModuleSet()
+                                                    ->getTypeInference()->inferObjType(llvmVal);
+                                                if (pointeeType && pointeeType->isArrayTy()) {
+                                                    isArrayType = true;
+                                                }
+#else
                                                 const llvm::PointerType* ptrType = llvm::cast<llvm::PointerType>(llvmType);
                                                 if (!ptrType->isOpaque()) {
                                                     const llvm::Type* pointeeType = ptrType->getNonOpaquePointerElementType();
@@ -3429,14 +3437,21 @@ std::set<const SVFGNode*> PathQuery::identifyKeySVFGNodesInFunction(const FunObj
                                                         isArrayType = true;
                                                     }
                                                 } else {
-                                                    // For opaque pointers, try to get type from GEP instruction if available
                                                     if (const llvm::GetElementPtrInst* gepInst = llvm::dyn_cast<llvm::GetElementPtrInst>(llvmVal)) {
                                                         const llvm::Type* sourceType = gepInst->getSourceElementType();
                                                         if (sourceType && sourceType->isArrayTy()) {
                                                             isArrayType = true;
                                                         }
+                                                    } else {
+                                                        const llvm::Type* pointeeType =
+                                                            LLVMModuleSet::getLLVMModuleSet()
+                                                            ->getTypeInference()->inferObjType(llvmVal);
+                                                        if (pointeeType && pointeeType->isArrayTy()) {
+                                                            isArrayType = true;
+                                                        }
                                                     }
                                                 }
+#endif
                                             } else if (llvmType->isArrayTy()) {
                                                 isArrayType = true;
                                             }

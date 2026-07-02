@@ -43,8 +43,8 @@ namespace
 
 bool isLinuxKernelModuleEntryName(llvm::StringRef name)
 {
-    return name == "init_module" || name.startswith("init_module_") ||
-           name == "cleanup_module" || name.startswith("cleanup_module_");
+    return name == "init_module" || name.starts_with("init_module_") ||
+           name == "cleanup_module" || name.starts_with("cleanup_module_");
 }
 
 bool isLinuxKernelModuleEntryFunction(const Function* fun)
@@ -199,6 +199,8 @@ bool LLVMUtil::isUncalledFunction (const Function*  fun)
         return false;
     if (LLVMUtil::isProgEntryFunction(fun))
         return false;
+    if (!fun->hasUseList())
+        return true;
     for (Value::const_user_iterator i = fun->user_begin(), e = fun->user_end(); i != e; ++i)
     {
         if (LLVMUtil::isCallSite(*i))
@@ -500,12 +502,23 @@ const std::string LLVMUtil::getSourceLoc(const Value* val )
     {
         if (SVFUtil::isa<AllocaInst>(inst))
         {
+#if LLVM_VERSION_MAJOR > 16
+            for (llvm::DbgInfoIntrinsic *DII : llvm::findDbgDeclares(const_cast<Instruction*>(inst)))
+#else
             for (llvm::DbgInfoIntrinsic *DII : FindDbgDeclareUses(const_cast<Instruction*>(inst)))
+#endif
             {
                 if (llvm::DbgDeclareInst *DDI = SVFUtil::dyn_cast<llvm::DbgDeclareInst>(DII))
                 {
                     llvm::DIVariable *DIVar = SVFUtil::cast<llvm::DIVariable>(DDI->getVariable());
                     rawstr << "\"ln\": " << DIVar->getLine() << ", \"fl\": \"" << DIVar->getFilename().str() << "\"";
+                    // Source-level variable name (e.g. "retryBudget"); LLVM strips it
+                    // from the SSA value but it survives in the debug-info DIVariable.
+                    // Downstream slice export uses this to make stack-object uninit
+                    // reports identifiable instead of an anonymous "%18".
+                    const std::string varName = DIVar->getName().str();
+                    if (!varName.empty())
+                        rawstr << ", \"nm\": \"" << varName << "\"";
                     break;
                 }
             }

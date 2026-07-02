@@ -1,91 +1,100 @@
 # SVFmem+
 
-To provide detection support for use-after-free (UAF), undefined usages, and array out-of-bounds within the SABER framework of SVF (a static analysis tool).
+`SVFmemplus` 面向 LLVM bitcode（`.bc`）执行内存缺陷静态分析，并输出可供人工阅读和下游程序消费的增强告警报告。
 
-## 模块定位
+## 功能
 
-`SVFmemplus` 是交付件2“内存缺陷检测与细粒度程序语义记录工具”的源码实现，面向 LLVM bitcode（`.bc`）执行静态分析并输出缺陷告警。
-
-## 功能概览
-
-### 内存缺陷检测（5类）
+Saber 当前支持：
 
 - `-leak`：内存泄漏（`NeverFree`、`PartialLeak`）
 - `-dfree`：重复释放（`DoubleFree`）
 - `-uaf`：释放后使用（`UseAfterFree`）
 - `-uninit`：未初始化使用（`Uninitialized Use`）
-- `bof` 工具：缓冲区越界（`BufferOverflow`）
 
-对应入口与检查器：
+`bof` 工具用于检测缓冲区越界（`BufferOverflow`）。本轮报告格式优化只作用于 Saber，尚未改造 BOF。
 
-- `svf-llvm/tools/SABER/saber.cpp`
-  - `svf/lib/SABER/LeakChecker.cpp`
-  - `svf/lib/SABER/DoubleFreeChecker.cpp`
-  - `svf/lib/SABER/UseAfterFreeChecker.cpp`
-  - `svf/lib/SABER/UninitChecker.cpp`
-- `svf-llvm/tools/BOF/bof.cpp`
-  - `svf/lib/BOF/BufferOverflowChecker.cpp`
+每条告警输出为独立 JSON。除 leak 外，`path` 是一条裁剪后的 SVFG
+值流 witness；leak 的 `paths` 是可能安全释放对象的路径，
+`leak_condition` 表示安全条件并集的补集。
 
-### 细粒度程序语义记录
+## 构建
 
-`graph-reader` 在加载 bitcode 后构建 `SVFIR/ICFG/SVFG`，以常驻进程方式接收 JSON 命令并返回 JSON 结果，可用于查询：
-
-- 函数体、调用关系、条件路径
-- 形参/实参/返回值相关值流节点
-- 关键 `SVFG` 节点信息与值路径
-- 与 `free` 相关的调用闭包和距离
-- 指定源码行的宏上下文
-
-核心代码位于 `svf-llvm/tools/GraphReader/`。
-
-## 构建与环境
-
-请参考交付目录中的环境脚本（`linuxUbuntu环境` 与 `openEuler环境`）。在容器或主机环境满足依赖后：
+已验证的 LLVM 21 Docker 构建命令：
 
 ```bash
-cd SVFmemplus
-./build.sh
+docker run --rm \
+  -v "/home/xyc/openEuler分析流程/SVFmemplus":/SVFmemplus \
+  -w /SVFmemplus \
+  nf-image:llvm21 \
+  bash -lc 'source ./build.sh'
 ```
 
-构建完成后加载环境变量：
+在依赖已经满足的主机或容器中也可直接执行：
 
 ```bash
+source ./build.sh
 source ./setup.sh
 ```
 
-若运行时缺少 `libz3.so.4`，可按实际路径建立软链接：
+## Saber 默认报告
+
+使用 `-report-dir` 指定输出根目录：
 
 ```bash
-ln -s /src/SVFmemplus/z3.obj/bin/libz3.so /usr/lib/libz3.so.4
+saber -leak   -report-dir=/path/to/output input.bc
+saber -dfree  -report-dir=/path/to/output input.bc
+saber -uaf    -report-dir=/path/to/output input.bc
+saber -uninit -report-dir=/path/to/output input.bc
 ```
 
-## 使用方式
+四类检查器分别写入：
 
-### SABER（泄漏/双重释放/UAF/未初始化）
+```text
+alerts/memory_leak/<sha256>.json
+alerts/double_free/<sha256>.json
+alerts/use_after_free/<sha256>.json
+alerts/uninit_use/<sha256>.json
+```
+
+`-report-dir` 默认值为当前目录。终端内容仅作为运行日志，不是下游输入。
+
+## 统一运行（全局管线）
+
+在仓库根目录配置 `script/config.env` 后：
 
 ```bash
-saber <option> <input.bc>
+./script/run_svf.sh                              # Step1 静态分析
+./script/run_pipeline.sh                         # SVF + FPhandler
+./script/run_svf.sh --checkers leak,dfree        # 仅跑指定 checker
 ```
 
-示例：
+`defect_types=leak,dfree,uaf,uninit` 控制运行哪些检查器；追加 `bof` 可启用 BOF。
+
+## 语义规则反馈
+
+Saber 可加载经人工审核批准的 `semantic-rules/v1` 规则：
 
 ```bash
-saber -leak demo.bc > demo-leak.txt
-saber -dfree demo.bc > demo-dfree.txt
-saber -uaf demo.bc > demo-uaf.txt
-saber -uninit demo.bc > demo-uninit.txt
+saber -uninit \
+  -saber-semantic-rules=/path/to/semantic_rules.approved.json \
+  -report-dir=/path/to/output \
+  input.bc
 ```
 
-### BOF（缓冲区越界）
+这为后续 FPhandler 将 LLM 研判中发现的函数语义反馈给静态分析器预留了稳定接口。只有状态为 `approved` 的规则会被 Saber 使用。
 
-```bash
-bof <input.bc> > demo-bof.txt
-```
+## 与 FPhandler 联动
 
-### GraphReader（语义查询）
+将 Saber 的输出目录配置为 FPhandler 的 `OUTPUT_DIR`。FPhandler 会：
 
-```bash
-graph-reader -stat=false <input.bc>
-```
+1. 从 `alerts/` 递归发现单警报 JSON；
+2. 直接使用警报 path、源码上下文和 checker 证据；
+3. 将 `classification` 与 `reason` 原子写回同一文件。
 
-启动后会输出 `graphreader-initialized`，随后可按行输入 JSON 命令进行查询。
+## 主要代码
+
+- `svf-llvm/tools/SABER/saber.cpp`：Saber 入口和报告参数
+- `svf/lib/SABER/`：各 Saber 检查器及报告实现
+- `svf-llvm/tools/GraphReader/`：语义查询服务
+- `svf-llvm/tools/BOF/`、`svf/lib/BOF/`：缓冲区越界检测
+- 仓库根 `script/run_svf.sh`：全局管线静态分析入口

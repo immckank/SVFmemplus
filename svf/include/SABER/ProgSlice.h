@@ -68,7 +68,9 @@ public:
     /// Constructor
     ProgSlice(const SVFGNode* src, SaberCondAllocator* pa, const SVFG* graph):
         root(src), partialReachable(false), fullReachable(false), reachGlob(false),
-        pathAllocator(pa), _curSVFGNode(nullptr), finalCond(pa->getFalseCond()), svfg(graph)
+        pathAllocator(pa), _curSVFGNode(nullptr), finalCond(pa->getFalseCond()),
+        pairedSinkA(nullptr), pairedSinkB(nullptr), svfg(graph),
+        uafNodeTracking(false)
     {
     }
 
@@ -175,6 +177,21 @@ public:
     bool isSatisfiableForAll();
     bool isSatisfiableForPairs();
 
+    inline bool hasSatisfiableSinkPair() const
+    {
+        return pairedSinkA != nullptr && pairedSinkB != nullptr;
+    }
+
+    inline const SVFGNode* getFirstSatisfiableSink() const
+    {
+        return pairedSinkA;
+    }
+
+    inline const SVFGNode* getSecondSatisfiableSink() const
+    {
+        return pairedSinkB;
+    }
+
     /// Get callsite ID and get returnsiteID from SVFGEdge
     //@{
     const CallICFGNode* getCallSite(const SVFGEdge* edge) const;
@@ -211,7 +228,26 @@ public:
     std::string evalFinalCond() const;
     /// Add final condition to eventStack
     void evalFinalCond2Event(GenericBug::EventStack &eventStack) const;
+    void evalSinkCond2Event(const SVFGNode* sink,
+                            GenericBug::EventStack& eventStack) const;
     //@}
+
+    inline void enableUAFNodeTracking()
+    {
+        uafNodeTracking = true;
+    }
+    inline bool isUAFNodeTrackingEnabled() const
+    {
+        return uafNodeTracking;
+    }
+    inline const SVFGNodeSet& getUAFFreeNodes() const
+    {
+        return uafFreeNodes;
+    }
+    inline const SVFGNodeSet& getUAFUseNodes() const
+    {
+        return uafUseNodes;
+    }
 
 protected:
     friend class UseAfterFreeChecker;
@@ -308,6 +344,29 @@ protected:
         finalCond = cond;
     }
 
+    inline void clearSatisfiableSinkPair()
+    {
+        pairedSinkA = nullptr;
+        pairedSinkB = nullptr;
+    }
+
+    inline void setSatisfiableSinkPair(const SVFGNode* first, const SVFGNode* second)
+    {
+        pairedSinkA = first;
+        pairedSinkB = second;
+    }
+
+    inline void addToUAFFreeNodes(const SVFGNode* node)
+    {
+        if (uafNodeTracking)
+            uafFreeNodes.insert(node);
+    }
+    inline void addToUAFUseNodes(const SVFGNode* node)
+    {
+        if (uafNodeTracking)
+            uafUseNodes.insert(node);
+    }
+
     /// Compute invalid branch condition stemming from removed strong update value-flow edges
     Condition computeInvalidCondFromRemovedSUVFEdge(const SVFGNode * cur);
 
@@ -328,7 +387,12 @@ private:
     SaberCondAllocator* pathAllocator;		///<  path condition allocator
     const SVFGNode* _curSVFGNode;			///<  current svfg node during guard computation
     Condition finalCond;					///<  final condition
+    const SVFGNode* pairedSinkA;			///<  first sink in a satisfiable sink pair
+    const SVFGNode* pairedSinkB;			///<  second sink in a satisfiable sink pair
     const SVFG* svfg;						///<  SVFG
+    bool uafNodeTracking;
+    SVFGNodeSet uafFreeNodes;
+    SVFGNodeSet uafUseNodes;
 };
 
 } // End namespace SVF

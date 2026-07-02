@@ -69,7 +69,7 @@ int main(int argc, char** argv)
                                  "[options] <input-bitcode...>");
 
     // Refers to content of a singleton unique_ptr<SVFIR> in SVFIR.
-    SVFIR* pag;
+    SVFIR* pag = nullptr;
 
     if (Options::ReadJson())
     {

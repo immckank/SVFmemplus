@@ -32,6 +32,7 @@
 #include "SVF-LLVM/SymbolTableBuilder.h"
 #include "SVF-LLVM/ObjTypeInference.h"
 #include "Graphs/CallGraph.h"
+#include "SABER/SaberMemTransferAPI.h"
 
 using namespace std;
 using namespace SVF;
@@ -125,6 +126,19 @@ void SVFIRBuilder::addComplexConsForExt(Value *D, Value *S, const Value* szValue
     }
 }
 
+void SVFIRBuilder::addPtrSizedMemcpyCons(Value* dstAddr, Value* srcAddr)
+{
+    assert(dstAddr && srcAddr);
+    NodeID vnDst = getValueNode(dstAddr);
+    NodeID vnSrc = getValueNode(srcAddr);
+    if (!vnDst || !vnSrc)
+        return;
+
+    NodeID dummy = pag->addDummyValNode();
+    addLoadEdge(vnSrc, dummy);
+    addStoreEdge(dummy, vnDst);
+}
+
 void SVFIRBuilder::handleExtCall(const CallBase* cs, const Function* callee)
 {
     const CallICFGNode *callICFGNode = llvmModuleSet()->getCallICFGNode(cs);
@@ -155,7 +169,9 @@ void SVFIRBuilder::handleExtCall(const CallBase* cs, const Function* callee)
             writeWrnMsg("Arg receiving new object must be pointer type");
         }
     }
-    else if (LLVMUtil::isMemcpyExtFun(callee))
+    else if (LLVMUtil::isMemcpyExtFun(callee) ||
+             SaberMemTransferAPI::getAPI()->isMemcpyLike(
+                 llvmModuleSet()->getFunObjVar(callee)))
     {
         // Side-effects similar to void *memcpy(void *dest, const void * src, size_t n)
         // which  copies n characters from memory area 'src' to memory area 'dest'.
@@ -163,10 +179,27 @@ void SVFIRBuilder::handleExtCall(const CallBase* cs, const Function* callee)
             addComplexConsForExt(cs->getArgOperand(3), cs->getArgOperand(1), nullptr);
         else if(callee->getName().find("bcopy") != std::string::npos)
             addComplexConsForExt(cs->getArgOperand(1), cs->getArgOperand(0), cs->getArgOperand(2));
-        if(cs->arg_size() == 3)
+        else if(cs->arg_size() >= 3)
             addComplexConsForExt(cs->getArgOperand(0), cs->getArgOperand(1), cs->getArgOperand(2));
         else
             addComplexConsForExt(cs->getArgOperand(0), cs->getArgOperand(1), nullptr);
+
+        if (callee->getName().find("iconv") == std::string::npos)
+        {
+            const FunObjVar* fun = llvmModuleSet()->getFunObjVar(callee);
+            const SaberMemTransferAPI::TransferSpec* spec =
+                SaberMemTransferAPI::getAPI()->getSpec(fun);
+            u8_t dstIdx = 0;
+            u8_t srcIdx = 1;
+            if (spec && spec->ptrProp.enabled)
+            {
+                dstIdx = spec->ptrProp.dstArgIdx;
+                srcIdx = spec->ptrProp.srcArgIdx;
+            }
+            if (cs->arg_size() > dstIdx && cs->arg_size() > srcIdx)
+                addPtrSizedMemcpyCons(cs->getArgOperand(dstIdx), cs->getArgOperand(srcIdx));
+        }
+
         if(SVFUtil::isa<PointerType>(cs->getType()))
             addCopyEdge(getValueNode(cs->getArgOperand(0)), getValueNode(cs), CopyStmt::COPYVAL);
     }

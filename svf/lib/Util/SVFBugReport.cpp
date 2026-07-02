@@ -170,6 +170,11 @@ cJSON * DoubleFreeBug::getBugDescription() const
     cJSON *bugDescription = cJSON_CreateObject();
 
     cJSON *pathInfo = cJSON_CreateArray();
+    if (bugEventStack.size() <= 1)
+    {
+        cJSON_AddItemToObject(bugDescription, "DoubleFreePath", pathInfo);
+        return bugDescription;
+    }
     auto lastBranchEventIt = bugEventStack.end() - 1;
     for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
     {
@@ -194,6 +199,11 @@ void DoubleFreeBug::printBugToTerminal() const
                     << GenericBug::getLoc() << ")\n";
 
     SVFUtil::errs() << "\t\t double free path: \n";
+    if (bugEventStack.size() <= 1)
+    {
+        SVFUtil::errs() << "\n";
+        return;
+    }
     auto lastBranchEventIt = bugEventStack.end() - 1;
     for(auto eventIt = bugEventStack.begin(); eventIt != lastBranchEventIt; eventIt++)
     {

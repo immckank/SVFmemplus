@@ -47,10 +47,171 @@
 #include "Graphs/ICFGNode.h"
 #include "Util/SVFUtil.h"
 
+#include <deque>
+#include <set>
+
 using namespace SVF;
 
 namespace
 {
+/// Forward CFG reachability within @p maxHops (used to tie strlen guards to strcpy).
+bool bbReachableWithin(const SVFBasicBlock* from, const SVFBasicBlock* to, int maxHops)
+{
+    if (!from || !to)
+        return false;
+    if (from == to)
+        return true;
+
+    std::deque<std::pair<const SVFBasicBlock*, int>> work;
+    std::set<const SVFBasicBlock*> seen;
+    work.emplace_back(from, 0);
+    seen.insert(from);
+
+    while (!work.empty())
+    {
+        const SVFBasicBlock* bb = work.front().first;
+        const int depth = work.front().second;
+        work.pop_front();
+        if (bb == to)
+            return true;
+        if (depth >= maxHops)
+            continue;
+        for (const SVFBasicBlock* succ : bb->succBBs)
+        {
+            if (seen.insert(succ).second)
+                work.emplace_back(succ, depth + 1);
+        }
+    }
+    return false;
+}
+
+/// Walk backwards through Copy / Load / Gep to collect pointer-equivalence
+/// candidates for strcpy src/d_name style aliasing.
+void collectPtrBack(const SVFVar* v, std::set<const SVFVar*>& out, int depth)
+{
+    if (!v || depth > 12)
+        return;
+    if (!out.insert(v).second)
+        return;
+
+    if (v->hasIncomingEdges(SVFStmt::PEDGEK::Copy))
+    {
+        for (auto it = v->getIncomingEdgesBegin(SVFStmt::PEDGEK::Copy);
+             it != v->getIncomingEdgesEnd(SVFStmt::PEDGEK::Copy); ++it)
+        {
+            if (const CopyStmt* cp = SVFUtil::dyn_cast<CopyStmt>(*it))
+                if (cp->getLHSVar() == v)
+                    collectPtrBack(cp->getRHSVar(), out, depth + 1);
+        }
+    }
+    if (v->hasIncomingEdges(SVFStmt::PEDGEK::Load))
+    {
+        for (auto it = v->getIncomingEdgesBegin(SVFStmt::PEDGEK::Load);
+             it != v->getIncomingEdgesEnd(SVFStmt::PEDGEK::Load); ++it)
+        {
+            if (const LoadStmt* ld = SVFUtil::dyn_cast<LoadStmt>(*it))
+                if (ld->getLHSVar() == v)
+                    collectPtrBack(ld->getRHSVar(), out, depth + 1);
+        }
+    }
+    if (v->hasIncomingEdges(SVFStmt::PEDGEK::Gep))
+    {
+        for (auto it = v->getIncomingEdgesBegin(SVFStmt::PEDGEK::Gep);
+             it != v->getIncomingEdgesEnd(SVFStmt::PEDGEK::Gep); ++it)
+        {
+            if (const GepStmt* gep = SVFUtil::dyn_cast<GepStmt>(*it))
+                if (gep->getLHSVar() == v)
+                    collectPtrBack(gep->getRHSVar(), out, depth + 1);
+        }
+    }
+}
+
+bool ptrMayAlias(const SVFVar* a, const SVFVar* b)
+{
+    if (a == b)
+        return true;
+    std::set<const SVFVar*> sa;
+    std::set<const SVFVar*> sb;
+    collectPtrBack(a, sa, 0);
+    collectPtrBack(b, sb, 0);
+    for (const SVFVar* x : sa)
+        if (sb.count(x))
+            return true;
+    return false;
+}
+
+/// Infer strlen(src) from strlen() calls in the same function whose argument
+/// may-alias @p src. When @p strcpyCall is set, only strlen sites on a CFG
+/// path leading to the strcpy are considered (guards like `strlen(p) > N`).
+Range inferStrlenRangeForPtr(SVFIR* pag, RangeAnalysis& ra, const SVFVar* src,
+                             const FunObjVar* scope,
+                             const CallICFGNode* strcpyCall = nullptr)
+{
+    if (!src || !scope)
+        return Range::BOTTOM;
+
+    Range merged = Range::BOTTOM;
+    ICFG* icfg = pag->getICFG();
+    for (auto it = icfg->begin(); it != icfg->end(); ++it)
+    {
+        const CallICFGNode* c = SVFUtil::dyn_cast<CallICFGNode>(it->second);
+        if (!c || c->getFun() != scope || c->arg_size() < 1)
+            continue;
+        const FunObjVar* callee = c->getCalledFunction();
+        if (!callee || callee->getName() != "strlen")
+            continue;
+        if (!ptrMayAlias(c->getArgument(0), src))
+            continue;
+        if (strcpyCall)
+        {
+            const SVFBasicBlock* dstBB = strcpyCall->getBB();
+            if (!dstBB || !bbReachableWithin(c->getBB(), dstBB, 12))
+                continue;
+        }
+
+        const RetICFGNode* retNode = c->getRetICFGNode();
+        if (!retNode || !pag->callsiteHasRet(retNode))
+            continue;
+        const SVFVar* lenRet = retNode->getActualRet();
+        if (!lenRet)
+            continue;
+
+        Range slen = ra.analyzeVarRange(lenRet);
+        if (slen.isBottom() || slen.isTop() || slen.getLower() < 0)
+            continue;
+        merged = Range::join(merged, slen);
+    }
+    return merged;
+}
+
+/// Whether a CFG-reachable strlen on a may-alias pointer exists (for a narrow
+/// fallback when numeric strlen range is unavailable).
+bool hasReachableStrlenOnAlias(SVFIR* pag, const SVFVar* src, const FunObjVar* scope,
+                               const CallICFGNode* strcpyCall)
+{
+    if (!src || !scope || !strcpyCall)
+        return false;
+    const SVFBasicBlock* dstBB = strcpyCall->getBB();
+    if (!dstBB)
+        return false;
+
+    ICFG* icfg = pag->getICFG();
+    for (auto it = icfg->begin(); it != icfg->end(); ++it)
+    {
+        const CallICFGNode* c = SVFUtil::dyn_cast<CallICFGNode>(it->second);
+        if (!c || c->getFun() != scope || c->arg_size() < 1)
+            continue;
+        const FunObjVar* callee = c->getCalledFunction();
+        if (!callee || callee->getName() != "strlen")
+            continue;
+        if (!ptrMayAlias(c->getArgument(0), src))
+            continue;
+        if (bbReachableWithin(c->getBB(), dstBB, 12))
+            return true;
+    }
+    return false;
+}
+
 /// Whether an index/offset range is *effectively* unbounded (degraded toward
 /// infinity), i.e. the loop-induction MAY scenario the LLM triage overlay
 /// targets. We cannot rely on the strict Range::isTop() here: arithmetic on the
@@ -330,7 +491,8 @@ void BufferOverflowChecker::propagate(SVFIR*)
             }
             else if (const auto* copyStmt = SVFUtil::dyn_cast<CopyStmt>(svfStmt))
             {
-                handleCopyLike(copyStmt->getLHSVar(), srcNode, copyStmt->getICFGNode());
+                handleCopyLike(copyStmt->getLHSVar(), srcNode, copyStmt->getICFGNode(),
+                               /*isPointerCopy*/ true);
             }
             else if (const auto* storeStmt = SVFUtil::dyn_cast<StoreStmt>(svfStmt))
             {
@@ -447,17 +609,74 @@ void BufferOverflowChecker::handleGep(const GepStmt* gepStmt, const RangeFlowNod
     Range accumulate_offset = Range::add(total_offset, srcNode.accumulate_offset);
     Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
 
-    checkAccess(dstVar, accumulate_offset, buffer_size, srcNode.isHeap, BofKind::GEP_OOB, loc,
-                srcNode.callContext, idxVar);
+    // False-positive reduction: a GEP that selects a *constant* member of a
+    // struct/class aggregate is in-bounds by LLVM IR construction -- the
+    // compiler only emits a constant aggregate-member index that is valid for
+    // the type's declared layout. When such an access is nonetheless flagged it
+    // is because the *parent object* was under-modeled (e.g. an opaque/external
+    // struct such as `struct stat` whose flattened size SVF computes as a single
+    // element), not because of a real defect. Suppress the whole-access report in
+    // exactly this case, gated to stay sound:
+    //   * every index operand is a constant (no variable / loop index);
+    //   * the GEP navigates at least one struct/class type and *no* array
+    //     dimension -- a constant array index CAN overflow (`int a[4]; a[5]`)
+    //     and must still be checked (handled by the per-dimension path above);
+    //   * the offset inherited from how we reached this pointer is itself
+    //     in-bounds, so a genuinely out-of-bounds base pointer feeding a field
+    //     access is not masked.
+    // Per-dimension array escapes and inherited-offset overflows are reported by
+    // their own paths, so this only drops the spurious "field offset exceeds a
+    // mis-sized aggregate" candidate.
+    bool allConstIdx = true, navStruct = false, navArray = false;
+    for (const auto& pr : idxOperandPairs)
+    {
+        if (!SVFUtil::isa<ConstIntValVar>(pr.first))
+            allConstIdx = false;
+        if (pr.second && SVFUtil::isa<SVFStructType>(pr.second))
+            navStruct = true;
+        if (pr.second && SVFUtil::isa<SVFArrayType>(pr.second))
+            navArray = true;
+    }
+    // Also stay field-safe when GEP-ing further off an already field-safe
+    // pointer, as long as no array dimension is introduced (an array index could
+    // overflow and must still be checked).
+    const bool baseFieldSafe = fieldSafeVars.count(srcNode.base) > 0;
+    const bool constStructFieldNav =
+        (allConstIdx && navStruct && !navArray &&
+         !buffer_size.isBottom() && !srcNode.accumulate_offset.isBottom() &&
+         srcNode.accumulate_offset.isSubset(buffer_size)) ||
+        (baseFieldSafe && !navArray);
+
+    if (constStructFieldNav)
+        fieldSafeVars.insert(dstVar);
+    else
+        checkAccess(dstVar, accumulate_offset, buffer_size, srcNode.isHeap, BofKind::GEP_OOB, loc,
+                    srcNode.callContext, idxVar);
     enqueue(dstVar, srcNode.parent, accumulate_offset, srcNode.isHeap, srcNode.callDepth,
             srcNode.callContext);
 }
 
 void BufferOverflowChecker::handleCopyLike(const SVFVar* dstVar, const RangeFlowNode& srcNode,
-                                           const ICFGNode* loc)
+                                           const ICFGNode* loc, bool isPointerCopy)
 {
     Range accumulate_offset = srcNode.accumulate_offset;
     Range buffer_size = rangeAnalysis.getBufferRange(srcNode.parent);
+
+    // Forwarding (copy / argument-pass / store-through / load) of a pointer that
+    // names a valid constant struct field is not itself a buffer access; checking
+    // its (field) offset against the under-modeled parent buffer would re-raise
+    // the same false positive already suppressed at the field GEP. Skip the
+    // redundant check. The field-safe taint is only carried forward through a
+    // pure pointer-aliasing copy (`q = p`): a Load yields the field's *value*,
+    // which may be an unrelated buffer pointer that must still be checked.
+    if (fieldSafeVars.count(srcNode.base))
+    {
+        if (isPointerCopy)
+            fieldSafeVars.insert(dstVar);
+        enqueue(dstVar, srcNode.parent, accumulate_offset, srcNode.isHeap, srcNode.callDepth,
+                srcNode.callContext);
+        return;
+    }
 
     checkAccess(dstVar, accumulate_offset, buffer_size, srcNode.isHeap, BofKind::GEP_OOB, loc,
                 srcNode.callContext);

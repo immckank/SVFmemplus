@@ -54,9 +54,7 @@ struct MemCopyRule
 };
 
 /**
- * @brief Data-driven rule table for memory-copy / string functions, mirroring
- *        AE's extAPIBufOverflowCheckRules. Self-contained within the BOF module
- *        (does not touch SVF master / extapi.json).
+ * @brief BOF-facing wrapper; rules are defined in SaberMemTransferAPI.
  */
 class MemCopyAPIRegistry
 {
@@ -71,8 +69,7 @@ public:
     bool isStrCopyLike(const std::string& funcName) const;
 
 private:
-    std::map<std::string, std::vector<MemCopyRule>> rules;
-    std::map<std::string, bool> strCopyLike;
+    mutable std::vector<MemCopyRule> rulesCache;
 };
 
 } // namespace SVF

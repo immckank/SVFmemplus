@@ -169,6 +169,7 @@ bool ProgSlice::isSatisfiableForAll()
  */
 bool ProgSlice::isSatisfiableForPairs()
 {
+    clearSatisfiableSinkPair();
 
     for(SVFGNodeSetIter it = sinksBegin(), eit = sinksEnd(); it!=eit; ++it)
     {
@@ -180,6 +181,7 @@ bool ProgSlice::isSatisfiableForPairs()
             if(!isEquivalentBranchCond(guard, getFalseCond()))
             {
                 setFinalCond(guard);
+                setSatisfiableSinkPair(*it, *sit);
                 return false;
             }
         }
@@ -217,6 +219,22 @@ void ProgSlice::evalFinalCond2Event(GenericBug::EventStack &eventStack) const
         else
             eventStack.push_back(SVFBugEvent(
                                      SVFBugEvent::Branch|((((u32_t)true) << 4) & BRANCHFLAGMASK), tinst));
+    }
+}
+
+void ProgSlice::evalSinkCond2Event(const SVFGNode* sink,
+                                  GenericBug::EventStack& eventStack) const
+{
+    auto found = svfgNodeToCondMap.find(sink);
+    if (found == svfgNodeToCondMap.end())
+        return;
+    NodeBS elems = pathAllocator->exactCondElem(found->second);
+    for (NodeBS::iterator it = elems.begin(), eit = elems.end(); it != eit; ++it)
+    {
+        const ICFGNode* inst = pathAllocator->getCondInst(*it);
+        const u32_t flag = pathAllocator->isNegCond(*it) ? false : true;
+        eventStack.push_back(SVFBugEvent(
+            SVFBugEvent::Branch | ((flag << 4) & BRANCHFLAGMASK), inst));
     }
 }
 

@@ -824,6 +824,11 @@ const Option<bool> Options::DFreeCheck(
     "dfree", "Double Free Detection",false);
 const Option<bool> Options::UAFCheck(
     "uaf", "Use Afrer Free Detection",false);
+const Option<bool> Options::UAFLoopHint(
+    "uaf-loop-hint",
+    "UAF: add PotentialLoop hint event (extra loop/back-edge checks for report only)",
+    false
+);
 const Option<bool> Options::UninitCheck(
     "uninit", "Use Afrer Free Detection",false);
 const Option<bool> Options::RaceCheck(
@@ -969,6 +974,40 @@ const Option<u32_t> Options::SaberUninitMaxBackwardSteps(
     "saber-uninit-max-backward-steps",
     "Maximum backward traversal steps per load in UninitChecker",
     500
+);
+
+const Option<bool> Options::SaberUninitRegionState(
+    "saber-uninit-region-state",
+    "Enable source-local region-state filtering in UninitChecker",
+    true
+);
+
+const Option<bool> Options::SaberUninitDebug(
+    "saber-uninit-debug",
+    "Print UninitChecker initialization-blocker diagnostics",
+    false
+);
+
+const Option<u32_t> Options::SaberUninitDebugLimit(
+    "saber-uninit-debug-limit",
+    "Maximum number of detailed UninitChecker debug lines",
+    50
+);
+
+const Option<bool> Options::SaberTimeStat(
+    "saber-time-stat",
+    "Print SABER phase timing statistics (src/sink collection, traverse, solve)",
+    false
+);
+const Option<u32_t> Options::SaberUAFReachMaxNodes(
+    "saber-uaf-reach-max-nodes",
+    "UAF: max ICFG nodes visited per free when collecting reachable uses (hard cutoff)",
+    50000
+);
+const Option<bool> Options::SaberUAFPairBBGuard(
+    "saber-uaf-bbguard-pair",
+    "UAF: BB-guard per-pair free/use pairing with object filter (replaces ICFG sweep per free)",
+    true
 );
 
 } // namespace SVF.

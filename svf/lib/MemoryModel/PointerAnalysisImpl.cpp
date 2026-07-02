@@ -542,6 +542,8 @@ void BVDataPTAImpl::onTheFlyThreadCallGraphSolve(const CallSiteToFunPtrMap& call
                         if(obj->isFunction())
                         {
                             const FunObjVar *svfForkedFun = SVFUtil::cast<FunObjVar>(obj)->getFunction();
+                            if (!pag->hasFunArgsList(svfForkedFun))
+                                continue;
                             if(tdCallGraph->addIndirectForkEdge(*it, svfForkedFun))
                                 newForkEdges[*it].insert(svfForkedFun);
                         }

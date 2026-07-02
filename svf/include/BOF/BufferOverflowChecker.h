@@ -113,8 +113,13 @@ namespace SVF {
         private:
             /// Per-edge dispatch handlers (split from the old monolithic propagate).
             void handleGep(const GepStmt* gepStmt, const RangeFlowNode& srcNode);
+            /// @p isPointerCopy is true only for a pure pointer-aliasing CopyStmt
+            /// (`q = p`); false for Store/Load. It gates field-safe taint
+            /// propagation: a copy aliases the same field pointer, but a Load
+            /// yields the field's *value* (which may be an unrelated buffer
+            /// pointer) and must not inherit the taint.
             void handleCopyLike(const SVFVar* dstVar, const RangeFlowNode& srcNode,
-                                const ICFGNode* loc);
+                                const ICFGNode* loc, bool isPointerCopy = false);
             void handleCall(const CallPE* callPE, const RangeFlowNode& srcNode);
             void handleRet(const RetPE* retPE, const RangeFlowNode& srcNode);
 
@@ -244,6 +249,17 @@ namespace SVF {
             /// later load of the same field recovers the allocation size even
             /// though the worklist does not connect field store -> load.
             std::map<std::string, AllocSizeSym> allocAddrSym;
+            /// Pointers that name a *constant* member of a struct/class
+            /// aggregate (or are forwarded copies of such pointers). Selecting a
+            /// constant aggregate field is in-bounds by LLVM IR construction, so
+            /// a report on the field pointer itself -- or on a plain
+            /// copy/argument-pass of it -- is a false positive arising from an
+            /// under-modeled parent object (e.g. an opaque `struct stat` sized as
+            /// a single element). Such pointers are tracked here so the redundant
+            /// copy-site / call-site access check is skipped; array indexing off
+            /// the field (a GEP with an array dimension) is *not* tainted and is
+            /// still checked normally.
+            std::set<const SVFVar*> fieldSafeVars;
             /// Reported (loc,kind,context) keys, for recording-time dedup.
             std::set<std::string> bugLoc;
             /// Deferred reports, resolved/emitted by flushReports().
