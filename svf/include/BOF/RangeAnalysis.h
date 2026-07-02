@@ -43,6 +43,9 @@
 
 namespace SVF {
     class ICFGNode;
+    class SVFBasicBlock;
+    class FunObjVar;
+    class StoreStmt;
 
     /// A symbolic affine value of the form `base_symbol + offset`.
     ///
@@ -89,6 +92,15 @@ namespace SVF {
             /// of degrading to TOP across the Call edge.
             Range analyzeVarRange(const SVFVar* var, const ICFGNode* context, int depth = 0);
 
+            /// Guard-refined range of an arbitrary SSA value @p var at a use
+            /// site @p useLoc, starting from TOP and meeting every dominating
+            /// branch predicate that compares @p var to a bound. Unlike
+            /// refineLoad (which narrows *loads*), this queries the value's own
+            /// structural token in the guard index, so it also refines opaque
+            /// call-return values such as `strlen(p)` / `std::string::size()`.
+            /// Returns TOP when guard narrowing is disabled or no guard applies.
+            Range guardedValueRange(const SVFVar* var, const ICFGNode* useLoc);
+
             /// Bind a callee formal parameter's range at a specific call site so
             /// that context-sensitive analyzeVarRange can recover it.
             void bindFormalRange(const ICFGNode* context, const SVFVar* formal,
@@ -101,6 +113,12 @@ namespace SVF {
             /// call sites whose size is computed from call arguments rather than
             /// from a HeapObjVar/StackObjVar model).
             void setBufferRange(const SVFVar* buffer, const Range& range);
+
+            /// Enable/disable guard- and loop-aware narrowing of memory loads
+            /// (the "virtual pi-node" refinement). Defaults to on; can be turned
+            /// off (e.g. for A/B soundness/precision comparison) via the
+            /// environment variable BOF_DISABLE_GUARD.
+            void setGuardNarrowing(bool on) { guardEnabled = on; }
 
         private:
             const static int MAX_RECURSION_DEPTH;
@@ -131,6 +149,56 @@ namespace SVF {
             std::map<std::pair<const ICFGNode*, const SVFVar*>, Range> formalBindings;
             /// (call-site context, var) -> context-sensitive range cache.
             std::map<std::pair<const ICFGNode*, const SVFVar*>, Range> ctxVarRanges;
+
+            // ===============================================================
+            // Guard- / loop-aware narrowing ("query-time virtual pi-nodes").
+            //
+            // At -O0 each *use* of a scalar local is a distinct SSA load value,
+            // so we can soundly narrow the range of an individual load by the
+            // branch predicate(s) that dominate it, without materialising any
+            // pi-node in the PAG. Loop induction variables additionally read off
+            // [init, guard-bound] once the monotone step is recognised.
+            // ===============================================================
+
+            /// One conditional-branch predicate, indexed by the structural
+            /// location token of the *compared* memory slot. `succBB` is the
+            /// branch successor on which the predicate's truth value is
+            /// `condTrue`; a load dominated by `succBB` (same function) inherits
+            /// the constraint.
+            struct GuardEntry {
+                u32_t predicate;                 ///< CmpStmt ICMP_* predicate
+                bool idxIsOp0;                   ///< keyed slot is cmp op0 (else op1)
+                const SVFVar* bndSide;           ///< the non-index (bound) operand
+                const SVFBasicBlock* succBB;     ///< guarded successor block
+                const SVFBasicBlock* branchBB;   ///< block holding the branch
+                bool condTrue;                   ///< predicate holds on this edge
+                const FunObjVar* fun;            ///< owning function
+            };
+
+            bool guardEnabled = true;            ///< master switch
+            bool guardsBuilt = false;            ///< lazy build flag
+            /// load-value location token -> guards comparing that slot.
+            std::map<std::string, std::vector<GuardEntry>> guardIndex;
+            /// address (slot) location token -> stores into that slot.
+            std::map<std::string, std::vector<const StoreStmt*>> slotStores;
+
+            /// Build guardIndex / slotStores from the PAG once (idempotent).
+            void buildGuardIndex();
+            /// Narrow @p current (the freshly computed range of a load value
+            /// @p loadVar) by the dominating branch guards and, when the load
+            /// sits inside a loop, by the recognised induction [init, bound].
+            Range refineLoad(const SVFVar* loadVar, const Range& current,
+                             const ICFGNode* context);
+            /// Straight-line if/else guard narrowing (acyclic, with kill-check).
+            Range refineByGuards(const SVFVar* loadVar, const std::string& valTok,
+                                 const std::string& addrTok,
+                                 const SVFBasicBlock* loadBB, const FunObjVar* fun,
+                                 const Range& current, const ICFGNode* context);
+            /// Loop-induction narrowing: [init, guard-bound] for a monotone slot.
+            Range refineByLoop(const SVFVar* loadVar, const std::string& valTok,
+                               const std::string& addrTok,
+                               const SVFBasicBlock* loadBB, const FunObjVar* fun,
+                               const Range& current, const ICFGNode* context);
     };
 }
 

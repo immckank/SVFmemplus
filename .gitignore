@@ -39,6 +39,8 @@ bug_stats.md
 partition_checker/
 script/
 scripts/
+experiments/
+todo/
 uaf_tests/
 *.json
 # local SABER analysis scratch artifacts (run logs, slice dumps, disassembly)
