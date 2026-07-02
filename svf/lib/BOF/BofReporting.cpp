@@ -41,6 +41,77 @@ using namespace SVF;
 
 namespace
 {
+/// Whether a buffer-overflow report at source-location string @p locStr is
+/// *out of scope* and should be suppressed because it does not belong to the
+/// analyzed application's own (first-party) source.
+///
+/// Rationale (false-positive reduction). On a real C++ codebase the vast
+/// majority of raw BOF candidates are not defects in the program under analysis
+/// but modeling artifacts of code that is merely *included* into it:
+///   * System / C++ standard-library headers (<format>, <optional>, libstdc++
+///     <bits/...>): SVF models their internal fixed-size buffers (SSO storage,
+///     std::variant/optional union storage, std::format scratch arrays) as
+///     plain arrays and then flags the library's own bounds-juggling as
+///     overflow. These are never actionable by the application developer.
+///   * Compiler-/codegen-generated serialization stubs (protobuf *.pb.cc /
+///     *.pb.h, flatbuffers *_generated.h): machine-generated accessor code whose
+///     pointer arithmetic SVF cannot relate to the real wire-format invariants.
+///   * Locations stripped of debug info (no "file" field): typically
+///     pointer-storage allocas / thunks that cannot be tied back to any user
+///     source line, so a report on them is unactionable noise.
+///
+/// This mirrors the system-header / generated-code suppression that production
+/// static analyzers (clang-tidy's --system-headers=0, Coverity) apply by
+/// default. It is a *display/emission* filter only: the sound MUST/MAY
+/// classification of the surviving (first-party) reports is unchanged.
+bool isOutOfScopeReport(const std::string& locStr)
+{
+    // Pull the file value out of the JSON-ish source-loc string. NB: the *raw*
+    // string returned by getSourceLoc() uses SVF core's terse key "fl" (only the
+    // terminal pretty-printer rewrites it to "file" via friendlyLoc), e.g.
+    //   CallICFGNode: { "ln": 98, "cl": 9, "fl": "falcon_client/..." }
+    static const std::string kFileKey = "\"fl\":";
+    const size_t kp = locStr.find(kFileKey);
+    if (kp == std::string::npos)
+        return true; // no debug location -> not attributable to user source
+    const size_t q1 = locStr.find('"', kp + kFileKey.size());
+    if (q1 == std::string::npos)
+        return true;
+    const size_t q2 = locStr.find('"', q1 + 1);
+    if (q2 == std::string::npos)
+        return true;
+    const std::string file = locStr.substr(q1 + 1, q2 - q1 - 1);
+    if (file.empty())
+        return true;
+
+    // System / third-party / standard-library path markers.
+    static const char* kDenySubstr[] = {
+        "/usr/",         // system + libstdc++ install prefix
+        "/include/c++/", // libstdc++ headers
+        "/lib/gcc/",     // gcc internal headers
+        "/bits/",        // libstdc++ detail headers
+        "/generated/",   // generated-code trees
+    };
+    for (const char* m : kDenySubstr)
+        if (file.find(m) != std::string::npos)
+            return true;
+
+    // Machine-generated serialization stubs (match on filename suffix).
+    static const char* kDenySuffix[] = {".pb.cc", ".pb.h", "_generated.h"};
+    for (const char* suf : kDenySuffix)
+    {
+        const std::string s = suf;
+        if (file.size() >= s.size() &&
+            file.compare(file.size() - s.size(), s.size(), s) == 0)
+            return true;
+    }
+    // A leading "generated/" prefix (relative path) is generated code too.
+    if (file.compare(0, 10, "generated/") == 0)
+        return true;
+
+    return false;
+}
+
 /// Make source-location strings friendlier for end users.
 ///
 /// SVF core (svf-llvm/LLVMUtil.cpp::getSourceLoc) serialises locations with the
@@ -97,6 +168,14 @@ void BufferOverflowChecker::reportBufferOverflowError(const SVFVar* base, const 
     // each per-context verdict is captured once. Final cross-context dedup
     // (suppressing a MAY when the same access point also yields a MUST) is
     // performed later in flushReports().
+    // Scope filter (false-positive reduction): drop candidates that fall in
+    // system / standard-library headers, machine-generated serialization stubs,
+    // or debug-info-less locations. These are dominated by modeling artifacts of
+    // transitively-included library internals rather than defects in the program
+    // under analysis, and are not actionable by the application developer.
+    if (!loc || isOutOfScopeReport(loc->getSourceLoc()))
+        return;
+
     if (loc)
     {
         std::string key = loc->getSourceLoc() + "#" + std::to_string((int)kind);
