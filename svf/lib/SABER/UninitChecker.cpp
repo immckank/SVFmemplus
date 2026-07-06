@@ -2826,12 +2826,9 @@ void UninitChecker::reportBug(ProgSlice* rawSlice)
               });
 
     GenericBug::EventStack eventStack;
-    u32_t candidateIndex = 0;
     bool foundBug = false;
     for (const SVFGNode* candidateLoad : orderedCandidates)
     {
-        ++candidateIndex;
-
         if (timeStat)
         {
             phaseStart = SVFStat::getClk(true);

@@ -199,7 +199,7 @@ bool LLVMUtil::isUncalledFunction (const Function*  fun)
         return false;
     if (LLVMUtil::isProgEntryFunction(fun))
         return false;
-    if (!fun->hasUseList())
+    if (fun->use_empty())
         return true;
     for (Value::const_user_iterator i = fun->user_begin(), e = fun->user_end(); i != e; ++i)
     {

@@ -64,7 +64,6 @@ static const MemAccessRule rules_memset[] = {{0, 2}};
 static const MemAccessRule rules_memset_s[] = {{0, 3}};
 static const MemAccessRule rules_bzero[] = {{0, 1}};
 static const MemAccessRule rules_strn[] = {{0, 2}};
-static const MemAccessRule rules_strn_cat[] = {{0, 2}};
 static const MemAccessRule rules_str_implicit[] = {{0, -1}};
 static const MemAccessRule rules_snprintf[] = {{0, 1}};
 static const MemAccessRule rules_memccpy[] = {{0, 3}, {1, 3}};

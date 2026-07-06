@@ -78,11 +78,11 @@ using namespace LLVMUtil;
 
 namespace
 {
-/// LLVM 21+: some Value kinds lack a use-list; users() triggers hasUseList() assert.
+/// LLVM16: iterate users safely; skip values with no uses (empty use-list).
 template <typename Fn>
 void forEachUserSafe(const llvm::Value* val, Fn&& fn)
 {
-    if (!val || !val->hasUseList())
+    if (!val || val->use_empty())
         return;
     for (const llvm::User* user : val->users())
         fn(user);
@@ -162,7 +162,7 @@ const Type *ObjTypeInference::inferObjType(const Value *var)
     //  but we can infer the obj type of %0 based on that of %inner_v.
     if (res == defaultType(var))
     {
-        if (var->hasUseList())
+        if (!var->use_empty())
         {
             for (const auto& use: var->users())
             {
