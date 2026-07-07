@@ -67,6 +67,18 @@ void *kmalloc_array(unsigned long nitems, unsigned long size, int flags)
     return NULL;
 }
 
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:UNKNOWN")))
+void *kmem_cache_alloc(void *cache, int flags)
+{
+    return NULL;
+}
+
+__attribute__((annotate("ALLOC_HEAP_RET"), annotate("AllocSize:UNKNOWN")))
+void *kmem_cache_zalloc(void *cache, int flags)
+{
+    return NULL;
+}
+
 __attribute__((annotate("REALLOC_HEAP_RET"), annotate("AllocSize:Arg1")))
 void *krealloc(void *ptr, unsigned long size, int flags)
 {

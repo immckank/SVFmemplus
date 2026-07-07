@@ -9,7 +9,10 @@ Release+Asserts/
 Debug+Asserts/
 autoconf/
 tests/result/
-tests/
+tests/*
+!tests/extra_tests/
+tests/extra_tests/*
+!tests/extra_tests/uninit_heap_regions.c
 doxygen/
 .*
 !.config.in
@@ -45,4 +48,3 @@ uaf_tests/
 *.json
 # local SABER analysis scratch artifacts (run logs, slice dumps, disassembly)
 scratch*
-

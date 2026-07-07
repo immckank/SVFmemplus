@@ -97,6 +97,8 @@ protected:
         double uninitReportTime = 0;
         double uninitQualifierTime = 0;
         double uninitCollectCandidateTime = 0;
+        double uninitRegionStateTime = 0;
+        double uninitCandidateBackwardTime = 0;
         double uninitGuardBuildTime = 0;
         double uninitGuardSolveTime = 0;
         double uninitLoadCheckTime = 0;
@@ -107,6 +109,16 @@ protected:
         u32_t uninitMaxCandidateLoads = 0;
         u32_t uninitMaxForwardSlice = 0;
         u32_t uninitMaxGuardBackwardSlice = 0;
+        u32_t uninitStackSources = 0;
+        u32_t uninitHeapSources = 0;
+        u32_t uninitInitializedSourcesSkipped = 0;
+        u64_t uninitCandidateLoadsExamined = 0;
+        u64_t uninitCandidateRejectShape = 0;
+        u64_t uninitCandidateRejectRegion = 0;
+        u64_t uninitCandidateRejectState = 0;
+        u64_t uninitCandidateRejectInit = 0;
+        u64_t uninitCandidateRejectUnreachable = 0;
+        u64_t uninitCandidateAccepted = 0;
         double uafReportTime = 0;
         double uafPairCheckTime = 0;
         u32_t uafReportCalls = 0;

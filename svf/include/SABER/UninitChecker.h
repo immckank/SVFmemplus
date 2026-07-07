@@ -161,13 +161,12 @@ private:
     bool shouldSkipHeaderSourceReport(const ICFGNode* sourceICFG, const ICFGNode* useICFG) const;
     std::string classifySourceKind(const SVFGNode* source) const;
     std::string classifyAllocator(const SVFGNode* source) const;
-    bool isPlainKmallocAllocatorName(const std::string& name) const;
     bool isMemsetLikeInitializingStore(const SVFGNode* store) const;
 
     void collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnorePtrStore,
                                const SVFGNodeSet& qualifierStateAllStore,
                                SVFGNodeSet& candidateLoads) const;
-    void collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& candidateLoads) const;
+    void collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& candidateLoads);
     std::unique_ptr<ProgSlice> buildStoreBypassGuardSlice(ProgSlice* rawSlice,
                                                           const SVFGNode* load) const;
     SVFGNodeSet storeNodes;
@@ -175,10 +174,12 @@ private:
     SVFGNodeSet ptrStoreNodes;
     SVFGNodeSet ptrLoadNodes;
     SVFGNodeSet criticalSinkNodes;
+    std::unordered_map<const ICFGNode*, SVFGNodeSet> storeNodesByICFG;
     std::unordered_map<const SVFGNode*, RegionSet> sourceInitialRegions;
     mutable std::unordered_map<const SVFGNode*, RegionSet> loadReadRegionCache;
     mutable std::unordered_map<const SVFGNode*, RegionSet> storeWriteRegionCache;
     mutable std::unordered_map<const SVFGNode*, bool> ignorePtrStoreForLoadCache;
+    std::unordered_map<const SVFGNode*, std::string> sourceAllocatorNames;
     mutable u32_t uninitDebugLinesPrinted = 0;
     u32_t smallInitSkippedSources = 0;
     u32_t scopeSkippedSources = 0;
@@ -218,10 +219,11 @@ private:
     bool sameBasicBlockReachableBefore(const ICFGNode* beforeNode, const ICFGNode* afterNode) const;
     bool sameFunctionDominates(const ICFGNode* domNode, const ICFGNode* useNode) const;
     bool hasDominatingInitBlocker(ProgSlice* slice, const SVFGNode* load) const;
+    bool isDefinitelyInitializedOnAllLocalPaths(ProgSlice* slice,
+                                                const SVFGNode* load) const;
     /// Mode-b init kill: whether a registered SaberInitAPI initializer call
     /// dominates `load` (same function) and initializes an object the load reads.
-    /// Catches OPAQUE initializers (no value-flow store node) that the store-based
-    /// hasDominatingInitBlocker cannot see. No-op until the init-API table is populated.
+    /// Catches OPAQUE initializers that have no value-flow store node.
     bool hasDominatingRegisteredInitCall(const SVFGNode* load) const;
     bool hasDominatingRegisteredInitCallInFunction(const SVFGNode* load, const FunObjVar* fun) const;
     bool hasDominatingRegisteredInitCallViaCallers(const SVFGNode* load, const FunObjVar* calleeFun) const;
@@ -267,6 +269,7 @@ private:
     bool isStoreStrongRegionKill(const SVFGNode* store) const;
     bool storeRHSMayCarryUninit(const SVFGNode* store, ProgSlice* slice) const;
     bool isZeroingAllocatorName(const std::string& name) const;
+    bool isFullyInitializingAllocatorName(const std::string& name) const;
     bool isZeroingHeapObject(const HeapObjVar* heapObj) const;
     void computeQualifierInferenceState(ProgSlice* slice, bool ignorePtrStore, SVFGNodeSet& mayUninitReachable);
     bool isDefinitelyInitInComputedState(const SVFGNodeSet& mayUninitReachable, const SVFGNode* load) const;
@@ -281,7 +284,6 @@ private:
     bool isAddressEscapingScalarStackObject(StackObjVar* stackObj, SVFIR* pag) const;
     bool isTrackableScalarStackObject(StackObjVar* stackObj, SVFIR* pag) const;
     bool isScalarStackValueLoad(const SVFGNode* load) const;
-    bool pointeeIncludesCompositeObject(NodeID ptr) const;
     bool isReturnAnchoredICFGNode(const ICFGNode* node) const;
     bool isSystemOrGeneratedCodePath(const std::string& file) const;
     bool isSystemOrGeneratedCodeICFG(const ICFGNode* node) const;
@@ -289,10 +291,7 @@ private:
     /// stack/heap objects should not seed uninitialized-use sources. Delegates to the
     /// queryable SaberScopeAPI table (path + STL/ABI mangled-name rules).
     bool isOutOfScopeSourceFunction(const FunObjVar* fun) const;
-    bool isHeapUninitSource(const SVFGNode* source) const;
     bool isAllocatorInSystemLibrary(const FunObjVar* fun) const;
-    bool backwardValueFlowReachesSource(ProgSlice* slice, const SVFGNode* start,
-                                        const SVFGNode* source) const;
 };
 
 template<class Data>

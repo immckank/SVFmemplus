@@ -42,6 +42,72 @@ using namespace SVF;
 
 namespace
 {
+bool pathContains(const std::string& file, const char* sub)
+{
+    return file.find(sub) != std::string::npos;
+}
+
+/// Linux kernel infrastructure headers (inlined list/lock/refcount/xarray macros).
+/// Reports anchored here are modeling noise; the actionable site is the caller
+/// in first-party subsystem sources (net/, fs/, drivers/, ...).
+bool isKernelInfrastructureHeader(const std::string& file)
+{
+    static const char* kHeaderZones[] =
+    {
+        "/include/linux/",
+        "/include/asm-generic/",
+        "/include/asm/",
+        "/include/uapi/",
+        "/include/generated/",
+        "/include/drm/",
+        "/include/net/",
+        "/include/scsi/",
+        "/include/sound/",
+        "/include/trace/",
+        "/include/soc/",
+        "/include/rdma/",
+        "/include/xen/",
+    };
+    for (const char* zone : kHeaderZones)
+    {
+        if (pathContains(file, zone))
+            return true;
+    }
+    // arch/<arch>/include/...
+    const size_t archPos = file.find("/arch/");
+    if (archPos != std::string::npos && file.find("/include/", archPos) != std::string::npos)
+        return true;
+    return false;
+}
+
+/// First-party kernel subsystem sources that BOF should keep reporting on.
+bool isFirstPartyKernelSource(const std::string& file)
+{
+    static const char* kSourceZones[] =
+    {
+        "/net/",
+        "/fs/",
+        "/drivers/",
+        "/mm/",
+        "/kernel/",
+        "/block/",
+        "/crypto/",
+        "/ipc/",
+        "/lib/",
+        "/security/",
+        "/sound/",
+        "/virt/",
+        "/io_uring/",
+        "/scripts/", // rarely actionable; kept for completeness
+    };
+    for (const char* zone : kSourceZones)
+    {
+        if (pathContains(file, zone))
+            return true;
+    }
+    return false;
+}
+
 /// Whether a buffer-overflow report at source-location string @p locStr is
 /// *out of scope* and should be suppressed because it does not belong to the
 /// analyzed application's own (first-party) source.
@@ -83,6 +149,12 @@ bool isOutOfScopeReport(const std::string& locStr)
         return true;
     const std::string file = locStr.substr(q1 + 1, q2 - q1 - 1);
     if (file.empty())
+        return true;
+
+    // Keep subsystem .c/.h under net/fs/drivers/...; drop generic kernel headers.
+    if (isFirstPartyKernelSource(file) && !isKernelInfrastructureHeader(file))
+        return false;
+    if (isKernelInfrastructureHeader(file))
         return true;
 
     // System / third-party / standard-library path markers.

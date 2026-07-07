@@ -477,18 +477,6 @@ bool UninitChecker::isOutOfScopeSourceFunction(const FunObjVar* fun) const
     return SaberScopeAPI::getScopeAPI()->isOutOfScopeFunction(fun);
 }
 
-bool UninitChecker::isHeapUninitSource(const SVFGNode* source) const
-{
-    if (source == nullptr)
-        return false;
-
-    if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(source))
-        return SVFUtil::isa<HeapObjVar>(addr->getPAGSrcNode());
-
-    return SVFUtil::isa<ActualRetVFGNode>(source) ||
-           SVFUtil::isa<FormalRetVFGNode>(source);
-}
-
 bool UninitChecker::isAllocatorInSystemLibrary(const FunObjVar* fun) const
 {
     if (fun == nullptr)
@@ -501,50 +489,6 @@ bool UninitChecker::isAllocatorInSystemLibrary(const FunObjVar* fun) const
 
     const ICFGNode* defNode = fun->getICFGNode();
     return isSystemOrGeneratedCodeICFG(defNode);
-}
-
-bool UninitChecker::backwardValueFlowReachesSource(ProgSlice* slice, const SVFGNode* start,
-                                                   const SVFGNode* source) const
-{
-    if (start == nullptr || source == nullptr || slice == nullptr)
-        return false;
-    if (start == source)
-        return true;
-
-    BackwardWorkList worklist;
-    SVFGNodeSet visited;
-    worklist.push(start);
-
-    u32_t steps = 0;
-    constexpr u32_t kMaxValueFlowSteps = 96;
-    while (!worklist.empty() && steps++ < kMaxValueFlowSteps)
-    {
-        const SVFGNode* node = worklist.pop();
-        if (!inUninitCandidateSlice(slice, node))
-            continue;
-        if (!visited.insert(node).second)
-            continue;
-        if (node == source)
-            return true;
-
-        for (auto edge : node->getInEdges())
-        {
-            const SVFGNode* pred = edge->getSrcNode();
-            if (!inUninitCandidateSlice(slice, pred))
-                continue;
-            if (pred == source)
-                return true;
-
-            if (SVFUtil::isa<LoadSVFGNode>(pred) || SVFUtil::isa<CopySVFGNode>(pred) ||
-                    SVFUtil::isa<PHISVFGNode>(pred) || SVFUtil::isa<GepSVFGNode>(pred) ||
-                    SVFUtil::isa<ActualRetVFGNode>(pred) || SVFUtil::isa<FormalParmVFGNode>(pred) ||
-                    SVFUtil::isa<AddrSVFGNode>(pred) || SVFUtil::isa<BinaryOPVFGNode>(pred) ||
-                    SVFUtil::isa<UnaryOPVFGNode>(pred) || ActualParmVFGNode::classof(pred))
-                worklist.push(pred);
-        }
-    }
-
-    return false;
 }
 
 bool UninitChecker::isCompositeMemoryObject(const BaseObjVar* obj) const
@@ -632,22 +576,6 @@ bool UninitChecker::isScalarStackValueLoad(const SVFGNode* load) const
     {
         const BaseObjVar* baseObj = getPAG()->getBaseObject(region.base);
         if (isSmallScalarStackObject(baseObj))
-            return true;
-    }
-    return false;
-}
-
-bool UninitChecker::pointeeIncludesCompositeObject(NodeID ptr) const
-{
-    PointerAnalysis* pta = getSVFG()->getPTA();
-    if (pta == nullptr)
-        return false;
-
-    const PointsTo& pts = pta->getPts(ptr);
-    for (PointsTo::iterator it = pts.begin(), eit = pts.end(); it != eit; ++it)
-    {
-        const BaseObjVar* baseObj = getPAG()->getBaseObject(*it);
-        if (isCompositeMemoryObject(baseObj))
             return true;
     }
     return false;
@@ -1301,35 +1229,25 @@ bool UninitChecker::storeRHSMayCarryUninit(const SVFGNode* store, ProgSlice* sli
 
 bool UninitChecker::isZeroingAllocatorName(const std::string& name) const
 {
-    if (name.find("calloc") != std::string::npos ||
-        name.find("zalloc") != std::string::npos ||
-        name.find("alloc_clear") != std::string::npos ||
-        name.find("alloc_zero") != std::string::npos ||
-        name == "vzalloc" ||
-        name == "kvzalloc" ||
-        name == "kzalloc" ||
-        name == "devm_kzalloc" ||
-        name == "kcalloc" ||
-        name.find("kzalloc_node") != std::string::npos ||
-        name.find("devm_kzalloc") != std::string::npos)
-        return true;
-    return false;
+    static const std::unordered_set<std::string> zeroingAllocators = {
+        "alloc_clear", "alloc_zero", "calloc", "devm_kzalloc",
+        "devm_kzalloc_node", "fs_zmalloc", "hmfs_zmalloc", "kcalloc",
+        "kmem_cache_zalloc", "kvcalloc", "kvzalloc", "kzalloc",
+        "kzalloc_node", "kzmalloc", "lalloc_clear", "safe_calloc",
+        "safecalloc", "safexcalloc", "FillpMemCalloc", "SoftBusCalloc", "SysCalloc",
+        "vzalloc", "xcalloc"
+    };
+    return zeroingAllocators.find(name) != zeroingAllocators.end();
 }
 
-bool UninitChecker::isPlainKmallocAllocatorName(const std::string& name) const
+bool UninitChecker::isFullyInitializingAllocatorName(const std::string& name) const
 {
     if (isZeroingAllocatorName(name))
-        return false;
-    if (name == "kmalloc" || name == "__kmalloc" || name == "kmalloc_node" ||
-        name == "kmalloc_array" || name == "kmem_cache_alloc")
         return true;
-    if (name.find("devm_kmalloc") != std::string::npos)
-        return true;
-    if (name.find("kmalloc") != std::string::npos)
-        return true;
-    if (name.find("kmem_cache_alloc") != std::string::npos)
-        return true;
-    return false;
+    static const std::unordered_set<std::string> copyInitializingAllocators = {
+        "realpath", "strdup", "strndup"
+    };
+    return copyInitializingAllocators.find(name) != copyInitializingAllocators.end();
 }
 
 bool UninitChecker::isZeroingHeapObject(const HeapObjVar* heapObj) const
@@ -1366,6 +1284,7 @@ void UninitChecker::initSrcs()
     storeWriteRegionCache.clear();
     smallInitSkippedSources = 0;
     scopeSkippedSources = 0;
+    sourceAllocatorNames.clear();
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
     {
@@ -1416,11 +1335,12 @@ void UninitChecker::initSrcs()
                     }
                     sourceInitialRegions[source] = initialRegions;
                     addToSources(source);
+                    ++saberTimeStat.uninitStackSources;
                 }
                 else if (HeapObjVar* heapObj = SVFUtil::dyn_cast<HeapObjVar>(obj))
                 {
-                    // B2: direct composite HeapObjVar sources are dominated by kmalloc FP;
-                    // heap uninit is tracked only via explicit non-kmalloc call-site rets.
+                    // Heap sources are represented by allocator call-site returns below.
+                    // Do not add the backing HeapObjVar as a second source.
                     (void)heapObj;
                     continue;
                 }
@@ -1440,11 +1360,13 @@ void UninitChecker::initSrcs()
         for(CallGraph::FunctionSet::const_iterator cit = callees.begin(), ecit = callees.end(); cit != ecit; ++cit)
         {
             const FunObjVar* fun = *cit;
-            if (!SaberCheckerAPI::getCheckerAPI()->isMemAlloc(fun) || isZeroingAllocatorName(fun->getName()))
+            if (!SaberCheckerAPI::getCheckerAPI()->isMemAlloc(fun))
                 continue;
-            // B2: skip plain kmalloc-family allocators (major FP source in kernel drivers).
-            if (isPlainKmallocAllocatorName(fun->getName()))
+            if (isFullyInitializingAllocatorName(fun->getName()))
+            {
+                ++saberTimeStat.uninitInitializedSourcesSkipped;
                 continue;
+            }
             if (isAllocatorInSystemLibrary(fun))
                 continue;
 
@@ -1479,13 +1401,13 @@ void UninitChecker::initSrcs()
                         ++scopeSkippedSources;
                         continue;
                     }
-                    if (!pointeeIncludesCompositeObject(pagNode->getId()))
-                        continue;
                     RegionSet initialRegions;
                     if (!addPointeeRegions(pagNode->getId(), initialRegions))
                         continue;
                     sourceInitialRegions[source] = initialRegions;
+                    sourceAllocatorNames[source] = fun->getName();
                     addToSources(source);
+                    ++saberTimeStat.uninitHeapSources;
                 }
             }
         }
@@ -1506,6 +1428,7 @@ void UninitChecker::initSnks()
     ptrStoreNodes.clear();
     ptrLoadNodes.clear();
     criticalSinkNodes.clear();
+    storeNodesByICFG.clear();
     ignorePtrStoreForLoadCache.clear();
 
     for (SVFIR::iterator it = pag->begin(), eit = pag->end(); it != eit; ++it)
@@ -1519,6 +1442,8 @@ void UninitChecker::initSnks()
                 if(getSVFG()->hasStmtVFGNode(ld)){
                     const SVFGNode* storeNode = getSVFG()->getStmtVFGNode(ld);
                     addToStoreNodes(storeNode);
+                    if (storeNode->getICFGNode() != nullptr)
+                        storeNodesByICFG[storeNode->getICFGNode()].insert(storeNode);
                     if (ld->getSrcNode()->isPointer())
                         ptrStoreNodes.insert(storeNode);
                 }
@@ -1995,6 +1920,67 @@ bool UninitChecker::hasDominatingInitBlocker(ProgSlice* slice, const SVFGNode* l
         }
     }
     return false;
+}
+
+bool UninitChecker::isDefinitelyInitializedOnAllLocalPaths(
+        ProgSlice* slice, const SVFGNode* load) const
+{
+    if (slice == nullptr || slice->getSource() == nullptr || load == nullptr)
+        return false;
+
+    const ICFGNode* sourceICFG = slice->getSource()->getICFGNode();
+    const ICFGNode* loadICFG = load->getICFGNode();
+    if (sourceICFG == nullptr || loadICFG == nullptr ||
+            sourceICFG->getFun() == nullptr ||
+            sourceICFG->getFun() != loadICFG->getFun())
+        return false;
+
+    std::deque<const ICFGNode*> worklist;
+    std::unordered_set<const ICFGNode*> visited;
+    worklist.push_back(loadICFG);
+
+    u32_t steps = 0;
+    constexpr u32_t kMaxLocalInitPathSteps = 2048;
+    while (!worklist.empty() && steps++ < kMaxLocalInitPathSteps)
+    {
+        const ICFGNode* node = worklist.front();
+        worklist.pop_front();
+        if (!visited.insert(node).second)
+            continue;
+        if (node == sourceICFG)
+            return false;
+
+        if (node != loadICFG)
+        {
+            auto stores = storeNodesByICFG.find(node);
+            if (stores != storeNodesByICFG.end())
+            {
+                bool initialized = false;
+                for (const SVFGNode* store : stores->second)
+                {
+                    if (storeMayKillLoadRegion(store, load) &&
+                            !storeRHSMayCarryUninit(store, slice))
+                    {
+                        initialized = true;
+                        break;
+                    }
+                }
+                if (initialized)
+                    continue;
+            }
+        }
+
+        for (auto edge : node->getInEdges())
+        {
+            const ICFGNode* pred = edge->getSrcNode();
+            if (pred != nullptr && pred->getFun() == sourceICFG->getFun())
+                worklist.push_back(pred);
+        }
+    }
+
+    // Exhausting every local path means each one hit an initializing store.
+    // A budget hit is unknown and must not suppress a potential bug.
+    return worklist.empty();
 }
 
 bool UninitChecker::isStructuralFullInitializer(const FunObjVar* callee, int* outArgIdx) const
@@ -2512,7 +2498,7 @@ void UninitChecker::collectCandidateLoads(const SVFGNodeSet& qualifierStateIgnor
     }
 }
 
-void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& candidateLoads) const
+void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& candidateLoads)
 {
     candidateLoads.clear();
 
@@ -2521,34 +2507,66 @@ void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& c
         return;
 
     NodeToRegionStateMap regionStates;
+    const bool timeStat = Options::SaberTimeStat();
+    double phaseStart = timeStat ? SVFStat::getClk(true) : 0;
     computeRegionUninitState(slice, regionStates);
+    if (timeStat)
+        saberTimeStat.uninitRegionStateTime +=
+            (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
 
-    const bool heapSource = isHeapUninitSource(slice->getSource());
     for (SVFGNodeSetIter lit = slice->sinksBegin(), elit = slice->sinksEnd(); lit != elit; ++lit)
     {
         const SVFGNode* load = *lit;
+        ++saberTimeStat.uninitCandidateLoadsExamined;
         if (loadNodes.find(load) == loadNodes.end())
+        {
+            ++saberTimeStat.uninitCandidateRejectShape;
             continue;
+        }
         if (criticalSinkNodes.find(load) == criticalSinkNodes.end())
+        {
+            ++saberTimeStat.uninitCandidateRejectShape;
             continue;
+        }
         if (!inUninitCandidateSlice(slice, load))
+        {
+            ++saberTimeStat.uninitCandidateRejectShape;
             continue;
+        }
 
         if (isDirectParameterSpillLoad(load) || isFormalParameterPointerLoad(load) ||
                 isPtrLoadAddressComputationOnly(load))
+        {
+            ++saberTimeStat.uninitCandidateRejectShape;
             continue;
+        }
 
         const RegionSet& readRegions = getLoadReadRegions(load);
         if (readRegions.empty() || !regionSetsMayIntersect(sourceRegions, readRegions))
+        {
+            ++saberTimeStat.uninitCandidateRejectRegion;
             continue;
+        }
         if (!regionStates.empty() && !loadMayReadUninitRegion(load, regionStates))
+        {
+            ++saberTimeStat.uninitCandidateRejectState;
             continue;
-        if (hasDominatingInitBlocker(slice, load))
+        }
+        const bool heapSource =
+            sourceAllocatorNames.find(slice->getSource()) != sourceAllocatorNames.end();
+        if ((heapSource && isDefinitelyInitializedOnAllLocalPaths(slice, load)) ||
+                (!heapSource && hasDominatingInitBlocker(slice, load)))
+        {
+            ++saberTimeStat.uninitCandidateRejectInit;
             continue;
+        }
         // Mode-b: an opaque registered initializer (SaberInitAPI) dominating the load
         // and aliasing the read object kills the uninit candidate. No-op until populated.
         if (hasDominatingRegisteredInitCall(load))
+        {
+            ++saberTimeStat.uninitCandidateRejectInit;
             continue;
+        }
 
         BackwardWorkList worklist;
         SVFGNodeSet visited;
@@ -2556,6 +2574,7 @@ void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& c
         bool reachesSource = false;
         u32_t backwardSteps = 0;
         const u32_t maxBackwardSteps = Options::SaberUninitMaxBackwardSteps();
+        phaseStart = timeStat ? SVFStat::getClk(true) : 0;
 
         while (!worklist.empty() && backwardSteps++ < maxBackwardSteps)
         {
@@ -2581,14 +2600,17 @@ void UninitChecker::collectRegionCandidateLoads(ProgSlice* slice, SVFGNodeSet& c
                     worklist.push(pred);
             }
         }
+        if (timeStat)
+            saberTimeStat.uninitCandidateBackwardTime +=
+                (SVFStat::getClk(true) - phaseStart) / TIMEINTERVAL;
 
         if (reachesSource)
         {
-            if (heapSource &&
-                    !backwardValueFlowReachesSource(slice, load, slice->getSource()))
-                continue;
             candidateLoads.insert(load);
+            ++saberTimeStat.uninitCandidateAccepted;
         }
+        else
+            ++saberTimeStat.uninitCandidateRejectUnreachable;
     }
 }
 
@@ -2964,17 +2986,13 @@ std::string UninitChecker::classifyAllocator(const SVFGNode* source) const
 {
     if (source == nullptr)
         return "unknown";
-    const ICFGNode* icfg = source->getICFGNode();
-    const CallICFGNode* call = SVFUtil::dyn_cast<CallICFGNode>(icfg);
-    if (call == nullptr)
-        return "stack";
-
-    CallGraph::FunctionSet callees;
-    getCallgraph()->getCallees(call, callees);
-    for (const FunObjVar* fun : callees)
+    auto knownAllocator = sourceAllocatorNames.find(source);
+    if (knownAllocator != sourceAllocatorNames.end())
+        return knownAllocator->second;
+    if (const AddrSVFGNode* addr = SVFUtil::dyn_cast<AddrSVFGNode>(source))
     {
-        if (fun != nullptr && SaberCheckerAPI::getCheckerAPI()->isMemAlloc(fun))
-            return fun->getName();
+        if (SVFUtil::isa<StackObjVar>(addr->getPAGSrcNode()))
+            return "stack";
     }
     return "unknown";
 }

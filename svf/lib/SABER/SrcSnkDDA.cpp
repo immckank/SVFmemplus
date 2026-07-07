@@ -415,6 +415,8 @@ void SrcSnkDDA::printSaberTimeStat() const
         outs() << "UninitReportTime(sec)     " << saberTimeStat.uninitReportTime << "\n";
         outs() << "UninitQualifierTime(sec)  " << saberTimeStat.uninitQualifierTime << "\n";
         outs() << "UninitCandidateTime(sec)  " << saberTimeStat.uninitCollectCandidateTime << "\n";
+        outs() << "UninitRegionStateTime(sec) " << saberTimeStat.uninitRegionStateTime << "\n";
+        outs() << "UninitCandBackwardTime(sec) " << saberTimeStat.uninitCandidateBackwardTime << "\n";
         outs() << "UninitGuardBuildTime(sec) " << saberTimeStat.uninitGuardBuildTime << "\n";
         outs() << "UninitGuardSolveTime(sec) " << saberTimeStat.uninitGuardSolveTime << "\n";
         outs() << "UninitLoadCheckTime(sec)  " << saberTimeStat.uninitLoadCheckTime << "\n";
@@ -425,6 +427,16 @@ void SrcSnkDDA::printSaberTimeStat() const
         outs() << "UninitMaxCandidateLoads   " << saberTimeStat.uninitMaxCandidateLoads << "\n";
         outs() << "UninitMaxForwardSlice     " << saberTimeStat.uninitMaxForwardSlice << "\n";
         outs() << "UninitMaxGuardBackward    " << saberTimeStat.uninitMaxGuardBackwardSlice << "\n";
+        outs() << "UninitStackSources        " << saberTimeStat.uninitStackSources << "\n";
+        outs() << "UninitHeapSources         " << saberTimeStat.uninitHeapSources << "\n";
+        outs() << "UninitInitializedSkipped  " << saberTimeStat.uninitInitializedSourcesSkipped << "\n";
+        outs() << "UninitCandidatesExamined  " << saberTimeStat.uninitCandidateLoadsExamined << "\n";
+        outs() << "UninitRejectShape         " << saberTimeStat.uninitCandidateRejectShape << "\n";
+        outs() << "UninitRejectRegion        " << saberTimeStat.uninitCandidateRejectRegion << "\n";
+        outs() << "UninitRejectState         " << saberTimeStat.uninitCandidateRejectState << "\n";
+        outs() << "UninitRejectInit          " << saberTimeStat.uninitCandidateRejectInit << "\n";
+        outs() << "UninitRejectUnreachable   " << saberTimeStat.uninitCandidateRejectUnreachable << "\n";
+        outs() << "UninitCandidatesAccepted  " << saberTimeStat.uninitCandidateAccepted << "\n";
     }
     outs() << "TotalTime(sec)            " << saberTimeStat.totalTime << "\n";
     outs() << "*********************************************\n\n";
