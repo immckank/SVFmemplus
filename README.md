@@ -93,10 +93,92 @@ saber -uninit \
 2. 直接使用警报 path、源码上下文和 checker 证据；
 3. 将 `classification` 与 `reason` 原子写回同一文件。
 
+## 主动学习（ActiveLearning）
+
+SVFmemplus 已默认适配 ActiveLearning 的数据与警报格式，**无需为 Saber / BOF 新增命令行参数**。
+告警写入时由 `UnifiedAlertWriter` 自动补齐 `active_learning` 与 `classifications` 字段；图导出由独立工具 `svf-al-export` 完成，闭环编排见仓库根 `script/run_active_learning_loop.sh`。
+
+### 告警 JSON 扩展
+
+在现有单警报 JSON 上增加 `active_learning` 对象（写告警时自动创建，读告警时缺字段也会补齐）：
+
+```json
+{
+  "active_learning": {
+    "schema_version": "active-learning/v1",
+    "graph_ids": [],
+    "match_status": "unresolved",
+    "score": null,
+    "rank": null,
+    "last_model": null
+  },
+  "classifications": []
+}
+```
+
+顶层 `classification` / `reason` 仍表示最新结论；多轮反馈历史保存在 `classifications[]` 中。
+`graph_ids` 由下游排序阶段根据告警证据位置与 `graph_index.csv` 回填，图 ID 形如 `heap:<svf-object-id>`。
+
+### 警报 → 模型输入
+
+`ActiveLearning/alerts.py` 承担警报到排序/推理参数的转换：读取 `active_learning.graph_ids` 与预测分数，写回 `score`、`rank`、`match_status`。
+该逻辑位于 ActiveLearning 模块内，后续接入其他静态分析器时在此扩展，而不改动 SVFmemplus 告警 JSON 外壳。
+
+### 值流邻域图导出（`svf-al-export`）
+
+对 CI（context-insensitive）指针分析中的每个 heap object，抽取其 SVFG 值流邻域子图，并按 ActiveLearning 约定的 CSV schema 写出：
+
+```bash
+svf-al-export --output-dir /path/to/output/active_learning/predict_dataset/raw/<stem> input.bc
+```
+
+产出文件：
+
+```text
+<output-dir>/
+├── 0.node.csv
+├── 0.edge.csv
+├── …
+├── idToGraph.csv      # 无表头，每行一个 graph ID
+└── graph_index.csv    # graph_id,object_id,file,line,column,source_loc
+```
+
+邻域深度默认为 2 跳（含与 heap object 相关的 anchor 节点及其出入边可达节点）。
+若某 heap object 在 SVFG 中无对应节点，仍输出仅含 anchor 节点的占位图，保证下游推理可识别该 object。
+
+**节点 CSV**（`id,pattern,type,level,pointedBy`）与 **边 CSV**（`srcid,tgtid,type`）列含义见 `ActiveLearning/README.md`。
+
+C/C++ 导出器中的 `type` / `edge.type` 整数枚举与模型 `edge_type_vocab_size=100` 对齐：
+
+| edge.type | SVFG 边 |
+| --- | --- |
+| `0` | `IntraDirectVF` |
+| `1` | `IntraIndirectVF` |
+| `2` | `CallDirVF` |
+| `3` | `RetDirVF` |
+| `4` | `CallIndVF` |
+| `5` | `RetIndVF` |
+| `6` | `ThreadMHPIndirectVF` |
+| `7..99` | 保留 |
+
+节点 `type` 为粗粒度分组（`0..19`），如 `1=address/allocation`、`2=load`、`12=heap object anchor` 等，完整表见 `ActiveLearning/README.md`。
+
+导出完成后，可用随机权重模型做一次 smoke test：
+
+```bash
+PYTHONPATH=ActiveLearning python3 -m cli predict \
+  --dataset /path/to/predict_dataset \
+  --output /path/to/predictions.csv \
+  --random-weights
+```
+
 ## 主要代码
 
 - `svf-llvm/tools/SABER/saber.cpp`：Saber 入口和报告参数
 - `svf/lib/SABER/`：各 Saber 检查器及报告实现
+- `svf/lib/Util/UnifiedAlertWriter.cpp`：单警报 JSON 持久化与 `active_learning` 字段补齐
+- `svf-llvm/tools/ActiveLearningExport/`：`svf-al-export`，CI heap object 值流邻域图导出
 - `svf-llvm/tools/GraphReader/`：语义查询服务
 - `svf-llvm/tools/BOF/`、`svf/lib/BOF/`：缓冲区越界检测
 - 仓库根 `script/run_svf.sh`：全局管线静态分析入口
+- 仓库根 `script/run_active_learning_loop.sh`：主动学习闭环（导出 → 推理 → 排序 → 反馈）

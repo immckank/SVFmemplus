@@ -8,9 +8,11 @@ add_subdirectory(LLVM2SVF)
 add_subdirectory(AE)
 add_subdirectory(GraphReader)
 add_subdirectory(BOF)
+add_subdirectory(ActiveLearningExport)
 
 set(ALL_TOOLS
     graph-reader
+    svf-al-export
     ae
     cfl
     dvf

@@ -34,6 +34,30 @@ void replaceField(cJSON* document, const char* name, cJSON* value)
         cJSON_AddItemToObject(document, name, value);
 }
 
+void ensureActiveLearningFields(cJSON* document)
+{
+    cJSON* active = cJSON_GetObjectItemCaseSensitive(document, "active_learning");
+    if (!cJSON_IsObject(active))
+    {
+        active = cJSON_CreateObject();
+        replaceField(document, "active_learning", active);
+    }
+    if (!cJSON_HasObjectItem(active, "schema_version"))
+        cJSON_AddStringToObject(active, "schema_version", "active-learning/v1");
+    if (!cJSON_HasObjectItem(active, "graph_ids"))
+        cJSON_AddItemToObject(active, "graph_ids", cJSON_CreateArray());
+    if (!cJSON_HasObjectItem(active, "match_status"))
+        cJSON_AddStringToObject(active, "match_status", "unresolved");
+    if (!cJSON_HasObjectItem(active, "score"))
+        cJSON_AddNullToObject(active, "score");
+    if (!cJSON_HasObjectItem(active, "rank"))
+        cJSON_AddNullToObject(active, "rank");
+    if (!cJSON_HasObjectItem(active, "last_model"))
+        cJSON_AddNullToObject(active, "last_model");
+    if (!cJSON_HasObjectItem(document, "classifications"))
+        cJSON_AddItemToObject(document, "classifications", cJSON_CreateArray());
+}
+
 } // namespace
 
 std::string alertSha256(const std::string& text)
@@ -121,6 +145,7 @@ bool UnifiedAlertWriter::write(const std::string& stableIdentity,
 
     replaceField(document, "alert_id",
                  cJSON_CreateString(("sha256:" + digest).c_str()));
+    ensureActiveLearningFields(document);
     if (std::filesystem::exists(path))
     {
         cJSON* old = readDocument(path);
@@ -131,9 +156,10 @@ bool UnifiedAlertWriter::write(const std::string& stableIdentity,
                             << path.string() << "\n";
             return false;
         }
-        for (const char* field : {"classification", "reason"})
+        for (const char* field : {"classification", "reason", "classifications", "active_learning"})
             if (cJSON* value = cJSON_GetObjectItemCaseSensitive(old, field))
                 replaceField(document, field, cJSON_Duplicate(value, true));
+        ensureActiveLearningFields(document);
         cJSON_Delete(old);
     }
 
