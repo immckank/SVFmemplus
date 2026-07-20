@@ -45,6 +45,7 @@
 #include "SVFIR/SVFIR.h"
 #include "Graphs/ICFG.h"
 #include "Graphs/ICFGNode.h"
+#include "SABER/SaberSemanticRules.h"
 #include "Util/SVFUtil.h"
 
 using namespace SVF;
@@ -89,6 +90,18 @@ void BufferOverflowChecker::initialize(SVFIR* pag)
 
         const SVFVar* src = addrStmt->getRHSVar();
         const SVFVar* dst = addrStmt->getLHSVar();
+        const ICFGNode* sourceNode = addrStmt->getICFGNode();
+        if (sourceNode)
+        {
+            if (const SaberSemanticRules::Fact* fact =
+                    SaberSemanticRules::get()->ignoredSource(
+                        "bof", sourceNode->getSourceLoc()))
+            {
+                SaberSemanticRules::get()->recordHit(
+                    *fact, "bof", "buffer_source", sourceNode->getSourceLoc());
+                continue;
+            }
+        }
 
         // alloca instructions (stack objects, element-domain offsets)
         if (const StackObjVar* stackObjVar = SVFUtil::dyn_cast<StackObjVar>(src))
@@ -147,6 +160,14 @@ void BufferOverflowChecker::initialize(SVFIR* pag)
             continue;
 
         const CallICFGNode* callInst = callPE->getCallInst();
+        if (const SaberSemanticRules::Fact* fact =
+                SaberSemanticRules::get()->ignoredSource(
+                    "bof", callInst->getSourceLoc()))
+        {
+            SaberSemanticRules::get()->recordHit(
+                *fact, "bof", "allocation", callInst->getSourceLoc());
+            continue;
+        }
         const FunObjVar* funObjVar = callInst->getCalledFunction();
         if (!funObjVar || !heapAllocationHandler.isAllocAPI(funObjVar))
             continue;
@@ -186,6 +207,9 @@ void BufferOverflowChecker::initialize(SVFIR* pag)
     // (dst->beaconIe = OsalMemCalloc(len-1); memcpy_s(dst->beaconIe, len, ...)).
     for (const CallICFGNode* callInst : pag->getCallSiteSet())
     {
+        if (SaberSemanticRules::get()->ignoredSource(
+                "bof", callInst->getSourceLoc()))
+            continue;
         const FunObjVar* funObjVar = callInst->getCalledFunction();
         if (!funObjVar || !heapAllocationHandler.isAllocAPI(funObjVar))
             continue;

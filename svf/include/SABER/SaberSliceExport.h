@@ -19,7 +19,7 @@ namespace SVF
 
 class ICFGNode;
 
-/// Bug category encoded in slice JSON for downstream analysis tools.
+/// Warning type encoded with the same names accepted by the saber CLI.
 enum class SaberSliceKind
 {
     USE_AFTER_FREE,
@@ -129,7 +129,6 @@ struct SaberSlice
     std::string bypassReturnLoc;
 
     std::string toJson(const std::string& indent) const;
-    std::string stableIdentity() const;
 };
 
 /// Queued SABER report emitted at finalize; slice context is collected on flush.

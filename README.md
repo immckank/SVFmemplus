@@ -13,11 +13,11 @@ Saber 当前支持：
 
 `bof` 工具用于检测缓冲区越界（`BufferOverflow`），通过
 `-report-dir=<dir>` 直接输出统一的
-`alerts/buffer_overflow/<sha256>.json` 单告警文件。
+`alerts/bof/<sha256>.json` 单告警文件。
 
-每条告警输出为独立 JSON。除 leak 外，`path` 是一条裁剪后的 SVFG
-值流 witness；leak 的 `paths` 是可能安全释放对象的路径，
-`leak_condition` 表示安全条件并集的补集。
+每条告警输出为独立 JSON。除 leak 外，`content.path` 是一条裁剪后的 SVFG
+值流 witness；leak 的 `content.paths` 是可能安全释放对象的路径，
+`content.leak_condition` 表示安全条件并集的补集。
 
 ## 构建
 
@@ -52,76 +52,89 @@ saber -uninit -report-dir=/path/to/output input.bc
 四类检查器分别写入：
 
 ```text
-alerts/memory_leak/<sha256>.json
-alerts/double_free/<sha256>.json
-alerts/use_after_free/<sha256>.json
-alerts/uninit_use/<sha256>.json
+alerts/leak/<sha256>.json
+alerts/dfree/<sha256>.json
+alerts/uaf/<sha256>.json
+alerts/uninit/<sha256>.json
 ```
 
 `-report-dir` 默认值为当前目录。终端内容仅作为运行日志，不是下游输入。
 
 ## 统一运行（全局管线）
 
-在仓库根目录配置 `script/config.env` 后：
+在仓库根目录从 `workflow.ini.example` 创建项目配置，其中 `bitcode_path` 直接指向
+一个 `.bc` 文件：
 
 ```bash
-./script/run_svf.sh                              # Step1 静态分析
-./script/run_pipeline.sh                         # SVF + FPhandler
-./script/run_svf.sh --checkers leak,dfree        # 仅跑指定 checker
+python3 -m orchestrator --config workflow.ini analyze
+python3 -m orchestrator --config workflow.ini analyze \
+  --checkers leak,dfree
 ```
 
-`defect_types=leak,dfree,uaf,uninit` 控制运行哪些检查器；追加 `bof` 可启用 BOF。
+旧 `script/config.env` 用户仍可通过仓库根 `script/run_svf.sh` 调用兼容包装。
 
-## 语义规则反馈
+## 项目语义库
 
-Saber 可加载经人工审核批准的 `semantic-rules/v1` 规则：
+Saber 和 BOF 共享最小 `semantic-fact/v2` 项目语义库。语义库只有
+`base_api`、`safe_alloc`、`safe_free`、`value_range` 和
+`source_filter` 五个 scope；每个 scope 只有描述和 fact 列表，fact
+不含 ID、状态、版本或时间字段。
 
 ```bash
-saber -uninit \
-  -saber-semantic-rules=/path/to/semantic_rules.approved.json \
+saber -leak \
+  -semantic-facts=/path/to/semantic_facts.json \
   -report-dir=/path/to/output \
   input.bc
+
+bof -semantic-facts=/path/to/semantic_facts.json \
+  -report-dir=/path/to/output input.bc
 ```
 
-这为后续 FPhandler 将 LLM 研判中发现的函数语义反馈给静态分析器预留了稳定接口。只有状态为 `approved` 的规则会被 Saber 使用。
+分析产物由 orchestrator 与仓库内上一次警报按 `alert_id` 做集合差分。
+本次消失的旧警报继续保留并设置 `suppressed: true`；后续再次出现时恢复为
+`suppressed: false`。抑制状态为 true 时 `score` 固定为 0。
 
 ## 与 FPhandler 联动
 
 将 Saber 的输出目录配置为 FPhandler 的 `OUTPUT_DIR`。FPhandler 会：
 
-1. 按 `defect_types` 从 `alerts/` 读取对应类别的单警报 JSON；
-2. 直接使用警报 path、源码上下文和 checker 证据；
-3. 将 `classification` 与 `reason` 原子写回同一文件。
+1. 按 `defect_types` 从 `alerts/` 读取对应类型的单警报 JSON；
+2. 直接使用 `content` 中的路径、源码上下文和 checker 证据；
+3. 将结论追加到同一文件的 `classifications[]`。
 
 ## 主动学习（ActiveLearning）
 
 SVFmemplus 已默认适配 ActiveLearning 的数据与警报格式，**无需为 Saber / BOF 新增命令行参数**。
-告警写入时由 `UnifiedAlertWriter` 自动补齐 `active_learning` 与 `classifications` 字段；图导出由独立工具 `svf-al-export` 完成，闭环编排见仓库根 `script/run_active_learning_loop.sh`。
+告警写入时由 `UnifiedAlertWriter` 创建最小 Warning；图导出由独立工具 `svf-al-export` 完成，闭环编排见仓库根 `script/run_active_learning_loop.sh`。
 
-### 告警 JSON 扩展
+### Warning 外壳
 
-在现有单警报 JSON 上增加 `active_learning` 对象（写告警时自动创建，读告警时缺字段也会补齐）：
+产出阶段未执行的字段保持 `null`，不做兼容补齐：
 
 ```json
 {
-  "active_learning": {
-    "schema_version": "active-learning/v1",
-    "graph_ids": [],
-    "match_status": "unresolved",
-    "score": null,
-    "rank": null,
-    "last_model": null
+  "alert_id": "sha256:...",
+  "producer": "svfmemplus",
+  "type": "uaf",
+  "content": {
+    "path": [{"role": "use", "location": {"file": "src/a.c", "line": 42}}],
+    "evidence": {"checker": {"report_kind": "local_ordered"}}
   },
-  "classifications": []
+  "graph_ids": null,
+  "suppressed": false,
+  "classifications": null,
+  "active_learning": null,
+  "score": 0.5
 }
 ```
 
-顶层 `classification` / `reason` 仍表示最新结论；多轮反馈历史保存在 `classifications[]` 中。
-`graph_ids` 由下游排序阶段根据告警证据位置与 `graph_index.csv` 回填，图 ID 形如 `heap:<svf-object-id>`。
+`alert_id` 是规范化 `{producer,type,content}` 的 SHA-256，文件名为其摘要部分。
+分类结论首次写入时将 `classifications` 变为数组并持续追加。
+`graph_ids` 在图关联阶段结束后为空数组或实际图 ID，图 ID 形如 `heap:<svf-object-id>`。
 
 ### 警报 → 模型输入
 
-`ActiveLearning/alerts.py` 承担警报到排序/推理参数的转换：读取 `active_learning.graph_ids` 与预测分数，写回 `score`、`rank`、`match_status`。
+`ActiveLearning/alerts.py` 承担警报到排序/推理参数的转换：读取顶层 `graph_ids` 与预测分数，写回最新 `active_learning={weight,model}` 并重算 `score`。
 该逻辑位于 ActiveLearning 模块内，后续接入其他静态分析器时在此扩展，而不改动 SVFmemplus 告警 JSON 外壳。
 
 ### 值流邻域图导出（`svf-al-export`）
@@ -180,5 +193,5 @@ PYTHONPATH=ActiveLearning python3 -m cli predict \
 - `svf-llvm/tools/ActiveLearningExport/`：`svf-al-export`，CI heap object 值流邻域图导出
 - `svf-llvm/tools/GraphReader/`：语义查询服务
 - `svf-llvm/tools/BOF/`、`svf/lib/BOF/`：缓冲区越界检测
-- 仓库根 `script/run_svf.sh`：全局管线静态分析入口
-- 仓库根 `script/run_active_learning_loop.sh`：主动学习闭环（导出 → 推理 → 排序 → 反馈）
+- 仓库根 `orchestrator/`：分析、警报对账和主动学习的统一服务与 CLI
+- 仓库根 `script/run_svf.sh`：旧 `config.env` 的兼容入口

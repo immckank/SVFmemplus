@@ -28,6 +28,7 @@
  */
 
 #include "BOF/RangeAnalysis.h"
+#include "SABER/SaberSemanticRules.h"
 #include "SVFIR/SVFIR.h"
 #include "SVFIR/SVFStatements.h"
 #include "SVFIR/SVFVariables.h"
@@ -92,6 +93,17 @@ Range RangeAnalysis::analyzeVarRange(const SVFVar* var, int depth) {
 }
 
 Range RangeAnalysis::analyzeVarRange(const SVFVar* var, const ICFGNode* context, int depth) {
+    // Project facts are authoritative seeds at the exact value/program point.
+    // Query before the ordinary cache and recursive derivation so a prior TOP
+    // result cannot hide a newly supplied semantic interval.
+    std::int64_t semanticLower = 0, semanticUpper = 0;
+    if (SaberSemanticRules::get()->resolveRange(
+            var, context, semanticLower, semanticUpper))
+    {
+        Range semanticRange(semanticLower, semanticUpper);
+        setCachedVarRange(context, var, semanticRange);
+        return semanticRange;
+    }
     // ==== Check if the maximum recursion depth is reached ====
     if(depth == MAX_RECURSION_DEPTH){
         return Range::TOP;

@@ -98,6 +98,9 @@ public:
     virtual void finalize() override;
 
 protected:
+    /// Stable checker name used by semantic-fact source/context queries.
+    virtual const char* semanticCheckerName() const { return "leak"; }
+
     /// Whether initSrcs should include allocation sites in functions without callers.
     virtual bool includeUncalledAllocSources() const
     {

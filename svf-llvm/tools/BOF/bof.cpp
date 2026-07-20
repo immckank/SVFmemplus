@@ -29,8 +29,10 @@
 #include "SVF-LLVM/LLVMUtil.h"
 #include "SVF-LLVM/SVFIRBuilder.h"
 #include "BOF/BufferOverflowChecker.h"
+#include "SABER/SaberSemanticRules.h"
 #include "Util/CommandLine.h"
 #include "Util/Options.h"
+
 
 
 using namespace llvm;
@@ -39,7 +41,9 @@ using namespace SVF;
 static const Option<std::string> BofReportFile(
     "bof-report", "Dump the buffer-overflow bug report to the given JSON file", "");
 static const Option<std::string> ReportDir(
-    "report-dir", "Write unified BOF alerts under <dir>/alerts/buffer_overflow", "");
+    "report-dir", "Write unified BOF warnings under <dir>/alerts/bof", "");
+static const Option<std::string> SemanticFactsPath(
+    "semantic-facts", "Load project semantic-fact/v2 JSON", "");
 
 // ---- "Client-special edition" display switch (output only) ----
 // When set, MAY (possible) overflows are rendered as MUST in the terminal
@@ -92,6 +96,13 @@ int main(int argc, char** argv)
 
     }
 
+    if (!SemanticFactsPath().empty() &&
+            !SaberSemanticRules::get()->loadFile(SemanticFactsPath()))
+    {
+        SVFUtil::errs() << "[SemanticFact] invalid facts; analysis aborted\n";
+        LLVMModuleSet::releaseLLVMModuleSet();
+        return EXIT_FAILURE;
+    }
     BufferOverflowChecker bufferOverflowChecker;
 
     // Assemble the LLM MAY-triage config: optional JSON file first, then env
@@ -111,7 +122,6 @@ int main(int argc, char** argv)
     bufferOverflowChecker.setMayAsMust(BofMayAsMust());
 
     bufferOverflowChecker.runOnModule(pag);
-
     // Optionally persist the structured bug report as JSON.
     if (!BofReportFile().empty())
         bufferOverflowChecker.dumpReport(BofReportFile());

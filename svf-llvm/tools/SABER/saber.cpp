@@ -48,8 +48,10 @@ static const Option<std::string> ReportDir(
     "report-dir",
     "Directory containing the per-alert Saber JSON tree",
     ".");
-static const Option<std::string> SaberSemanticRulesPath(
-    "saber-semantic-rules", "Load approved semantic-rules/v1 JSON", "");
+static const Option<std::string> SemanticFactsPath(
+    "semantic-facts", "Load project semantic-fact/v2 JSON", "");
+static const Option<std::string> LegacySemanticRulesPath(
+    "saber-semantic-rules", "Compatibility alias for -semantic-facts", "");
 
 static void setDefaultReportConfig(const std::vector<std::string>& modules)
 {
@@ -83,9 +85,16 @@ int main(int argc, char ** argv)
     SVFIRBuilder builder;
     SVFIR* pag = builder.build();
 
-    if (!SaberSemanticRulesPath().empty() &&
-            !SaberSemanticRules::get()->loadFile(SaberSemanticRulesPath()))
-        SVFUtil::errs() << "[SaberSemanticRules] rules rejected; using built-in semantics only\n";
+    const std::string semanticPath = !SemanticFactsPath().empty()
+                                         ? SemanticFactsPath()
+                                         : LegacySemanticRulesPath();
+    if (!semanticPath.empty() &&
+            !SaberSemanticRules::get()->loadFile(semanticPath))
+    {
+        SVFUtil::errs() << "[SemanticFact] invalid facts; analysis aborted\n";
+        LLVMModuleSet::releaseLLVMModuleSet();
+        return EXIT_FAILURE;
+    }
 
 
     std::unique_ptr<LeakChecker> saber;

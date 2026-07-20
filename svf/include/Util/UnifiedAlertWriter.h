@@ -10,18 +10,19 @@
 namespace SVF
 {
 
-std::string alertSha256(const std::string& text);
-
 class UnifiedAlertWriter
 {
 public:
-    UnifiedAlertWriter(const std::string& alertRoot, const std::string& categoryDir);
+    UnifiedAlertWriter(const std::string& alertRoot, const std::string& warningType);
 
-    bool write(const std::string& stableIdentity, const std::string& document);
+    /// Persist one warning content object. Identity is the canonical JSON of
+    /// {producer,type,content}; mutable downstream fields never affect it.
+    bool write(const std::string& producer, const std::string& content);
     bool removeStale() const;
 
 private:
     std::filesystem::path directory;
+    std::string warningType;
     std::set<std::string> currentFiles;
 };
 

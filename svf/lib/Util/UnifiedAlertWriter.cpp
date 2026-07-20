@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <algorithm>
+#include <cmath>
 #include <sstream>
 #include <vector>
 
@@ -34,28 +36,124 @@ void replaceField(cJSON* document, const char* name, cJSON* value)
         cJSON_AddItemToObject(document, name, value);
 }
 
-void ensureActiveLearningFields(cJSON* document)
+std::string jsonString(const char* value)
 {
-    cJSON* active = cJSON_GetObjectItemCaseSensitive(document, "active_learning");
-    if (!cJSON_IsObject(active))
+    cJSON* string = cJSON_CreateString(value ? value : "");
+    char* rendered = cJSON_PrintUnformatted(string);
+    std::string result = rendered ? rendered : "\"\"";
+    cJSON_free(rendered);
+    cJSON_Delete(string);
+    return result;
+}
+
+void appendCanonical(const cJSON* value, std::ostringstream& os)
+{
+    if (cJSON_IsObject(value))
     {
-        active = cJSON_CreateObject();
-        replaceField(document, "active_learning", active);
+        std::vector<const cJSON*> members;
+        for (const cJSON* child = value->child; child; child = child->next)
+            members.push_back(child);
+        std::sort(members.begin(), members.end(), [](const cJSON* left, const cJSON* right) {
+            return std::string(left->string ? left->string : "") <
+                   std::string(right->string ? right->string : "");
+        });
+        os << "{";
+        for (size_t i = 0; i < members.size(); ++i)
+        {
+            if (i)
+                os << ",";
+            os << jsonString(members[i]->string) << ":";
+            appendCanonical(members[i], os);
+        }
+        os << "}";
+        return;
     }
-    if (!cJSON_HasObjectItem(active, "schema_version"))
-        cJSON_AddStringToObject(active, "schema_version", "active-learning/v1");
-    if (!cJSON_HasObjectItem(active, "graph_ids"))
-        cJSON_AddItemToObject(active, "graph_ids", cJSON_CreateArray());
-    if (!cJSON_HasObjectItem(active, "match_status"))
-        cJSON_AddStringToObject(active, "match_status", "unresolved");
-    if (!cJSON_HasObjectItem(active, "score"))
-        cJSON_AddNullToObject(active, "score");
-    if (!cJSON_HasObjectItem(active, "rank"))
-        cJSON_AddNullToObject(active, "rank");
-    if (!cJSON_HasObjectItem(active, "last_model"))
-        cJSON_AddNullToObject(active, "last_model");
-    if (!cJSON_HasObjectItem(document, "classifications"))
-        cJSON_AddItemToObject(document, "classifications", cJSON_CreateArray());
+    if (cJSON_IsArray(value))
+    {
+        os << "[";
+        const cJSON* child = nullptr;
+        size_t index = 0;
+        cJSON_ArrayForEach(child, value)
+        {
+            if (index++)
+                os << ",";
+            appendCanonical(child, os);
+        }
+        os << "]";
+        return;
+    }
+    char* rendered = cJSON_PrintUnformatted(value);
+    if (rendered)
+    {
+        os << rendered;
+        cJSON_free(rendered);
+    }
+    else
+        os << "null";
+}
+
+std::string canonicalIdentity(const std::string& producer,
+                              const std::string& warningType,
+                              const cJSON* content)
+{
+    cJSON* identity = cJSON_CreateObject();
+    cJSON_AddStringToObject(identity, "producer", producer.c_str());
+    cJSON_AddStringToObject(identity, "type", warningType.c_str());
+    cJSON_AddItemToObject(identity, "content", cJSON_Duplicate(content, true));
+    std::ostringstream os;
+    appendCanonical(identity, os);
+    cJSON_Delete(identity);
+    return os.str();
+}
+
+double clampScore(double value)
+{
+    return std::max(0.0, std::min(1.0, value));
+}
+
+double warningScore(const cJSON* document)
+{
+    const cJSON* suppressed =
+        cJSON_GetObjectItemCaseSensitive(document, "suppressed");
+    if (cJSON_IsTrue(suppressed))
+        return 0.0;
+    double fphandler = 0.5;
+    const cJSON* history = cJSON_GetObjectItemCaseSensitive(document, "classifications");
+    if (cJSON_IsArray(history))
+    {
+        const cJSON* entry = nullptr;
+        cJSON_ArrayForEach(entry, history)
+        {
+            const cJSON* verdict = cJSON_GetObjectItemCaseSensitive(entry, "classification");
+            if (!cJSON_IsString(verdict) || !verdict->valuestring)
+                continue;
+            const std::string label = verdict->valuestring;
+            if (label == "TP")
+                fphandler += 0.5;
+            else if (label == "FP")
+                fphandler -= 0.25;
+        }
+    }
+    fphandler = clampScore(fphandler);
+    double active = 0.5;
+    const cJSON* activeLearning =
+        cJSON_GetObjectItemCaseSensitive(document, "active_learning");
+    if (cJSON_IsObject(activeLearning))
+    {
+        const cJSON* weight = cJSON_GetObjectItemCaseSensitive(activeLearning, "weight");
+        if (cJSON_IsNumber(weight) && std::isfinite(weight->valuedouble))
+            active = clampScore(weight->valuedouble);
+    }
+    return 0.5 * fphandler + 0.5 * active;
+}
+
+void addEmptyStages(cJSON* document)
+{
+    cJSON_AddNullToObject(document, "graph_ids");
+    cJSON_AddFalseToObject(document, "suppressed");
+    cJSON_AddNullToObject(document, "classifications");
+    cJSON_AddNullToObject(document, "active_learning");
+    cJSON_AddNumberToObject(document, "score", 0.5);
 }
 
 } // namespace
@@ -119,13 +217,14 @@ std::string alertSha256(const std::string& text)
 }
 
 UnifiedAlertWriter::UnifiedAlertWriter(const std::string& alertRoot,
-                                       const std::string& categoryDir)
-    : directory(std::filesystem::path(alertRoot) / categoryDir)
+                                       const std::string& warningType)
+    : directory(std::filesystem::path(alertRoot) / warningType),
+      warningType(warningType)
 {
 }
 
-bool UnifiedAlertWriter::write(const std::string& stableIdentity,
-                               const std::string& documentText)
+bool UnifiedAlertWriter::write(const std::string& producer,
+                               const std::string& contentText)
 {
     std::error_code error;
     std::filesystem::create_directories(directory, error);
@@ -136,16 +235,23 @@ bool UnifiedAlertWriter::write(const std::string& stableIdentity,
         return false;
     }
 
-    const std::string digest = alertSha256(stableIdentity);
+    cJSON* content = cJSON_Parse(contentText.c_str());
+    if (!cJSON_IsObject(content))
+    {
+        cJSON_Delete(content);
+        SVFUtil::errs() << "[Alert] content is not a JSON object\n";
+        return false;
+    }
+    const std::string digest = alertSha256(
+        canonicalIdentity(producer, warningType, content));
     const std::string filename = digest + ".json";
     const std::filesystem::path path = directory / filename;
-    cJSON* document = cJSON_Parse(documentText.c_str());
-    if (!document)
-        return false;
-
-    replaceField(document, "alert_id",
-                 cJSON_CreateString(("sha256:" + digest).c_str()));
-    ensureActiveLearningFields(document);
+    cJSON* document = cJSON_CreateObject();
+    cJSON_AddStringToObject(document, "alert_id", ("sha256:" + digest).c_str());
+    cJSON_AddStringToObject(document, "producer", producer.c_str());
+    cJSON_AddStringToObject(document, "type", warningType.c_str());
+    cJSON_AddItemToObject(document, "content", content);
+    addEmptyStages(document);
     if (std::filesystem::exists(path))
     {
         cJSON* old = readDocument(path);
@@ -156,11 +262,11 @@ bool UnifiedAlertWriter::write(const std::string& stableIdentity,
                             << path.string() << "\n";
             return false;
         }
-        for (const char* field : {"classification", "reason", "classifications", "active_learning"})
+        for (const char* field : {"graph_ids", "classifications", "active_learning"})
             if (cJSON* value = cJSON_GetObjectItemCaseSensitive(old, field))
                 replaceField(document, field, cJSON_Duplicate(value, true));
-        ensureActiveLearningFields(document);
         cJSON_Delete(old);
+        replaceField(document, "score", cJSON_CreateNumber(warningScore(document)));
     }
 
     char* rendered = cJSON_Print(document);

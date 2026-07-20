@@ -135,18 +135,6 @@ void moveOriginsFirst(std::vector<SaberTraceNode>& trace)
     });
 }
 
-std::string categoryDir(SaberSliceKind kind)
-{
-    switch (kind)
-    {
-    case SaberSliceKind::MEMORY_LEAK: return "memory_leak";
-    case SaberSliceKind::DOUBLE_FREE: return "double_free";
-    case SaberSliceKind::USE_AFTER_FREE: return "use_after_free";
-    case SaberSliceKind::UNINIT_USE: return "uninit_use";
-    }
-    return "unknown";
-}
-
 std::string conditionJson(const std::vector<SaberPathEdge>& conditions,
                           const std::string& indent)
 {
@@ -179,10 +167,10 @@ const char* saberSliceKindStr(SaberSliceKind kind)
 {
     switch (kind)
     {
-    case SaberSliceKind::USE_AFTER_FREE: return "USE_AFTER_FREE";
-    case SaberSliceKind::UNINIT_USE:     return "UNINIT_USE";
-    case SaberSliceKind::MEMORY_LEAK:    return "MEMORY_LEAK";
-    case SaberSliceKind::DOUBLE_FREE:    return "DOUBLE_FREE";
+    case SaberSliceKind::USE_AFTER_FREE: return "uaf";
+    case SaberSliceKind::UNINIT_USE:     return "uninit";
+    case SaberSliceKind::MEMORY_LEAK:    return "leak";
+    case SaberSliceKind::DOUBLE_FREE:    return "dfree";
     }
     return "UNKNOWN";
 }
@@ -193,15 +181,16 @@ std::string SaberSlice::toJson(const std::string& ind) const
     const std::string i3 = i2 + "  ";
     std::ostringstream os;
     os << ind << "{\n";
-    os << i2 << "\"alert_id\": \"sha256:" << alertSha256(stableIdentity()) << "\",\n";
-    os << i2 << "\"category\": \"" << saberSliceKindStr(kind) << "\",\n";
 
     auto writeNode = [&](const SaberTraceNode& n, const std::string& nodeInd) {
         os << "{ \"role\": \"" << jsonEscape(n.role)
            << "\", \"location\": { \"file\": \"" << jsonEscape(n.location.file)
            << "\", \"line\": " << n.location.line << ", \"column\": " << n.location.col
-           << " }, \"function\": \"" << jsonEscape(n.function)
-           << "\", \"node_kind\": \"ICFG\", \"ir\": \"" << jsonEscape(n.ir) << "\"";
+           << " }";
+        if (!n.function.empty())
+            os << ", \"function\": \"" << jsonEscape(n.function) << "\"";
+        if (!n.ir.empty())
+            os << ", \"ir\": \"" << jsonEscape(n.ir) << "\"";
         if (n.description == "True" || n.description == "False")
             os << ", \"condition\": " << (n.description == "True" ? "true" : "false");
         if (!n.sourceContext.empty())
@@ -227,9 +216,18 @@ std::string SaberSlice::toJson(const std::string& ind) const
         SaberTraceNode allocation;
         allocation.role = "allocation";
         allocation.location = {sourceFile, sourceLine, sourceCol};
-        allocation.sourceContext = callTrace.empty() ? "" : callTrace.back().sourceContext;
         allocation.contextStartLine = sourceLine > 10 ? sourceLine - 10 : 1;
         allocation.contextEndLine = sourceLine + 3;
+        for (auto it = callTrace.rbegin(); it != callTrace.rend(); ++it)
+        {
+            if (it->location.file == sourceFile && it->location.line == sourceLine)
+            {
+                allocation.function = it->function;
+                allocation.ir = it->ir;
+                allocation.sourceContext = it->sourceContext;
+                break;
+            }
+        }
         os << i2 << "\"allocation\": ";
         writeNode(allocation, i2);
         os << ",\n" << i2 << "\"paths\": [";
@@ -239,7 +237,7 @@ std::string SaberSlice::toJson(const std::string& ind) const
             int line = 0;
             SaberSliceExportUtil::parseLocFileLine(potentialFreeLocs[p], f, line);
             os << (p ? "," : "") << "\n" << i3
-               << "{\"outcome\": \"freed\", \"condition\": "
+               << "{\"condition\": "
                << conditionJson(p < safePathConditions.size()
                                 ? safePathConditions[p] : pathConditions, i3 + "  ")
                << ", \"path\": [";
@@ -274,46 +272,39 @@ std::string SaberSlice::toJson(const std::string& ind) const
         os << "},\n";
     }
 
-    os << i2 << "\"evidence\": { \"memory_object\": {"
-       << "\"type\": \"" << jsonEscape(objectType) << "\", \"variable\": \""
-       << jsonEscape(variable) << "\", \"allocator\": \"" << jsonEscape(allocator)
-       << "\", \"descriptor\": \"" << jsonEscape(objectDescriptor)
-       << "\", \"zeroing\": " << (zeroing ? "true" : "false")
-       << "}, \"checker\": {\"report_kind\": \"" << jsonEscape(reportKind)
-       << "\", \"leak_kind\": \"" << jsonEscape(leakKind)
-       << "\", \"source_kind\": \"" << jsonEscape(sourceKind)
-       << "\", \"path_truncated\": false} },\n";
-    os << i2 << "\"classification\": null,\n";
-    os << i2 << "\"reason\": \"\"\n";
-    os << ind << "}";
-    return os.str();
-}
-
-std::string SaberSlice::stableIdentity() const
-{
-    std::ostringstream os;
-    os << saberSliceKindStr(kind) << "|" << sourceFile << ":" << sourceLine << ":" << sourceCol
-       << "|" << freeFile << ":" << freeLine << "|" << free2File << ":" << free2Line
-       << "|" << useFile << ":" << useLine << ":" << useCol << "|" << reportKind
-       << "|" << leakKind << "|" << sourceKind << "|" << objectType << "|" << variable
-       << "|" << objectDescriptor
-       << "|" << sourceFunc << "|" << callerFile << ":" << callerLine;
-    std::vector<std::string> stableNodes;
-    for (const SaberTraceNode& node : callTrace)
+    const bool hasObject = !objectType.empty() || !variable.empty() ||
+                           (!allocator.empty() && allocator != "unknown") ||
+                           !objectDescriptor.empty() || kind == SaberSliceKind::UNINIT_USE;
+    os << i2 << "\"evidence\": {";
+    if (hasObject)
     {
-        std::ostringstream part;
-        part << node.role << "@" << node.location.file << ":" << node.location.line
-             << ":" << node.location.col << "#" << node.function << "#" << node.ir
-             << "#" << node.description;
-        stableNodes.push_back(part.str());
+        os << " \"memory_object\": {";
+        bool comma = false;
+        auto objectString = [&](const char* name, const std::string& value) {
+            if (value.empty() || value == "unknown")
+                return;
+            os << (comma ? ", " : "") << "\"" << name << "\": \""
+               << jsonEscape(value) << "\"";
+            comma = true;
+        };
+        objectString("type", objectType);
+        objectString("variable", variable);
+        objectString("allocator", allocator);
+        objectString("descriptor", objectDescriptor);
+        if (kind == SaberSliceKind::UNINIT_USE)
+        {
+            os << (comma ? ", " : "") << "\"zeroing\": "
+               << (zeroing ? "true" : "false");
+        }
+        os << "},";
     }
-    std::sort(stableNodes.begin(), stableNodes.end());
-    for (const std::string& node : stableNodes)
-        os << "|node:" << node;
-    std::vector<std::string> stableFreeLocs = potentialFreeLocs;
-    std::sort(stableFreeLocs.begin(), stableFreeLocs.end());
-    for (const std::string& loc : stableFreeLocs)
-        os << "|safe:" << loc;
+    os << " \"checker\": {\"report_kind\": \"" << jsonEscape(reportKind) << "\"";
+    if (!leakKind.empty())
+        os << ", \"leak_kind\": \"" << jsonEscape(leakKind) << "\"";
+    if (!sourceKind.empty() && sourceKind != "unknown")
+        os << ", \"source_kind\": \"" << jsonEscape(sourceKind) << "\"";
+    os << "} }\n";
+    os << ind << "}";
     return os.str();
 }
 
@@ -628,6 +619,10 @@ bool SaberSliceCollector::collectLeakSlice(GenericBug::BugType bugType,
         {
             SaberSliceExportUtil::fillLocFromICFG(ev.getEventInst(), out.sourceFile, out.sourceLine,
                                                   out.sourceCol);
+            if (const CallICFGNode* call =
+                    SVFUtil::dyn_cast<CallICFGNode>(ev.getEventInst()))
+                if (const FunObjVar* callee = call->getCalledFunction())
+                    out.allocator = callee->getName();
             break;
         }
     }
@@ -781,10 +776,11 @@ bool SaberSliceCollector::writeAlerts(SaberSliceKind category) const
     if (alertOutDir.empty())
         return false;
 
-    UnifiedAlertWriter writer(alertOutDir, categoryDir(category));
+    const std::string warningType = saberSliceKindStr(category);
+    UnifiedAlertWriter writer(alertOutDir, warningType);
     bool ok = true;
     for (const SaberSlice& alert : slices)
-        ok = writer.write(alert.stableIdentity(), alert.toJson("")) && ok;
+        ok = writer.write("svfmemplus", alert.toJson("")) && ok;
     return writer.removeStale() && ok;
 }
 

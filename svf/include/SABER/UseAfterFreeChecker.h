@@ -71,6 +71,8 @@ public:
     bool isSatisfiableForFreeAndUsePairs(ProgSlice* slice, GenericBug::EventStack& eventStack);
 
 protected:
+    const char* semanticCheckerName() const override { return "uaf"; }
+
     bool includeUncalledAllocSources() const override
     {
         return true;

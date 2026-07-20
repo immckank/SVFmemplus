@@ -3,6 +3,7 @@
 #include "SABER/SaberSliceExport.h"
 #include "SABER/SaberCheckerAPI.h"
 #include "SABER/SaberScopeAPI.h"
+#include "SABER/SaberSemanticRules.h"
 #include "SVFIR/SVFIR.h"
 #include "SVFIR/SVFVariables.h"
 #include "Util/SVFUtil.h"
@@ -129,6 +130,14 @@ void UseAfterFreeChecker::initSnks()
             const FunObjVar* fun = *cit;
             if(!SaberCheckerAPI::getCheckerAPI()->isMemDealloc(fun))
                 continue;
+            if (const SaberSemanticRules::Fact* fact =
+                    SaberSemanticRules::get()->findSafeFree(
+                        fun->getName(), it->first, getCallgraph()))
+            {
+                SaberSemanticRules::get()->recordHit(
+                    *fact, "uaf", "free", it->first->getSourceLoc());
+                continue;
+            }
             // Skip frees anchored in system/STL/generated code (noise-only pairs)
             if(uafIsSystemOrGeneratedCodeICFG(it->first))
                 continue;

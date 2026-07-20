@@ -29,6 +29,7 @@
 
 #include "Util/Options.h"
 #include "SABER/LeakChecker.h"
+#include "SABER/SaberSemanticRules.h"
 #include "Graphs/ICFGEdge.h"
 #include "Graphs/VFGNode.h"
 
@@ -152,6 +153,27 @@ void LeakChecker::initSrcs()
             const FunObjVar* fun = *cit;
             if (isSourceLikeFun(fun))
             {
+                const CallICFGNode* allocCall = cs->getCallICFGNode();
+                if (const SaberSemanticRules::Fact* fact =
+                        SaberSemanticRules::get()->ignoredSource(
+                            semanticCheckerName(), allocCall->getSourceLoc()))
+                {
+                    SaberSemanticRules::get()->recordHit(
+                        *fact, semanticCheckerName(), "allocation",
+                        allocCall->getSourceLoc());
+                    continue;
+                }
+                if (std::string(semanticCheckerName()) == "leak")
+                {
+                    if (const SaberSemanticRules::Fact* fact =
+                            SaberSemanticRules::get()->findSafeAlloc(
+                                fun->getName(), allocCall, getCallgraph()))
+                    {
+                        SaberSemanticRules::get()->recordHit(
+                            *fact, "leak", "allocation", allocCall->getSourceLoc());
+                        continue;
+                    }
+                }
                 CSWorkList worklist;
                 SVFGNodeBS visited;
                 worklist.push(it->first->getCallICFGNode());
@@ -183,6 +205,15 @@ void LeakChecker::initSrcs()
                         if ((includeUncalledAllocSources() || !cs->getFun()->isUncalledFunction()) &&
                                 !isExtCall(cs->getBB()->getParent()))
                         {
+                            if (const SaberSemanticRules::Fact* fact =
+                                    SaberSemanticRules::get()->ignoredSource(
+                                        semanticCheckerName(), cs->getSourceLoc()))
+                            {
+                                SaberSemanticRules::get()->recordHit(
+                                    *fact, semanticCheckerName(), "allocation",
+                                    cs->getSourceLoc());
+                                continue;
+                            }
                             addToSources(node);
                             addSrcToCSID(node, cs);
                         }
@@ -213,6 +244,17 @@ void LeakChecker::initSnks()
             const FunObjVar* fun = *cit;
             if (isSinkLikeFun(fun))
             {
+                if (std::string(semanticCheckerName()) == "dfree")
+                {
+                    if (const SaberSemanticRules::Fact* fact =
+                            SaberSemanticRules::get()->findSafeFree(
+                                fun->getName(), it->first, getCallgraph()))
+                    {
+                        SaberSemanticRules::get()->recordHit(
+                            *fact, "dfree", "free", it->first->getSourceLoc());
+                        continue;
+                    }
+                }
                 SVFIR::SVFVarList &arglist = it->second;
                 assert(!arglist.empty()	&& "no actual parameter at deallocation site?");
                 /// we only choose pointer parameters among all the actual parameters

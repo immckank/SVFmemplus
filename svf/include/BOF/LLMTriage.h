@@ -97,9 +97,13 @@ struct BofSlice {
     std::string file;
     int line = 0;
     int col = 0;
+    std::string function;          ///< containing function of the BOF access
     std::string base;              ///< buffer base (friendly value name)
     std::string ir;                ///< IR carrying the base/access value
     std::string indexExpr = "unknown"; ///< symbolic affine form of the index
+    std::string semanticKey;        ///< stable value key copied into range facts
+    std::string semanticFile;       ///< source anchor of the semantic value key
+    int semanticLine = 0;
     SliceRange  indexRange;        ///< static range of the index (typically TOP)
     SliceRange  accessRange;       ///< final byte/element range checked by BOF
 

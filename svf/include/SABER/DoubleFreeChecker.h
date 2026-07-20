@@ -71,6 +71,8 @@ public:
     void validateExpectedFailureTests(ProgSlice* slice, const FunObjVar* fun);
 
 protected:
+    const char* semanticCheckerName() const override { return "dfree"; }
+
     bool enableReachGlobalPrune() const override
     {
         return false;

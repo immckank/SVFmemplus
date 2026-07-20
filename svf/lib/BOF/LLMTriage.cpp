@@ -29,6 +29,7 @@
 
 #include "BOF/LLMTriage.h"
 #include "BOF/BofAlertReporter.h"
+#include "SABER/SaberSemanticRules.h"
 #include "BOF/RangeAnalysis.h"
 #include "SVFIR/SVFIR.h"
 #include "SVFIR/SVFStatements.h"
@@ -196,6 +197,7 @@ std::string BofSlice::toJson(const std::string& ind) const
     os << i3 << "\"file\": \"" << jsonEscape(file) << "\",\n";
     os << i3 << "\"line\": " << line << ",\n";
     os << i3 << "\"col\": " << col << ",\n";
+    os << i3 << "\"function\": \"" << jsonEscape(function) << "\",\n";
     os << i3 << "\"base\": \"" << jsonEscape(base) << "\",\n";
     os << i3 << "\"ir\": \"" << jsonEscape(ir) << "\",\n";
     os << i3 << "\"index_expr\": \"" << jsonEscape(indexExpr) << "\",\n";
@@ -302,6 +304,8 @@ bool LLMTriage::collectSlice(const SVFVar* base, const SVFVar* indexVar,
     out.file = location.file;
     out.line = location.line;
     out.col = location.column;
+    if (loc->getFun())
+        out.function = loc->getFun()->getName();
 
     out.kind = "GEP_OOB";
     out.staticVerdict = "MAY";
@@ -314,6 +318,10 @@ bool LLMTriage::collectSlice(const SVFVar* base, const SVFVar* indexVar,
     if (indexVar)
     {
         out.indexExpr = affineStr(ra.analyzeAffine(indexVar));
+        out.semanticKey = SaberSemanticRules::valueKey(indexVar);
+        const SourceLocation semanticLocation = parseSourceLocation(indexVar->getSourceLoc());
+        out.semanticFile = semanticLocation.file;
+        out.semanticLine = semanticLocation.line;
         out.indexRange = SliceRange::from(ra.analyzeVarRange(indexVar));
     }
     else
@@ -470,31 +478,28 @@ bool BofAlertReporter::write(const LLMTriageConfig& cfg,
 
     UnifiedAlertWriter writer(
         (std::filesystem::path(cfg.alertOutDir) / "alerts").string(),
-        "buffer_overflow");
+        "bof");
     bool ok = true;
     for (const BofSlice& s : slices)
     {
-        const std::string identity =
-            "BUFFER_OVERFLOW|" + s.kind + "|" + s.staticVerdict + "|" +
-            s.file + "|" + std::to_string(s.line) + "|" +
-            std::to_string(s.col) + "|" + s.base + "|" +
-            s.accessRange.lower + ":" + s.accessRange.upper + "|" +
-            s.capacity.lower + ":" + s.capacity.upper;
-        const std::string digest = alertSha256(identity);
-
         std::ostringstream os;
         os << "{\n"
-           << "  \"alert_id\": \"sha256:" << digest << "\",\n"
-           << "  \"category\": \"BUFFER_OVERFLOW\",\n"
-           << "  \"access\": {\n"
-           << "    \"location\": { \"file\": \"" << jsonEscape(s.file)
-           << "\", \"line\": " << s.line << ", \"column\": " << s.col << " },\n"
+           << "  \"access\": {\n";
+        if (!s.file.empty() && s.line > 0)
+            os << "    \"location\": { \"file\": \"" << jsonEscape(s.file)
+               << "\", \"line\": " << s.line << ", \"column\": " << s.col
+               << " },\n";
+        if (!s.function.empty())
+            os << "    \"function\": \"" << jsonEscape(s.function) << "\",\n";
+        os
            << "    \"kind\": \"" << jsonEscape(s.kind) << "\",\n"
            << "    \"base\": \"" << jsonEscape(s.base) << "\",\n"
            << "    \"ir\": \"" << jsonEscape(s.ir) << "\",\n"
            << "    \"index_or_length_expression\": \"" << jsonEscape(s.indexExpr) << "\",\n"
-           << "    \"range\": " << sliceRangeJson(s.accessRange) << ",\n"
-           << "    \"source_context\": \"" << jsonEscape(s.codeSnippet) << "\"\n"
+           << "    \"range\": " << sliceRangeJson(s.accessRange);
+        if (!s.codeSnippet.empty())
+            os << ",\n    \"source_context\": \"" << jsonEscape(s.codeSnippet) << "\"";
+        os << "\n"
            << "  },\n"
            << "  \"buffer\": {\n"
            << "    \"capacity\": " << sliceRangeJson(s.capacity) << ",\n"
@@ -502,10 +507,18 @@ bool BofAlertReporter::write(const LLMTriageConfig& cfg,
            << "    \"domain\": \"" << jsonEscape(s.domain) << "\"\n"
            << "  },\n"
            << "  \"variables\": [\n"
-           << "    { \"name\": \"" << jsonEscape(s.induction.var)
-           << "\", \"expression\": \"" << jsonEscape(s.indexExpr)
+           << "    { \"expression\": \"" << jsonEscape(s.indexExpr)
            << "\", \"initial_range\": " << sliceRangeJson(s.indexRange)
-           << ", \"final_range\": " << sliceRangeJson(s.accessRange) << " }\n"
+           << ", \"final_range\": " << sliceRangeJson(s.accessRange);
+        if (!s.induction.var.empty() && s.induction.var != "unknown")
+            os << ", \"name\": \"" << jsonEscape(s.induction.var) << "\"";
+        if (!s.semanticKey.empty())
+            os << ", \"semantic_key\": \"" << jsonEscape(s.semanticKey) << "\"";
+        if (!s.semanticFile.empty() && s.semanticLine > 0)
+            os << ", \"semantic_location\": { \"file\": \""
+               << jsonEscape(s.semanticFile) << "\", \"line\": "
+               << s.semanticLine << " }";
+        os << " }\n"
            << "  ],\n"
            << "  \"range_analysis\": [\n"
            << "    { \"operation\": \"range_seed\", \"inputs\": ["
@@ -547,16 +560,13 @@ bool BofAlertReporter::write(const LLMTriageConfig& cfg,
            << ", \"explanation\": \"Static checker verdict: "
            << jsonEscape(s.staticVerdict) << ".\" }\n"
            << "  ],\n"
-           << "  \"evidence\": { \"checker\": { \"name\": \"SVFmemplus-BOF\", "
-           << "\"verdict\": \"" << jsonEscape(s.staticVerdict)
-           << "\", \"report_type\": \"" << jsonEscape(s.kind)
+           << "  \"evidence\": { \"checker\": { \"verdict\": \""
+           << jsonEscape(s.staticVerdict)
            << "\", \"analysis_degraded\": " << (s.indexRange.isTop ? "true" : "false")
-           << " } },\n"
-           << "  \"classification\": null,\n"
-           << "  \"reason\": \"\"\n"
+           << " } }\n"
            << "}\n";
 
-        ok = writer.write(identity, os.str()) && ok;
+        ok = writer.write("svfmemplus", os.str()) && ok;
     }
 
     return writer.removeStale() && ok;
