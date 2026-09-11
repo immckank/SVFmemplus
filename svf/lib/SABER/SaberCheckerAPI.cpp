@@ -116,6 +116,16 @@ static const ei_pair ei_pairs[]=
     {"devm_kmalloc", SaberCheckerAPI::CK_ALLOC},
     {"devm_kzalloc", SaberCheckerAPI::CK_ALLOC},
     {"devm_kcalloc", SaberCheckerAPI::CK_ALLOC},
+    {"memalign", SaberCheckerAPI::CK_ALLOC},
+    {"posix_memalign", SaberCheckerAPI::CK_ALLOC},
+    {"aligned_alloc", SaberCheckerAPI::CK_ALLOC},
+    // open_defect / kernel wrappers
+    {"ubcore_get_eid_list", SaberCheckerAPI::CK_ALLOC},
+    // FalconFS FD-table attach (mangled); body must be linked for leak paths
+    {"_ZN8FalconFd8AttachFdEmiSt10shared_ptrIcEmNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEiib", SaberCheckerAPI::CK_ALLOC},
+    {"_ZN8FalconFd8AttachFdERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESt10shared_ptrI12OpenInstanceE", SaberCheckerAPI::CK_ALLOC},
+    // ubs-comm refcount acquire treated as resource alloc for D3-3
+    {"_ZN3ock4hcom9UBContext11IncreaseRefEv", SaberCheckerAPI::CK_ALLOC},
 
     {"VOS_MemFree", SaberCheckerAPI::CK_FREE},
     {"cfree", SaberCheckerAPI::CK_FREE},
@@ -160,6 +170,9 @@ static const ei_pair ei_pairs[]=
     {"kvfree", SaberCheckerAPI::CK_FREE},
     {"kvfree_sensitive", SaberCheckerAPI::CK_FREE},
     {"vfree", SaberCheckerAPI::CK_FREE},
+    {"ubcore_free_eid_list", SaberCheckerAPI::CK_FREE},
+    {"_ZN8FalconFd18DeleteOpenInstanceEmb", SaberCheckerAPI::CK_FREE},
+    {"_ZN3ock4hcom9UBContext11DecreaseRefEv", SaberCheckerAPI::CK_FREE},
 
     {"fopen", SaberCheckerAPI::CK_FOPEN},
     {"\01_fopen", SaberCheckerAPI::CK_FOPEN},
