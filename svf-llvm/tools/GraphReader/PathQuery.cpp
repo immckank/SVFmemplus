@@ -554,7 +554,7 @@ void PathQuery::getConstrain(const GraphReaderUtil::SourceLocation& location) {
 }
 
 void PathQuery::getConstrainInside(const GraphReaderUtil::SourceLocation& location) {
-    SVFUtil::outs() << "[getConstrainInside] Start location: " << GraphReaderUtil::toString(location) << "\n";
+    SVFUtil::errs() << "[getConstrainInside] Start location: " << GraphReaderUtil::toString(location) << "\n";
 
     if (!icfg) {
         GraphReaderUtil::sendJsonError("ICFG is null!");
@@ -596,9 +596,9 @@ void PathQuery::getConstrainInside(const GraphReaderUtil::SourceLocation& locati
         return;
     }
 
-    SVFUtil::outs() << "[getConstrainInside] Target ICFG node id: " << targetNode->getId()
+    SVFUtil::errs() << "[getConstrainInside] Target ICFG node id: " << targetNode->getId()
                     << " function: " << function->getName() << "\n";
-    SVFUtil::outs() << "[getConstrainInside] Entry ICFG node id: " << entryNode->getId() << "\n";
+    SVFUtil::errs() << "[getConstrainInside] Entry ICFG node id: " << entryNode->getId() << "\n";
 
     std::vector<std::vector<const ICFGNode*>> icfgPaths;
     findICFGPaths(entryNode, targetNode, function, icfgPaths);
@@ -1076,9 +1076,9 @@ void PathQuery::findICFGPaths(const ICFGNode* startICFG, const ICFGNode* targetI
 
 void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
     // DEBUG
-    SVFUtil::outs() << "\n========================================\n";
-    SVFUtil::outs() << "[getConditionReturnInsidePath] Start Location: " << startLocation << "\n";
-    SVFUtil::outs() << "========================================\n\n";
+    SVFUtil::errs() << "\n========================================\n";
+    SVFUtil::errs() << "[getConditionReturnInsidePath] Start Location: " << startLocation << "\n";
+    SVFUtil::errs() << "========================================\n\n";
     
     if (!icfg) {
         GraphReaderUtil::sendJsonError("ICFG is null!");
@@ -1098,20 +1098,20 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
         return;
     }
     
-    SVFUtil::outs() << "[Step 1] Found start ICFG Node ID=" << startNode->getId() << "\n";
-    SVFUtil::outs() << "  Function: " << function->getName() << "\n";
-    SVFUtil::outs() << "  Location: " << startNode->getSourceLoc() << "\n";
+    SVFUtil::errs() << "[Step 1] Found start ICFG Node ID=" << startNode->getId() << "\n";
+    SVFUtil::errs() << "  Function: " << function->getName() << "\n";
+    SVFUtil::errs() << "  Location: " << startNode->getSourceLoc() << "\n";
 
     // Step 2: Find all actual return locations in the function
     std::vector<const ICFGNode*> returnLocations = findActualReturnICFGNodes(icfg, function);
-    SVFUtil::outs() << "\n[Step 2] Found " << returnLocations.size() << " actual return location(s)\n";
+    SVFUtil::errs() << "\n[Step 2] Found " << returnLocations.size() << " actual return location(s)\n";
     
     for (const ICFGNode* retLoc : returnLocations) {
         std::string retSourceLoc = retLoc->getSourceLoc();
         if (retSourceLoc.empty()) {
-            SVFUtil::outs() << "  - <no source location> (ICFG ID: " << retLoc->getId() << ")\n";
+            SVFUtil::errs() << "  - <no source location> (ICFG ID: " << retLoc->getId() << ")\n";
         } else {
-            SVFUtil::outs() << "  - " << retSourceLoc << " (ICFG ID: " << retLoc->getId() << ")\n";
+            SVFUtil::errs() << "  - " << retSourceLoc << " (ICFG ID: " << retLoc->getId() << ")\n";
         }
 
         // Provide additional debug context for each return node
@@ -1129,45 +1129,45 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
         } else if (SVFUtil::isa<GlobalICFGNode>(retLoc)) {
             nodeType = "GlobalICFGNode";
         }
-        SVFUtil::outs() << "      Node Type: " << nodeType << "\n";
+        SVFUtil::errs() << "      Node Type: " << nodeType << "\n";
 
         llvm::json::Object parsedLoc = GraphReaderUtil::parseSourceLocation(retSourceLoc);
         if (!parsedLoc.empty()) {
             if (auto file = parsedLoc.getString("fl")) {
-                SVFUtil::outs() << "      File: " << file->str() << "\n";
+                SVFUtil::errs() << "      File: " << file->str() << "\n";
             }
             if (auto line = parsedLoc.getInteger("ln")) {
-                SVFUtil::outs() << "      Line: " << *line << "\n";
+                SVFUtil::errs() << "      Line: " << *line << "\n";
             }
             if (auto col = parsedLoc.getInteger("cl")) {
-                SVFUtil::outs() << "      Column: " << *col << "\n";
+                SVFUtil::errs() << "      Column: " << *col << "\n";
             }
         } else {
-            SVFUtil::outs() << "      Parsed location is empty. Attempting to recover via LLVM debug info...\n";
+            SVFUtil::errs() << "      Parsed location is empty. Attempting to recover via LLVM debug info...\n";
         }
 
         if (const IntraICFGNode* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(retLoc)) {
             LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
             const llvm::Value* llvmVal = llvmModuleSet->getLLVMValue(intraNode);
             if (const llvm::Instruction* inst = llvm::dyn_cast_or_null<llvm::Instruction>(llvmVal)) {
-                SVFUtil::outs() << "      LLVM Opcode: " << inst->getOpcodeName() << "\n";
+                SVFUtil::errs() << "      LLVM Opcode: " << inst->getOpcodeName() << "\n";
                 const llvm::DebugLoc& debugLoc = inst->getDebugLoc();
                 if (debugLoc) {
                     const llvm::DILocation* diLoc = debugLoc.get();
-                    SVFUtil::outs() << "      DebugLoc: "
+                    SVFUtil::errs() << "      DebugLoc: "
                                      << (diLoc ? diLoc->getFilename().str() : std::string("<unknown>"))
                                      << ":" << debugLoc.getLine()
                                      << ":" << debugLoc.getCol() << "\n";
                 } else {
-                    SVFUtil::outs() << "      DebugLoc: <none>\n";
+                    SVFUtil::errs() << "      DebugLoc: <none>\n";
                 }
             } else {
-                SVFUtil::outs() << "      LLVM Instruction: <none>\n";
+                SVFUtil::errs() << "      LLVM Instruction: <none>\n";
             }
         }
 
-        SVFUtil::outs() << "      Outgoing Edges: " << retLoc->getOutEdges().size() << "\n";
-        SVFUtil::outs() << "      Incoming Edges: " << retLoc->getInEdges().size() << "\n";
+        SVFUtil::errs() << "      Outgoing Edges: " << retLoc->getOutEdges().size() << "\n";
+        SVFUtil::errs() << "      Incoming Edges: " << retLoc->getInEdges().size() << "\n";
     }
 
     if (returnLocations.empty()) {
@@ -1183,26 +1183,26 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
     }
 
     // Step 3: For each return location, find all ICFG paths
-    SVFUtil::outs() << "\n[Step 3] Searching for ICFG paths to each return location...\n";
+    SVFUtil::errs() << "\n[Step 3] Searching for ICFG paths to each return location...\n";
     
     std::map<const ICFGNode*, std::vector<std::vector<const ICFGNode*>>> pathsByReturn;
 
     for (const ICFGNode* retLocation : returnLocations) {
-        SVFUtil::outs() << "  Searching paths to: " << retLocation->getSourceLoc() << "\n";
+        SVFUtil::errs() << "  Searching paths to: " << retLocation->getSourceLoc() << "\n";
         
         std::vector<std::vector<const ICFGNode*>> pathsToThisReturn;
         findICFGPaths(startNode, retLocation, function, pathsToThisReturn);
         
         if (!pathsToThisReturn.empty()) {
             pathsByReturn[retLocation] = pathsToThisReturn;
-            SVFUtil::outs() << "    Found " << pathsToThisReturn.size() << " path(s)\n";
+            SVFUtil::errs() << "    Found " << pathsToThisReturn.size() << " path(s)\n";
         } else {
-            SVFUtil::outs() << "    No paths found\n";
+            SVFUtil::errs() << "    No paths found\n";
         }
     }
 
     // Step 4: Build JSON output - collect SVFG nodes along ICFG paths
-    SVFUtil::outs() << "\n[Step 4] Collecting SVFG nodes along ICFG paths...\n";
+    SVFUtil::errs() << "\n[Step 4] Collecting SVFG nodes along ICFG paths...\n";
     llvm::json::Array returnLocationsArray;
     int globalPathId = 1;
 
@@ -1226,7 +1226,7 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
         for (const auto& icfgPath : icfgPaths) {
             PathNodeInfo pathInfo;
             
-            SVFUtil::outs() << "  Path " << (globalPathId + pathNodeInfos.size()) << ": Collecting SVFG nodes...\n";
+            SVFUtil::errs() << "  Path " << (globalPathId + pathNodeInfos.size()) << ": Collecting SVFG nodes...\n";
             
             for (const ICFGNode* icfgNode : icfgPath) {
                 // Find all SVFG nodes at this ICFG location
@@ -1247,7 +1247,7 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
                             pathInfo.nodeIds.insert(svfgNode->getId());
                             pathInfo.nodes.push_back(svfgNode);
                             
-                            SVFUtil::outs() << "    + SVFG Node " << svfgNode->getId() 
+                            SVFUtil::errs() << "    + SVFG Node " << svfgNode->getId() 
                                             << " [" << GraphReaderUtil::getSVFGNodeKindString(svfgNode) << "]\n";
                         }
                     }
@@ -1264,7 +1264,7 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
         std::map<NodeID, const SVFGNode*> nodeIdToSVFGNode;  // Map for quick lookup
         
         if (hasMultiplePaths) {
-            SVFUtil::outs() << "  Computing differential nodes for " << icfgPaths.size() << " paths...\n";
+            SVFUtil::errs() << "  Computing differential nodes for " << icfgPaths.size() << " paths...\n";
             
             // Build node ID to SVFG node mapping
             for (const auto& pathInfo : pathNodeInfos) {
@@ -1296,11 +1296,11 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
                 }
                 
                 differentialNodes.push_back(differential);
-                SVFUtil::outs() << "    Path " << (globalPathId + i) << " has " 
+                SVFUtil::errs() << "    Path " << (globalPathId + i) << " has " 
                                 << differential.size() << " differential node(s)\n";
             }
             
-            SVFUtil::outs() << "  Total unique differential nodes across all paths: " 
+            SVFUtil::errs() << "  Total unique differential nodes across all paths: " 
                             << allDifferentialNodes.size() << "\n";
         }
         
@@ -1343,7 +1343,7 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
     }
 
     int totalPaths = globalPathId - 1;
-    SVFUtil::outs() << "\n[Step 4] Total paths found: " << totalPaths << "\n";
+    SVFUtil::errs() << "\n[Step 4] Total paths found: " << totalPaths << "\n";
 
     llvm::json::Object result;
     appendPrefixedLocationFields(result, "start_", GraphReaderUtil::parseSourceLocationStruct(startLocation));
@@ -1356,9 +1356,9 @@ void PathQuery::getConditionReturnInsidePath(const std::string& startLocation) {
     llvm::outs() << llvm::formatv("{0}", llvm::json::Value(std::move(result))) << "\n";
     llvm::outs().flush();
 
-    SVFUtil::outs() << "\n========================================\n";
-    SVFUtil::outs() << "[getConditionReturnInsidePath] Complete\n";
-    SVFUtil::outs() << "========================================\n\n";
+    SVFUtil::errs() << "\n========================================\n";
+    SVFUtil::errs() << "[getConditionReturnInsidePath] Complete\n";
+    SVFUtil::errs() << "========================================\n\n";
 }
 
 void PathQuery::getValueSensitiveReturnInsidePath(const GraphReaderUtil::SourceLocation& startLocation, const std::vector<const SVFGNode*>& startSVFGNodes) {
@@ -1502,7 +1502,7 @@ void PathQuery::getValueSensitiveReturnInsidePath(const GraphReaderUtil::SourceL
                             
                             // Debug: show node type
                             if (SVFUtil::isa<StoreSVFGNode>(svfgNode)) {
-                                SVFUtil::outs() << "[StoreFilter] Processing keySVFGNode ID=" << svfgNode->getId() 
+                                SVFUtil::errs() << "[StoreFilter] Processing keySVFGNode ID=" << svfgNode->getId() 
                                                 << ", Type=StoreSVFGNode\n";
                             }
                             
@@ -1553,24 +1553,24 @@ void PathQuery::getValueSensitiveReturnInsidePath(const GraphReaderUtil::SourceL
                                 // Filter out stores to stack objects that are not address-taken
                                 // This filters out local variable assignments like "mb = data"
                                 // but keeps stores to function parameters like "*value = data"
-                                SVFUtil::outs() << "[StoreFilter] Found StoreSVFGNode ID=" << svfgNode->getId() 
+                                SVFUtil::errs() << "[StoreFilter] Found StoreSVFGNode ID=" << svfgNode->getId() 
                                                 << " (" << svfgNode->toString() << ")\n";
                                 
                                 const PAGNode* dstNode = storeNode->getPAGDstNode();
                                 if (dstNode) {
-                                    SVFUtil::outs() << "[StoreFilter]   DstNode ID=" << dstNode->getId() 
+                                    SVFUtil::errs() << "[StoreFilter]   DstNode ID=" << dstNode->getId() 
                                                     << ", Type=";
                                     if (SVFUtil::isa<ValVar>(dstNode)) {
-                                        SVFUtil::outs() << "ValVar";
+                                        SVFUtil::errs() << "ValVar";
                                         if (SVFUtil::isa<ArgValVar>(dstNode)) {
-                                            SVFUtil::outs() << "(ArgValVar)";
+                                            SVFUtil::errs() << "(ArgValVar)";
                                         }
                                     } else if (SVFUtil::isa<ObjVar>(dstNode)) {
-                                        SVFUtil::outs() << "ObjVar";
+                                        SVFUtil::errs() << "ObjVar";
                                     } else {
-                                        SVFUtil::outs() << "Other";
+                                        SVFUtil::errs() << "Other";
                                     }
-                                    SVFUtil::outs() << "\n";
+                                    SVFUtil::errs() << "\n";
                                     
                                     // For ValVar, check if it corresponds to a local variable (AllocaInst)
                                     // For ObjVar, check if it's a stack object
@@ -1581,14 +1581,14 @@ void PathQuery::getValueSensitiveReturnInsidePath(const GraphReaderUtil::SourceL
                                         // If it's an argument variable, it's address-taken (not a local variable)
                                         if (SVFUtil::isa<ArgValVar>(valVar)) {
                                             isAddressTaken = true;
-                                            SVFUtil::outs() << "[StoreFilter]   -> ArgValVar detected, isAddressTaken=true\n";
+                                            SVFUtil::errs() << "[StoreFilter]   -> ArgValVar detected, isAddressTaken=true\n";
                                         } else {
                                             // Check if the ValVar corresponds to an AllocaInst (local variable)
                                             const llvm::Value* llvmVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(valVar);
                                             if (llvmVal) {
                                                 if (SVFUtil::isa<llvm::AllocaInst>(llvmVal)) {
                                                     isLocalStackVar = true;
-                                                    SVFUtil::outs() << "[StoreFilter]   -> ValVar corresponds to AllocaInst (local variable)\n";
+                                                    SVFUtil::errs() << "[StoreFilter]   -> ValVar corresponds to AllocaInst (local variable)\n";
                                                     
                                                     // Check if the address is truly taken (not just used in current Store)
                                                     // Address is taken if:
@@ -1611,7 +1611,7 @@ void PathQuery::getValueSensitiveReturnInsidePath(const GraphReaderUtil::SourceL
                                                         }
                                                     }
                                                     
-                                                    SVFUtil::outs() << "[StoreFilter]   -> AddrStmt count=" << addrStmtCount
+                                                    SVFUtil::errs() << "[StoreFilter]   -> AddrStmt count=" << addrStmtCount
                                                                     << ", hasCallEdges=" << (hasCallEdges ? "true" : "false")
                                                                     << ", hasStoreEdges=" << (hasStoreEdges ? "true" : "false")
                                                                     << ", hasRetEdges=" << (hasRetEdges ? "true" : "false") << "\n";
@@ -1619,23 +1619,23 @@ void PathQuery::getValueSensitiveReturnInsidePath(const GraphReaderUtil::SourceL
                                                     // Address is taken if used in calls, returns, or multiple stores
                                                     if (hasCallEdges || hasRetEdges || (hasStoreEdges && addrStmtCount > 1)) {
                                                         isAddressTaken = true;
-                                                        SVFUtil::outs() << "[StoreFilter]   -> Address is taken (used in calls/returns/multiple stores)\n";
+                                                        SVFUtil::errs() << "[StoreFilter]   -> Address is taken (used in calls/returns/multiple stores)\n";
                                                     } else {
-                                                        SVFUtil::outs() << "[StoreFilter]   -> Address not taken (only used in local assignment)\n";
+                                                        SVFUtil::errs() << "[StoreFilter]   -> Address not taken (only used in local assignment)\n";
                                                     }
                                                 } else {
-                                                    SVFUtil::outs() << "[StoreFilter]   -> ValVar corresponds to non-AllocaInst: " 
+                                                    SVFUtil::errs() << "[StoreFilter]   -> ValVar corresponds to non-AllocaInst: " 
                                                                     << (llvmVal->getName().empty() ? "unnamed" : llvmVal->getName().str()) << "\n";
                                                 }
                                             } else {
-                                                SVFUtil::outs() << "[StoreFilter]   -> ValVar has no corresponding LLVM value\n";
+                                                SVFUtil::errs() << "[StoreFilter]   -> ValVar has no corresponding LLVM value\n";
                                             }
                                         }
                                     } else if (const ObjVar* objVar = SVFUtil::dyn_cast<ObjVar>(dstNode)) {
                                         // Get the base object for ObjVar
                                         const BaseObjVar* baseObj = pag->getBaseObject(dstNode->getId());
                                         if (baseObj) {
-                                            SVFUtil::outs() << "[StoreFilter]   BaseObj ID=" << baseObj->getId()
+                                            SVFUtil::errs() << "[StoreFilter]   BaseObj ID=" << baseObj->getId()
                                                             << ", isStack=" << (baseObj->isStack() ? "true" : "false")
                                                             << ", isHeap=" << (baseObj->isHeap() ? "true" : "false")
                                                             << ", isGlobal=" << (baseObj->isGlobalObj() ? "true" : "false")
@@ -1645,30 +1645,30 @@ void PathQuery::getValueSensitiveReturnInsidePath(const GraphReaderUtil::SourceL
                                                 isLocalStackVar = true;
                                                 // Check if there are AddrStmt edges pointing to it
                                                 bool hasAddrEdges = objVar->hasIncomingEdges(SVFStmt::Addr);
-                                                SVFUtil::outs() << "[StoreFilter]   -> ObjVar, hasIncomingEdges(Addr)=" 
+                                                SVFUtil::errs() << "[StoreFilter]   -> ObjVar, hasIncomingEdges(Addr)=" 
                                                                 << (hasAddrEdges ? "true" : "false") << "\n";
                                                 if (hasAddrEdges) {
                                                     isAddressTaken = true;
                                                 }
                                             }
                                         } else {
-                                            SVFUtil::outs() << "[StoreFilter]   -> BaseObj is null for ObjVar\n";
+                                            SVFUtil::errs() << "[StoreFilter]   -> BaseObj is null for ObjVar\n";
                                         }
                                     }
                                     
-                                    SVFUtil::outs() << "[StoreFilter]   -> Final: isLocalStackVar=" 
+                                    SVFUtil::errs() << "[StoreFilter]   -> Final: isLocalStackVar=" 
                                                     << (isLocalStackVar ? "true" : "false")
                                                     << ", isAddressTaken=" << (isAddressTaken ? "true" : "false") << "\n";
                                     
                                     // Filter out stores to local stack variables that are not address-taken
                                     if (isLocalStackVar && !isAddressTaken) {
                                         shouldHideInOutput = true;
-                                        SVFUtil::outs() << "[StoreFilter]   -> FILTERED OUT (local stack variable, address not taken)\n";
+                                        SVFUtil::errs() << "[StoreFilter]   -> FILTERED OUT (local stack variable, address not taken)\n";
                                     } else {
-                                        SVFUtil::outs() << "[StoreFilter]   -> KEPT (not a local stack variable or address taken)\n";
+                                        SVFUtil::errs() << "[StoreFilter]   -> KEPT (not a local stack variable or address taken)\n";
                                     }
                                 } else {
-                                    SVFUtil::outs() << "[StoreFilter]   -> DstNode is null\n";
+                                    SVFUtil::errs() << "[StoreFilter]   -> DstNode is null\n";
                                 }
                             }
                             
@@ -1676,11 +1676,11 @@ void PathQuery::getValueSensitiveReturnInsidePath(const GraphReaderUtil::SourceL
                                 keySVFGSequence.push_back(svfgNode->getId());
                                 seenInPath.insert(svfgNode->getId());
                                 if (SVFUtil::isa<StoreSVFGNode>(svfgNode)) {
-                                    SVFUtil::outs() << "[StoreFilter]   -> ADDED to sequence (shouldHideInOutput=false)\n";
+                                    SVFUtil::errs() << "[StoreFilter]   -> ADDED to sequence (shouldHideInOutput=false)\n";
                                 }
                             } else {
                                 if (SVFUtil::isa<StoreSVFGNode>(svfgNode)) {
-                                    SVFUtil::outs() << "[StoreFilter]   -> NOT added to sequence (shouldHideInOutput=true)\n";
+                                    SVFUtil::errs() << "[StoreFilter]   -> NOT added to sequence (shouldHideInOutput=true)\n";
                                 }
                             }
                         }
@@ -3839,9 +3839,9 @@ void PathQuery::findActualArgKeySVFGNodes(const GraphReaderUtil::SourceLocation&
     }
 
     // DEBUG: Output ActualParmVFGNode information
-    // SVFUtil::outs() << "[findActualArgKeySVFGNodes] Found ActualParmVFGNode:\n";
-    // SVFUtil::outs() << "  Node ID: " << actualParmNode->getId() << "\n";
-    // SVFUtil::outs() << "  Node Description: " << actualParmNode->toString() << "\n";
+    // SVFUtil::errs() << "[findActualArgKeySVFGNodes] Found ActualParmVFGNode:\n";
+    // SVFUtil::errs() << "  Node ID: " << actualParmNode->getId() << "\n";
+    // SVFUtil::errs() << "  Node Description: " << actualParmNode->toString() << "\n";
 
     // Step 5: Get the caller function from the call site
     const FunObjVar* callerFunction = callICFGNode->getCaller();
@@ -3851,9 +3851,9 @@ void PathQuery::findActualArgKeySVFGNodes(const GraphReaderUtil::SourceLocation&
     }
 
     // DEBUG: Output caller function information
-    // SVFUtil::outs() << "[findActualArgKeySVFGNodes] Found caller function:\n";
-    // SVFUtil::outs() << "  Function Name: " << callerFunction->getName() << "\n";
-    // SVFUtil::outs() << "  Function ID: " << callerFunction->getId() << "\n";
+    // SVFUtil::errs() << "[findActualArgKeySVFGNodes] Found caller function:\n";
+    // SVFUtil::errs() << "  Function Name: " << callerFunction->getName() << "\n";
+    // SVFUtil::errs() << "  Function ID: " << callerFunction->getId() << "\n";
 
     // Step 6: Determine the start SVFG node
     // Prefer def SVFG node of the PAG node if it exists, otherwise use actualParmNode
@@ -3861,15 +3861,15 @@ void PathQuery::findActualArgKeySVFGNodes(const GraphReaderUtil::SourceLocation&
     if (svfg->hasDefSVFGNode(startPAGNode)) {
         startSVFGNode = svfg->getDefSVFGNode(startPAGNode);
         if (startSVFGNode) {
-            // SVFUtil::outs() << "[findActualArgKeySVFGNodes] Using def SVFG node for PAGNode " << startPAGNode->getId() << ":\n";
-            // SVFUtil::outs() << "  Def SVFG Node ID: " << startSVFGNode->getId() << "\n";
-            // SVFUtil::outs() << "  Def SVFG Node Description: " << startSVFGNode->toString() << "\n";
+            // SVFUtil::errs() << "[findActualArgKeySVFGNodes] Using def SVFG node for PAGNode " << startPAGNode->getId() << ":\n";
+            // SVFUtil::errs() << "  Def SVFG Node ID: " << startSVFGNode->getId() << "\n";
+            // SVFUtil::errs() << "  Def SVFG Node Description: " << startSVFGNode->toString() << "\n";
         } else {
-            // SVFUtil::outs() << "[findActualArgKeySVFGNodes] Def SVFG node is null, falling back to ActualParmVFGNode\n";
+            // SVFUtil::errs() << "[findActualArgKeySVFGNodes] Def SVFG node is null, falling back to ActualParmVFGNode\n";
             startSVFGNode = actualParmNode;
         }
     } else {
-        // SVFUtil::outs() << "[findActualArgKeySVFGNodes] No def SVFG node found for PAGNode " << startPAGNode->getId() << ", using ActualParmVFGNode\n";
+        // SVFUtil::errs() << "[findActualArgKeySVFGNodes] No def SVFG node found for PAGNode " << startPAGNode->getId() << ", using ActualParmVFGNode\n";
         startSVFGNode = actualParmNode;
     }
 

@@ -1442,7 +1442,7 @@ const PAGNode* getPAGNodeFromCallArg(ICFG* icfg, SVFIR* pag, const SourceLocatio
 // store pag node to call arg
 const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const std::string& callLocation, const std::string& functionName, int argIndex) {
     // 这个与前面那个的区别是 他会先找callicfg节点 然后找对应的paramsvfg节点 最后沿着值流图找到定义位置的pag
-    SVF::SVFUtil::outs() << "[GraphReaderUtil] tracePAGNodeFromCallArg start. Location='"
+    SVF::SVFUtil::errs() << "[GraphReaderUtil] tracePAGNodeFromCallArg start. Location='"
                          << callLocation << "', function filter='"
                          << (functionName.empty() ? std::string("<none>") : functionName)
                          << "', arg_index=" << argIndex << "\n";
@@ -1471,7 +1471,7 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
         }
     }
 
-    SVF::SVFUtil::outs() << "[GraphReaderUtil] Found " << actualParmNodes.size()
+    SVF::SVFUtil::errs() << "[GraphReaderUtil] Found " << actualParmNodes.size()
                          << " ActualParmVFGNode candidate(s) at this call site.\n";
 
     if (actualParmNodes.empty()) {
@@ -1487,7 +1487,7 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
         return nullptr;
     }
 
-    SVF::SVFUtil::outs() << "[GraphReaderUtil] Call has " << callInst->arg_size() << " argument(s).\n";
+    SVF::SVFUtil::errs() << "[GraphReaderUtil] Call has " << callInst->arg_size() << " argument(s).\n";
 
     if (argIndex < 0 || argIndex >= static_cast<int>(callInst->arg_size())) {
         SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument index " << argIndex
@@ -1517,7 +1517,7 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
         return nullptr;
     }
 
-    SVF::SVFUtil::outs() << "[GraphReaderUtil] Matched ActualParmVFGNode ID=" << targetParam->getId()
+    SVF::SVFUtil::errs() << "[GraphReaderUtil] Matched ActualParmVFGNode ID=" << targetParam->getId()
                          << " for argument index " << argIndex << "\n";
 
     // Step 3: Get the PAGNode from the ActualParmVFGNode
@@ -1529,13 +1529,13 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
 
     const llvm::Value* paramLLVMVal = LLVMModuleSet::getLLVMModuleSet()->getLLVMValue(paramPAG);
     if (!paramLLVMVal) {
-        SVF::SVFUtil::outs() << "[GraphReaderUtil] Actual parameter is not backed by an LLVM value; returning param PAG node.\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Actual parameter is not backed by an LLVM value; returning param PAG node.\n";
         return paramPAG;
     }
 
     const llvm::LoadInst* loadInst = SVFUtil::dyn_cast<llvm::LoadInst>(paramLLVMVal);
     if (!loadInst) {
-        SVF::SVFUtil::outs() << "[GraphReaderUtil] Argument is not a load instruction; returning parameter PAG node.\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Argument is not a load instruction; returning parameter PAG node.\n";
         return paramPAG;
     }
 
@@ -1548,7 +1548,7 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
     }
 
     const SVFVar* addressPAG = pag->getGNode(ptrNodeID);
-    SVF::SVFUtil::outs() << "[GraphReaderUtil] Tracing memory definition for address PAGNode ID="
+    SVF::SVFUtil::errs() << "[GraphReaderUtil] Tracing memory definition for address PAGNode ID="
                          << addressPAG->getId() << "\n";
 
     const SVFGNode* storeNode = nullptr;
@@ -1637,7 +1637,7 @@ const PAGNode* tracePAGNodeFromCallArg(SVFG* svfg, ICFG* icfg, SVFIR* pag, const
     }
 
     if (storedValuePAG) {
-        SVF::SVFUtil::outs() << "[GraphReaderUtil] Located stored value PAGNode ID="
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] Located stored value PAGNode ID="
                              << storedValuePAG->getId() << " as definition source.\n";
     } else {
         SVF::SVFUtil::errs() << "[GraphReaderUtil] Warning: Store definition found but RHS PAG node is null.\n";
@@ -1892,18 +1892,18 @@ const SVFGNode* getSVFGNodeFromActualINArg(SVFG* svfg,
             associatedSVFGNodes.push_back(svfgNode);
         }
     }
-    SVF::SVFUtil::outs() << "[GraphReaderUtil] All SVFG nodes for call node " << callNode->getId() << ":\n";
+    SVF::SVFUtil::errs() << "[GraphReaderUtil] All SVFG nodes for call node " << callNode->getId() << ":\n";
     for (const SVFGNode* node : associatedSVFGNodes) {
-        SVF::SVFUtil::outs() << "[GraphReaderUtil] SVFG node ID: " << node->getId() << "\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] SVFG node ID: " << node->getId() << "\n";
         // tostring
-        SVF::SVFUtil::outs() << "[GraphReaderUtil] SVFG node toString: " << node->toString() << "\n";
+        SVF::SVFUtil::errs() << "[GraphReaderUtil] SVFG node toString: " << node->toString() << "\n";
         if (SVFUtil::isa<ActualINSVFGNode>(node)) {
-            SVF::SVFUtil::outs() << "[GraphReaderUtil] ActualINSVFGNode ID: " << node->getId() << "\n";
+            SVF::SVFUtil::errs() << "[GraphReaderUtil] ActualINSVFGNode ID: " << node->getId() << "\n";
             actualINSVFGNodes.push_back(SVFUtil::dyn_cast<ActualINSVFGNode>(node));
         }
     }
     // size
-    SVF::SVFUtil::outs() << "[GraphReaderUtil] ActualINSVFGNodes size: " << actualINSVFGNodes.size() << "\n";
+    SVF::SVFUtil::errs() << "[GraphReaderUtil] ActualINSVFGNodes size: " << actualINSVFGNodes.size() << "\n";
 
     if (!pag->hasCallSiteArgsMap(callNode)) {
         SVF::SVFUtil::errs() << "[GraphReaderUtil] Call site '" << location
@@ -1985,7 +1985,7 @@ const SVFGNode* getSVFGNodeFromActualINArg(SVFG* svfg,
         return nullptr;
     }
 
-    SVF::SVFUtil::outs() << "[GraphReaderUtil] Matched ActualINSVFGNode ID="
+    SVF::SVFUtil::errs() << "[GraphReaderUtil] Matched ActualINSVFGNode ID="
                          << chosen->getId() << " for call '" << location
                          << "', arg_index=" << argIndex << "\n";
     return chosen;
@@ -2387,9 +2387,9 @@ bool isLvarFormalParm(SVFG* svfg, SVFIR* pag, const PAGNode* pagNode) {
 void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) {
     // DEBUG
     // 重要功能 可以一直保留
-    SVF::SVFUtil::outs() << "\n========================================\n";
-    SVF::SVFUtil::outs() << "Debug Info for Location: " << location << "\n";
-    SVF::SVFUtil::outs() << "========================================\n\n";
+    SVF::SVFUtil::errs() << "\n========================================\n";
+    SVF::SVFUtil::errs() << "Debug Info for Location: " << location << "\n";
+    SVF::SVFUtil::errs() << "========================================\n\n";
 
     // Find all ICFG nodes at this location
     std::vector<const ICFGNode*> allICFGNodes = findAllICFGNodesByLocation(icfg, location);
@@ -2404,16 +2404,16 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
         return;
     }
 
-    SVF::SVFUtil::outs() << "Found " << allICFGNodes.size() << " ICFG node(s) at this location\n\n";
+    SVF::SVFUtil::errs() << "Found " << allICFGNodes.size() << " ICFG node(s) at this location\n\n";
 
     // Process each ICFG node
     for (size_t i = 0; i < allICFGNodes.size(); i++) {
         const ICFGNode* icfgNode = allICFGNodes[i];
         
-        SVF::SVFUtil::outs() << "----------------------------------------\n";
-        SVF::SVFUtil::outs() << "ICFG Node #" << (i + 1) << ":\n";
-        SVF::SVFUtil::outs() << "----------------------------------------\n";
-        SVF::SVFUtil::outs() << "  ID: " << icfgNode->getId() << "\n";
+        SVF::SVFUtil::errs() << "----------------------------------------\n";
+        SVF::SVFUtil::errs() << "ICFG Node #" << (i + 1) << ":\n";
+        SVF::SVFUtil::errs() << "----------------------------------------\n";
+        SVF::SVFUtil::errs() << "  ID: " << icfgNode->getId() << "\n";
         
         // Determine ICFG node type
         std::string nodeType = "Unknown";
@@ -2430,24 +2430,24 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
         } else if (SVFUtil::isa<GlobalICFGNode>(icfgNode)) {
             nodeType = "GlobalICFGNode";
         }
-        SVF::SVFUtil::outs() << "  Type: " << nodeType << "\n";
+        SVF::SVFUtil::errs() << "  Type: " << nodeType << "\n";
         
         // Show source location with column info
         llvm::json::Object locInfo = parseSourceLocation(icfgNode->getSourceLoc());
         if (!locInfo.empty()) {
             if (auto file = locInfo.getString("fl")) {
-                SVF::SVFUtil::outs() << "  File: " << file->str() << "\n";
+                SVF::SVFUtil::errs() << "  File: " << file->str() << "\n";
             }
             if (auto line = locInfo.getInteger("ln")) {
-                SVF::SVFUtil::outs() << "  Line: " << *line << "\n";
+                SVF::SVFUtil::errs() << "  Line: " << *line << "\n";
             }
             if (auto col = locInfo.getInteger("cl")) {
-                SVF::SVFUtil::outs() << "  Column: " << *col << "\n";
+                SVF::SVFUtil::errs() << "  Column: " << *col << "\n";
             }
         }
         
         // Show full source location string
-        SVF::SVFUtil::outs() << "  Full SourceLoc: " << icfgNode->getSourceLoc() << "\n";
+        SVF::SVFUtil::errs() << "  Full SourceLoc: " << icfgNode->getSourceLoc() << "\n";
         
         // Show LLVM Instruction information
         LLVMModuleSet* llvmModuleSet = LLVMModuleSet::getLLVMModuleSet();
@@ -2488,23 +2488,23 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
             }
         }
         
-        SVF::SVFUtil::outs() << "  LLVM Instruction Type: " << instTypeStr << "\n";
+        SVF::SVFUtil::errs() << "  LLVM Instruction Type: " << instTypeStr << "\n";
         if (const IntraICFGNode* intraNode = SVFUtil::dyn_cast<IntraICFGNode>(icfgNode)) {
-            SVF::SVFUtil::outs() << "  Is Return Instruction: " << (intraNode->isRetInst() ? "true" : "false") << "\n";
+            SVF::SVFUtil::errs() << "  Is Return Instruction: " << (intraNode->isRetInst() ? "true" : "false") << "\n";
         }
         
         // Show number of SVF statements
-        SVF::SVFUtil::outs() << "  Number of SVF Statements: " << icfgNode->getSVFStmts().size() << "\n";
+        SVF::SVFUtil::errs() << "  Number of SVF Statements: " << icfgNode->getSVFStmts().size() << "\n";
 
         if (SaberCondAllocator* condAllocator = getSaberCondAllocator()) {
             auto condInfos = condAllocator->getConditionsForNode(icfgNode);
             if (!condInfos.empty()) {
-                SVF::SVFUtil::outs() << "  Z3 Conditions (" << condInfos.size() << "):\n";
+                SVF::SVFUtil::errs() << "  Z3 Conditions (" << condInfos.size() << "):\n";
                 for (size_t ci = 0; ci < condInfos.size(); ++ci) {
                     const auto& info = condInfos[ci];
-                    SVF::SVFUtil::outs() << "    [" << ci << "] id=" << info.cond.id()
+                    SVF::SVFUtil::errs() << "    [" << ci << "] id=" << info.cond.id()
                                          << ", neg=" << (info.isNeg ? "true" : "false") << "\n";
-                    SVF::SVFUtil::outs() << "        Expr: " << condAllocator->dumpCond(info.cond) << "\n";
+                    SVF::SVFUtil::errs() << "        Expr: " << condAllocator->dumpCond(info.cond) << "\n";
                 }
             }
         }
@@ -2518,17 +2518,17 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
             }
         }
         
-        SVF::SVFUtil::outs() << "  Number of SVFG Nodes: " << associatedSVFGNodes.size() << "\n\n";
+        SVF::SVFUtil::errs() << "  Number of SVFG Nodes: " << associatedSVFGNodes.size() << "\n\n";
         
         if (associatedSVFGNodes.empty()) {
-            SVF::SVFUtil::outs() << "  No associated SVFG nodes found.\n";
+            SVF::SVFUtil::errs() << "  No associated SVFG nodes found.\n";
         } else {
-            SVF::SVFUtil::outs() << "  Associated SVFG Nodes:\n";
+            SVF::SVFUtil::errs() << "  Associated SVFG Nodes:\n";
             for (size_t j = 0; j < associatedSVFGNodes.size(); j++) {
                 const SVFGNode* svfgNode = associatedSVFGNodes[j];
-                SVF::SVFUtil::outs() << "  ---\n";
-                SVF::SVFUtil::outs() << "  SVFG Node #" << (j + 1) << ":\n";
-                SVF::SVFUtil::outs() << "    SVFG Node ID: " << svfgNode->getId() << "\n";
+                SVF::SVFUtil::errs() << "  ---\n";
+                SVF::SVFUtil::errs() << "  SVFG Node #" << (j + 1) << ":\n";
+                SVF::SVFUtil::errs() << "    SVFG Node ID: " << svfgNode->getId() << "\n";
                 
                 // Determine SVFG node type
                 std::string svfgNodeType = "Unknown";
@@ -2581,8 +2581,8 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
                     svfgNodeType = "ActualRetVFGNode";
                 }
                 
-                SVF::SVFUtil::outs() << "    SVFG Node Type: " << svfgNodeType << "\n";
-                SVF::SVFUtil::outs() << "    Node String: " << svfgNode->toString() << "\n";
+                SVF::SVFUtil::errs() << "    SVFG Node Type: " << svfgNodeType << "\n";
+                SVF::SVFUtil::errs() << "    Node String: " << svfgNode->toString() << "\n";
                 
                 // Show incoming and outgoing edges count
                 int inEdgeCount = 0;
@@ -2593,17 +2593,17 @@ void showCodeLineDebugInfo(SVFG* svfg, ICFG* icfg, const std::string& location) 
                 for (auto it = svfgNode->OutEdgeBegin(); it != svfgNode->OutEdgeEnd(); ++it) {
                     outEdgeCount++;
                 }
-                SVF::SVFUtil::outs() << "    Incoming Edges: " << inEdgeCount << "\n";
-                SVF::SVFUtil::outs() << "    Outgoing Edges: " << outEdgeCount << "\n";
+                SVF::SVFUtil::errs() << "    Incoming Edges: " << inEdgeCount << "\n";
+                SVF::SVFUtil::errs() << "    Outgoing Edges: " << outEdgeCount << "\n";
             }
         }
         
-        SVF::SVFUtil::outs() << "\n";
+        SVF::SVFUtil::errs() << "\n";
     }
     
-    SVF::SVFUtil::outs() << "========================================\n";
-    SVF::SVFUtil::outs() << "End of Debug Info\n";
-    SVF::SVFUtil::outs() << "========================================\n\n";
+    SVF::SVFUtil::errs() << "========================================\n";
+    SVF::SVFUtil::errs() << "End of Debug Info\n";
+    SVF::SVFUtil::errs() << "========================================\n\n";
 
     // Send JSON success response
     llvm::json::Object result;
@@ -3330,7 +3330,7 @@ llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
         iterObj["note"] = "Starting point: free functions found in program";
         iterationInfo.push_back(std::move(iterObj));
         if (!silent) {
-            SVFUtil::outs() << "[findAllFreeCallers] Iteration 0 (distance 0): Found " << freeFunctions.size() 
+            SVFUtil::errs() << "[findAllFreeCallers] Iteration 0 (distance 0): Found " << freeFunctions.size() 
                             << " free function(s) in the program\n";
         }
     }
@@ -3388,7 +3388,7 @@ llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
         
         // Output debug information (only if not silent)
         if (!silent) {
-            SVFUtil::outs() << "[findAllFreeCallers] Iteration " << iteration 
+            SVFUtil::errs() << "[findAllFreeCallers] Iteration " << iteration 
                             << " (distance " << currentDistance << "): Found " << nextLevel.size() 
                             << " function(s)\n";
         }
@@ -3396,7 +3396,7 @@ llvm::json::Object findAllFreeCallers(SVFIR* pag, bool silent) {
         // Check for convergence: if no new functions found, we're done
         if (nextLevel.empty()) {
             if (!silent) {
-                SVFUtil::outs() << "[findAllFreeCallers] Convergence reached after " << iteration << " iteration(s)\n";
+                SVFUtil::errs() << "[findAllFreeCallers] Convergence reached after " << iteration << " iteration(s)\n";
             }
             break;
         }
